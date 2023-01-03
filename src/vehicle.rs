@@ -1,13 +1,17 @@
 extern crate nalgebra as na;
 
-const WORLD_SIZE: Vec3 = Vec3::new(50.0, 50.0, 100.0);
+const WORLD_SIZE: Vec3 = Vec3::new(2000.0, 2000.0, 1000.0);
 
 use std::{
     f32::consts::PI,
     ops::{Div, Mul},
 };
 
-use crate::{target::Target, GlobalState, RenderState};
+use crate::{
+    octree::{Octree, Point},
+    target::Target,
+    GlobalState, RenderState,
+};
 use bevy_mod_picking::Selection;
 use na::{SimdPartialOrd, Vector3};
 
@@ -62,13 +66,14 @@ fn vehicle_spawner(
     mut vehicle_spawner: ResMut<VehicleSpawner>,
     state: Res<GlobalState>,
     render_state: Res<RenderState>,
+    assets_server: Res<AssetServer>,
 ) {
     while state.vehicle_count > vehicle_spawner.vehicle_count {
         // Cube at random position
         commands
-            .spawn(PbrBundle {
-                mesh: meshes.get_handle(&render_state.vehicle_mesh),
-                material: materials.get_handle(&render_state.vehicle_material),
+            .spawn(SceneBundle {
+                // scene: assets_server.load("cone.glb#Scene0"),
+                scene: render_state.vehicle_scene.clone(),
                 transform: Transform::from_translation(Vec3::new(
                     -WORLD_SIZE.x / 2.0 + rand::random::<f32>() * WORLD_SIZE.x,
                     -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
@@ -76,6 +81,16 @@ fn vehicle_spawner(
                 )),
                 ..Default::default()
             })
+            // .spawn(PbrBundle {
+            //     mesh: meshes.get_handle(&render_state.vehicle_mesh),
+            //     material: materials.get_handle(&render_state.vehicle_material),
+            //     transform: Transform::from_translation(Vec3::new(
+            //         -WORLD_SIZE.x / 2.0 + rand::random::<f32>() * WORLD_SIZE.x,
+            //         -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
+            //         -WORLD_SIZE.z / 2.0 + rand::random::<f32>() * WORLD_SIZE.z,
+            //     )),
+            //     ..Default::default()
+            // })
             .insert(Vehicle)
             .insert(VehicleVelocity(Vector3::from_element(1.0)))
             .insert(VehicleAcceleration(Vector3::zeros()))
@@ -118,7 +133,7 @@ fn movement(
 
         // Seek
         vehicle_query.par_for_each_mut(
-            1024 * 4,
+            64,
             |(_, velocity, mut acceleration, transform, mass, _)| {
                 // Calculate force
                 let mut force: Vector3<f32> =
@@ -143,7 +158,7 @@ fn movement(
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_for_each_mut(
-            1024 * 4,
+            128,
             |(_, velocity, mut acceleration, transform, mass, mut wander_rotation)| {
                 // Check if in bounds
                 let fx = transform.translation.x < -WORLD_SIZE.x
@@ -175,7 +190,7 @@ fn movement(
                     // Calculate force
                     let mut force: Vector3<f32> =
                         (target - Into::<Vector3<f32>>::into(transform.translation)).into();
-                    force = force.normalize().mul(state.vehicle_max_speed);
+                    force = force.normalize().mul(state.vehicle_wander_speed);
                     force -= velocity.0;
 
                     // Limit force
@@ -250,6 +265,7 @@ fn vehicle_cleanup(
 fn update(
     mut vehicle_query: Query<
         (
+            Entity,
             &mut VehicleVelocity,
             &mut VehicleAcceleration,
             &mut Transform,
@@ -264,27 +280,31 @@ fn update(
 
     // pub fn for_each_mut<'a>(&'a mut self, f: impl FnMut(Q::Item<'a>))
 
-    vehicle_query.par_for_each_mut(
-        1024 * 4,
-        |(mut velocity, mut acceleration, mut transform)| {
-            velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
+    vehicle_query.par_for_each_mut(64, |(_, mut velocity, mut acceleration, mut transform)| {
+        velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
 
-            transform.translation.x += velocity.0.x * time.delta_seconds();
-            transform.translation.y += velocity.0.y * time.delta_seconds();
-            transform.translation.z += velocity.0.z * time.delta_seconds();
+        transform.translation.x += velocity.0.x * time.delta_seconds();
+        transform.translation.y += velocity.0.y * time.delta_seconds();
+        transform.translation.z += velocity.0.z * time.delta_seconds();
 
-            // FIXME: Rotation, but first we need to replace Cube with a proper model
-            // transform.rotation = Quat::from_rotation_z(velocity.y.atan2(velocity.x) - PI / 2.0);
-
-            acceleration.0 *= 0.0;
-        },
-    );
+        transform.rotation = Quat::from_rotation_arc(
+            Vec3::new(0.0, 1.0, 0.0).into(),
+            velocity.0.normalize().into(),
+        );
+        acceleration.0 *= 0.0;
+    });
 }
 
 fn limit(data: &mut Vector3<f32>, max: f32) {
     if data.magnitude_squared() > max * max {
         *data = data.normalize() * max;
     }
+}
+
+struct OctreeData {
+    pub entity: Entity,
+    pub transform: Transform,
+    pub velocity: Vector3<f32>,
 }
 
 fn flock(
@@ -301,19 +321,144 @@ fn flock(
     >,
     state: &Res<GlobalState>,
 ) {
-    let others = vehicle_query
-        .iter()
-        .map(|(entity, velocity, _, transform, _, _)| {
-            (entity.index(), velocity.0, transform.clone())
-        })
-        .collect::<Vec<_>>();
-
     let limit_seperate = state.vehicle_max_speed * state.vehicle_seperation_factor;
     let limit_align = state.vehicle_max_speed * state.vehicle_alignment_factor;
     let limit_cohesion = state.vehicle_max_speed * state.vehicle_cohesion_factor;
     let dist_seperate = (state.vehicle_size * state.vehicle_seperation_distance).powi(2);
     let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
     let dist_cohesion = (state.vehicle_size * state.vehicle_cohesion_distance).powi(2);
+
+    if state.use_octree {
+        let mut octree = Octree::new(state.octree_size);
+        octree.create_root(
+            Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Point {
+                x: -WORLD_SIZE.x,
+                y: -WORLD_SIZE.y,
+                z: -WORLD_SIZE.z,
+            },
+            Point {
+                x: WORLD_SIZE.x,
+                y: WORLD_SIZE.y,
+                z: WORLD_SIZE.z,
+            },
+        );
+
+        // Insert all vehicles into octree
+        for (entity, velocity, _, transform, _, _) in &mut vehicle_query.iter() {
+            octree.insert(
+                Point {
+                    x: transform.translation.x,
+                    y: transform.translation.y,
+                    z: transform.translation.z,
+                },
+                OctreeData {
+                    entity,
+                    transform: transform.clone(),
+                    velocity: velocity.0,
+                },
+            );
+        }
+
+        // Find all neighbors for each vehicle
+        vehicle_query.for_each_mut(|(entity, velocity, mut acceleration, transform, mass, _)| {
+            let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
+            let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
+            let mut cohesion_sum = Vector3::new(0.0, 0.0, 0.0);
+            let mut seperate_count = 0;
+            let mut align_count = 0;
+            let mut cohesion_count = 0;
+
+            let neighbors = octree.find_neighbors(&Point {
+                x: transform.translation.x,
+                y: transform.translation.y,
+                z: transform.translation.z,
+            });
+
+            neighbors.iter().for_each(|neighbor| {
+                let (other_entity, other_transform, other_velocity) =
+                    (neighbor.entity, &neighbor.transform, &neighbor.velocity);
+
+                if entity == other_entity {
+                    return;
+                }
+
+                let distance: f32 =
+                    Into::<Vector3<f32>>::into(other_transform.translation - transform.translation)
+                        .magnitude_squared();
+
+                if distance < dist_seperate {
+                    let mut diff = Into::<Vector3<f32>>::into(
+                        transform.translation - other_transform.translation,
+                    );
+                    diff = diff.normalize().div(distance.sqrt());
+                    seperate_sum += diff;
+                    seperate_count += 1;
+                }
+
+                if distance < dist_align {
+                    align_sum += other_velocity;
+                    align_count += 1;
+                }
+
+                if distance < dist_cohesion {
+                    cohesion_sum += Into::<Vector3<f32>>::into(other_transform.translation);
+                    cohesion_count += 1;
+                }
+            });
+
+            //Apply seperation
+            if seperate_count > 0 {
+                seperate_sum /= seperate_count as f32;
+                seperate_sum = seperate_sum.normalize() * state.vehicle_max_speed;
+                seperate_sum -= velocity.0;
+                limit(&mut seperate_sum, limit_seperate);
+                acceleration.apply_force(seperate_sum, mass);
+            }
+
+            // Apply alignment
+            if align_count > 0 {
+                align_sum /= align_count as f32;
+                align_sum = align_sum.normalize() * state.vehicle_max_speed;
+                align_sum -= velocity.0;
+                limit(&mut align_sum, limit_align);
+                acceleration.apply_force(align_sum, mass);
+            }
+
+            // Apply cohesion
+            if cohesion_count > 0 {
+                cohesion_sum /= cohesion_count as f32;
+                cohesion_sum = cohesion_sum - Into::<Vector3<f32>>::into(transform.translation);
+                cohesion_sum = cohesion_sum
+                    .try_normalize(f32::MIN)
+                    .unwrap_or(Vector3::zeros());
+
+                let dist = cohesion_sum.magnitude();
+
+                if dist < 10.0 {
+                    cohesion_sum *= dist / 10.0;
+                }
+
+                cohesion_sum *= state.vehicle_max_speed;
+                cohesion_sum -= velocity.0;
+                limit(&mut cohesion_sum, limit_cohesion);
+                acceleration.apply_force(cohesion_sum, mass);
+            }
+        });
+
+        return;
+    }
+
+    let others = vehicle_query
+        .iter()
+        .map(|(entity, velocity, _, transform, _, _)| {
+            (entity.index(), velocity.0, transform.clone())
+        })
+        .collect::<Vec<_>>();
 
     vehicle_query.par_for_each_mut(
         512 * 16,
