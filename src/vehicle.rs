@@ -1,5 +1,6 @@
 extern crate nalgebra as na;
 
+// const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
 const WORLD_SIZE: Vec3 = Vec3::new(2000.0, 2000.0, 1000.0);
 
 use std::{
@@ -50,6 +51,7 @@ impl Plugin for VehiclePlugin {
             .add_system(vehicle_cleanup)
             .add_system(movement)
             .add_system(update);
+        // .add_system(benchmark);
     }
 }
 
@@ -79,20 +81,21 @@ fn vehicle_spawner(
                     -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
                     -WORLD_SIZE.z / 2.0 + rand::random::<f32>() * WORLD_SIZE.z,
                 )),
+                visibility: Visibility {
+                    is_visible: if state.benchmark_mode { false } else { true },
+                },
                 ..Default::default()
             })
-            // .spawn(PbrBundle {
-            //     mesh: meshes.get_handle(&render_state.vehicle_mesh),
-            //     material: materials.get_handle(&render_state.vehicle_material),
-            //     transform: Transform::from_translation(Vec3::new(
-            //         -WORLD_SIZE.x / 2.0 + rand::random::<f32>() * WORLD_SIZE.x,
-            //         -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
-            //         -WORLD_SIZE.z / 2.0 + rand::random::<f32>() * WORLD_SIZE.z,
-            //     )),
-            //     ..Default::default()
-            // })
             .insert(Vehicle)
-            .insert(VehicleVelocity(Vector3::from_element(1.0)))
+            .insert(VehicleVelocity(
+                Vector3::new(
+                    rand::random::<f32>() * state.vehicle_max_speed,
+                    rand::random::<f32>() * state.vehicle_max_speed,
+                    rand::random::<f32>() * state.vehicle_max_speed,
+                )
+                .normalize()
+                .mul(state.vehicle_max_speed),
+            ))
             .insert(VehicleAcceleration(Vector3::zeros()))
             .insert(VehicleMass(state.vehicle_mass))
             .insert(VehicleWanderRotation {
@@ -158,7 +161,7 @@ fn movement(
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_for_each_mut(
-            128,
+            64,
             |(_, velocity, mut acceleration, transform, mass, mut wander_rotation)| {
                 // Check if in bounds
                 let fx = transform.translation.x < -WORLD_SIZE.x
@@ -278,8 +281,6 @@ fn update(
     let min = Vector3::from_element(state.vehicle_max_speed * -1.0);
     let max = Vector3::from_element(state.vehicle_max_speed);
 
-    // pub fn for_each_mut<'a>(&'a mut self, f: impl FnMut(Q::Item<'a>))
-
     vehicle_query.par_for_each_mut(64, |(_, mut velocity, mut acceleration, mut transform)| {
         velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
 
@@ -291,6 +292,7 @@ fn update(
             Vec3::new(0.0, 1.0, 0.0).into(),
             velocity.0.normalize().into(),
         );
+
         acceleration.0 *= 0.0;
     });
 }
@@ -305,6 +307,44 @@ struct OctreeData {
     pub entity: Entity,
     pub transform: Transform,
     pub velocity: Vector3<f32>,
+}
+
+fn benchmark(time: Res<Time>, mut state: ResMut<GlobalState>) {
+    if state.benchmark_mode {
+        state.benchmark_current_results.push(time.delta_seconds());
+
+        // We check for 1010 because we want to skip the first 10 frames
+        if state.benchmark_current_results.len() >= 110 {
+            let mean = state.benchmark_current_results.iter().skip(10).sum::<f32>() / 100.0;
+            state.benchmark_results.push(mean);
+            state.benchmark_current_results.clear();
+            state.benchmark_step += 1;
+
+            println!(
+                "Octree [{}]: {} {}",
+                state.use_octree, state.vehicle_count, mean
+            );
+
+            if state.vehicle_count >= 100000 {
+                if state.use_octree {
+                    state.benchmark_mode = false;
+                    state.vehicle_count = 0;
+                }
+
+                state.use_octree = !state.use_octree;
+            }
+
+            let step = if state.vehicle_count < 1000 {
+                100
+            } else if state.vehicle_count < 10000 {
+                1000
+            } else {
+                10000
+            };
+
+            state.vehicle_count += step;
+        }
+    }
 }
 
 fn flock(
@@ -365,90 +405,94 @@ fn flock(
         }
 
         // Find all neighbors for each vehicle
-        vehicle_query.for_each_mut(|(entity, velocity, mut acceleration, transform, mass, _)| {
-            let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut cohesion_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut seperate_count = 0;
-            let mut align_count = 0;
-            let mut cohesion_count = 0;
+        vehicle_query.par_for_each_mut(
+            64,
+            |(entity, velocity, mut acceleration, transform, mass, _)| {
+                let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
+                let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
+                let mut cohesion_sum = Vector3::new(0.0, 0.0, 0.0);
+                let mut seperate_count = 0;
+                let mut align_count = 0;
+                let mut cohesion_count = 0;
 
-            let neighbors = octree.find_neighbors(&Point {
-                x: transform.translation.x,
-                y: transform.translation.y,
-                z: transform.translation.z,
-            });
+                let neighbors = octree.find_neighbors(&Point {
+                    x: transform.translation.x,
+                    y: transform.translation.y,
+                    z: transform.translation.z,
+                });
 
-            neighbors.iter().for_each(|neighbor| {
-                let (other_entity, other_transform, other_velocity) =
-                    (neighbor.entity, &neighbor.transform, &neighbor.velocity);
+                neighbors.iter().for_each(|neighbor| {
+                    let (other_entity, other_transform, other_velocity) =
+                        (neighbor.entity, &neighbor.transform, &neighbor.velocity);
 
-                if entity == other_entity {
-                    return;
+                    if entity == other_entity {
+                        return;
+                    }
+
+                    let distance: f32 = Into::<Vector3<f32>>::into(
+                        other_transform.translation - transform.translation,
+                    )
+                    .magnitude_squared();
+
+                    if distance < dist_seperate {
+                        let mut diff = Into::<Vector3<f32>>::into(
+                            transform.translation - other_transform.translation,
+                        );
+                        diff = diff.normalize().div(distance.sqrt());
+                        seperate_sum += diff;
+                        seperate_count += 1;
+                    }
+
+                    if distance < dist_align {
+                        align_sum += other_velocity;
+                        align_count += 1;
+                    }
+
+                    if distance < dist_cohesion {
+                        cohesion_sum += Into::<Vector3<f32>>::into(other_transform.translation);
+                        cohesion_count += 1;
+                    }
+                });
+
+                //Apply seperation
+                if seperate_count > 0 {
+                    seperate_sum /= seperate_count as f32;
+                    seperate_sum = seperate_sum.normalize() * state.vehicle_max_speed;
+                    seperate_sum -= velocity.0;
+                    limit(&mut seperate_sum, limit_seperate);
+                    acceleration.apply_force(seperate_sum, mass);
                 }
 
-                let distance: f32 =
-                    Into::<Vector3<f32>>::into(other_transform.translation - transform.translation)
-                        .magnitude_squared();
-
-                if distance < dist_seperate {
-                    let mut diff = Into::<Vector3<f32>>::into(
-                        transform.translation - other_transform.translation,
-                    );
-                    diff = diff.normalize().div(distance.sqrt());
-                    seperate_sum += diff;
-                    seperate_count += 1;
+                // Apply alignment
+                if align_count > 0 {
+                    align_sum /= align_count as f32;
+                    align_sum = align_sum.normalize() * state.vehicle_max_speed;
+                    align_sum -= velocity.0;
+                    limit(&mut align_sum, limit_align);
+                    acceleration.apply_force(align_sum, mass);
                 }
 
-                if distance < dist_align {
-                    align_sum += other_velocity;
-                    align_count += 1;
+                // Apply cohesion
+                if cohesion_count > 0 {
+                    cohesion_sum /= cohesion_count as f32;
+                    cohesion_sum = cohesion_sum - Into::<Vector3<f32>>::into(transform.translation);
+                    cohesion_sum = cohesion_sum
+                        .try_normalize(f32::MIN)
+                        .unwrap_or(Vector3::zeros());
+
+                    let dist = cohesion_sum.magnitude();
+
+                    if dist < 10.0 {
+                        cohesion_sum *= dist / 10.0;
+                    }
+
+                    cohesion_sum *= state.vehicle_max_speed;
+                    cohesion_sum -= velocity.0;
+                    limit(&mut cohesion_sum, limit_cohesion);
+                    acceleration.apply_force(cohesion_sum, mass);
                 }
-
-                if distance < dist_cohesion {
-                    cohesion_sum += Into::<Vector3<f32>>::into(other_transform.translation);
-                    cohesion_count += 1;
-                }
-            });
-
-            //Apply seperation
-            if seperate_count > 0 {
-                seperate_sum /= seperate_count as f32;
-                seperate_sum = seperate_sum.normalize() * state.vehicle_max_speed;
-                seperate_sum -= velocity.0;
-                limit(&mut seperate_sum, limit_seperate);
-                acceleration.apply_force(seperate_sum, mass);
-            }
-
-            // Apply alignment
-            if align_count > 0 {
-                align_sum /= align_count as f32;
-                align_sum = align_sum.normalize() * state.vehicle_max_speed;
-                align_sum -= velocity.0;
-                limit(&mut align_sum, limit_align);
-                acceleration.apply_force(align_sum, mass);
-            }
-
-            // Apply cohesion
-            if cohesion_count > 0 {
-                cohesion_sum /= cohesion_count as f32;
-                cohesion_sum = cohesion_sum - Into::<Vector3<f32>>::into(transform.translation);
-                cohesion_sum = cohesion_sum
-                    .try_normalize(f32::MIN)
-                    .unwrap_or(Vector3::zeros());
-
-                let dist = cohesion_sum.magnitude();
-
-                if dist < 10.0 {
-                    cohesion_sum *= dist / 10.0;
-                }
-
-                cohesion_sum *= state.vehicle_max_speed;
-                cohesion_sum -= velocity.0;
-                limit(&mut cohesion_sum, limit_cohesion);
-                acceleration.apply_force(cohesion_sum, mass);
-            }
-        });
+            },
+        );
 
         return;
     }
@@ -461,7 +505,7 @@ fn flock(
         .collect::<Vec<_>>();
 
     vehicle_query.par_for_each_mut(
-        512 * 16,
+        64,
         |(entity, velocity, mut acceleration, transform, mass, _)| {
             let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
             let mut align_sum = Vector3::new(0.0, 0.0, 0.0);

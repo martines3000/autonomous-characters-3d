@@ -1,7 +1,10 @@
 [package]
 name = "autonomous-characters-3d"
-version = "0.1.0"
+version = "1.0.0"
+authors = ["Martin Domajnko <https://github.com/martines3000>"]
 edition = "2021"
+exclude = ["dist", "build", "assets", "credits"]
+rust-version = "1.67.1"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

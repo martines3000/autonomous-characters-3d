@@ -195,6 +195,10 @@ struct GlobalState {
     // Toggle mode
     use_octree: bool,
     octree_size: usize,
+    benchmark_mode: bool,
+    benchmark_step: usize,
+    benchmark_results: Vec<f32>,
+    benchmark_current_results: Vec<f32>,
 }
 
 fn configure_global_state(mut state: ResMut<GlobalState>) {
@@ -212,15 +216,20 @@ fn configure_global_state(mut state: ResMut<GlobalState>) {
     state.vehicle_wall_avoid_factor = 1.5;
     state.vehicle_seek_factor = 7.0;
 
-    state.vehicle_seperation_distance = 5.0;
+    state.vehicle_seperation_distance = 4.0;
     state.vehicle_alignment_distance = 30.0;
     state.vehicle_cohesion_distance = 20.0;
 
-    state.vehicle_wander_distance = 1.0;
-    state.vehicle_wander_radius = 1.0;
+    state.vehicle_wander_distance = 4.0;
+    state.vehicle_wander_radius = 1.5;
 
     state.use_octree = false;
     state.octree_size = 100;
+
+    state.benchmark_mode = false;
+    state.benchmark_step = 0;
+    state.benchmark_results = vec![];
+    state.benchmark_current_results = vec![];
 }
 
 #[derive(Default, Resource)]
@@ -254,16 +263,13 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
             ui.label("Vehicle count");
             ui.add(egui::Slider::new(&mut state.vehicle_count, 0..=50000).text("count"));
             ui.label("Vehicle mass");
-            ui.add(
-                egui::Slider::new(&mut state.vehicle_mass, 1.0..=1000.0)
-                    .text("mass")
-                    .step_by(0.1),
-            );
+            ui.add(egui::Slider::new(&mut state.vehicle_mass, 1.0..=1000.0).text("mass"));
             ui.label("Vehicle max speed");
+            ui.add(egui::Slider::new(&mut state.vehicle_max_speed, 0.1..=100.0).text("max speed"));
+            ui.label("Vehicle wander speed");
             ui.add(
-                egui::Slider::new(&mut state.vehicle_max_speed, 0.1..=100.0)
-                    .text("max speed")
-                    .step_by(0.1),
+                egui::Slider::new(&mut state.vehicle_wander_speed, 0.1..=100.0)
+                    .text("wander speed"),
             );
             ui.label("Vehicle seperation factor");
             ui.add(
@@ -295,12 +301,7 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
                     .text("wall avoid")
                     .step_by(0.1),
             );
-            ui.label("Vehicle seek factor");
-            ui.add(
-                egui::Slider::new(&mut state.vehicle_seek_factor, 0.001..=0.1)
-                    .text("seek")
-                    .step_by(0.01),
-            );
+
             ui.label("Vehicle seperation distance");
             ui.add(
                 egui::Slider::new(&mut state.vehicle_seperation_distance, 1.0..=100.0)
@@ -334,12 +335,14 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
 
             ui.separator();
             ui.checkbox(&mut state.use_octree, "Use octree");
-            ui.label("Octree size");
             ui.add(
                 egui::Slider::new(&mut state.octree_size, 2..=500)
                     .text("octree size")
                     .step_by(1.0),
             );
+
+            ui.separator();
+            ui.checkbox(&mut state.benchmark_mode, "Benchmark mode");
         });
 }
 
