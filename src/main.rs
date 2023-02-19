@@ -5,7 +5,6 @@ mod vehicle;
 use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    window::PresentMode,
 };
 use bevy_mod_picking::*;
 use octree::*;
@@ -30,9 +29,10 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             window: WindowDescriptor {
                 title: "Autonomous characters 3D".to_string(),
-                width: 500.0,
-                height: 500.0,
-                present_mode: PresentMode::AutoNoVsync,
+                width: 1280.,
+                height: 720.,
+                canvas: Some("#bevy".to_owned()),
+                fit_canvas_to_parent: true,
                 ..default()
             },
             ..default()
