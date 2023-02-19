@@ -25,7 +25,7 @@ fn main() {
         .add_startup_system(setup_scene)
         .add_startup_system(configure_global_state)
         // .add_startup_system(test_octree_visualization)
-        .add_system(bevy::window::close_on_esc)
+        // .add_system(bevy::window::close_on_esc)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             window: WindowDescriptor {
                 title: "Autonomous characters 3D".to_string(),
