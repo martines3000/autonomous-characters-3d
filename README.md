@@ -1,5 +1,7 @@
 # 3D Boids simulation
 
+[demo](https://ac3d.skippy-ai.com/)
+
 ## Sources
 
 Some sources I used for inspiration and help building this.
