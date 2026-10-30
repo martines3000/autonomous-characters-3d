@@ -218,3 +218,11 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 ### Modernization checkpoint
 - Native package/API modernization is complete and validated as above. No remaining dependency advisory exceptions are required for the native target.
 - Next substantive work: numerical invariants and exact radius-query correctness, then a seeded headless benchmark with fixed workloads and before/after artifacts. Existing frame-based integration/target motion and octree single-leaf neighbor behavior remain known limitations.
+
+## Controls and follow feedback — 2026-10-30
+- Added a persistent egui Controls panel at the lower-right, listing target selection/deselection, camera orbit/pan/zoom, WASD and Space/left Shift movement, and camera-relative movement semantics.
+- The panel reads the same TargetSelection state as vehicle steering and displays Follow ON/OFF plus a short behavior description. The target changes from translucent red (idle) to brighter translucent green (selected/following), and back to red on background deselection.
+- Color synchronization runs only when TargetSelection changes, including the initial spawn. Extended the existing selection/movement regression test to assert initial red, selected green and deselected red material colors.
+- Validation ran sequentially with CARGO_BUILD_JOBS=4: cargo test --release --locked PASS (4 tests), cargo build --release --locked PASS, native startup smoke PASS (10s), formatting and git diff --check PASS. Two existing dead-code compiler warnings remain. No dependency or simulation-math changes.
+- Native visual inspection confirmed the Controls panel fits alongside the menu and FPS, and the idle status is visible. CUA coordinate clicks remain unreliable on this host; follow color transitions are covered by the automated ECS test, rather than claimed as a completed manual click test.
+- Numerical safety remains the next handoff task. The previous prompt's branch/checkpoint description should use the latest HEAD rather than assuming262dc33.

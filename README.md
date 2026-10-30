@@ -35,7 +35,9 @@ web builds are outside this migration's scope.
 Controls: right-drag to orbit, middle-drag to pan, and scroll to zoom. Left-click
 the red target to select it; click the background to return to wandering. Move a
 selected target with WASD, Space and left Shift. Camera and target controls defer
-to the menu when it consumes input.
+to the menu when it consumes input. The on-screen Controls panel lists these
+shortcuts and shows Follow ON/OFF. The target turns green while selected and
+returns to red when following is off.
 
 For dependency diagnostics, install the separate CLI with
 `cargo install --locked --version 0.20.2 cargo-deny`, then run

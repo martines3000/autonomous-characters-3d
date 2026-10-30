@@ -277,10 +277,15 @@ fn load_assets(mut render_state: ResMut<RenderState>, asset_server: Res<AssetSer
     render_state.vehicle_scene = asset_server.load("cone.glb#Scene0");
 }
 
-fn ui(mut egui_context: EguiContexts, mut state: ResMut<GlobalState>) -> Result {
+fn ui(
+    mut egui_context: EguiContexts,
+    mut state: ResMut<GlobalState>,
+    targets: Query<&target::TargetSelection, With<target::Target>>,
+) -> Result {
+    let ctx = egui_context.ctx_mut()?;
     egui::Window::new("Menu")
         .default_size([300.0, 100.0])
-        .show(egui_context.ctx_mut()?, |ui| {
+        .show(ctx, |ui| {
             ui.label("Vehicle count");
             ui.add(egui::Slider::new(&mut state.vehicle_count, 0..=50000).text("count"));
             ui.label("Vehicle mass");
@@ -364,6 +369,38 @@ fn ui(mut egui_context: EguiContexts, mut state: ResMut<GlobalState>) -> Result 
 
             ui.separator();
             ui.checkbox(&mut state.benchmark_mode, "Benchmark mode");
+        });
+    let following = targets.iter().any(|selection| selection.0);
+    egui::Window::new("Controls")
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            if following {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "Follow: ON (green target)");
+                ui.label("Vehicles follow the selected target.");
+            } else {
+                ui.colored_label(egui::Color32::LIGHT_RED, "Follow: OFF (red target)");
+                ui.label("Vehicles wander freely.");
+            }
+            ui.separator();
+            egui::Grid::new("controls").show(ui, |ui| {
+                for (input, action) in [
+                    ("Left-click target", "Start following"),
+                    ("Left-click background", "Stop following"),
+                    ("Right-drag", "Orbit camera"),
+                    ("Middle-drag", "Pan camera"),
+                    ("Scroll", "Zoom camera"),
+                    ("W / A / S / D", "Move selected target"),
+                    ("Space / Left Shift", "Move target up / down"),
+                ] {
+                    ui.label(input);
+                    ui.label(action);
+                    ui.end_row();
+                }
+            });
+            ui.separator();
+            ui.small("Target movement is relative to the camera.");
         });
     Ok(())
 }

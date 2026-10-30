@@ -6,7 +6,7 @@ pub struct TargetPlugin;
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_target)
-            .add_systems(Update, input_controls)
+            .add_systems(Update, (input_controls, update_target_color))
             .add_observer(select_target);
     }
 }
@@ -17,6 +17,9 @@ pub struct Target;
 #[derive(Component, Default)]
 pub struct TargetSelection(pub bool);
 
+const IDLE_COLOR: Color = Color::srgba(1.0, 0.0, 0.0, 0.1);
+const FOLLOW_COLOR: Color = Color::srgba(0.1, 1.0, 0.2, 0.35);
+
 fn spawn_target(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -25,7 +28,7 @@ fn spawn_target(
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(2.0).mesh().ico(3).unwrap())),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.0, 0.0, 0.1),
+            base_color: IDLE_COLOR,
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
@@ -35,6 +38,24 @@ fn spawn_target(
         TargetSelection::default(),
         Pickable::default(),
     ));
+}
+
+fn update_target_color(
+    targets: Query<
+        (&TargetSelection, &MeshMaterial3d<StandardMaterial>),
+        (With<Target>, Changed<TargetSelection>),
+    >,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (selection, material) in &targets {
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color = if selection.0 {
+                FOLLOW_COLOR
+            } else {
+                IDLE_COLOR
+            };
+        }
+    }
 }
 
 fn select_target(
@@ -104,16 +125,26 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn primary_click_selects_target_and_background_clears_it() {
+    fn target_selection_controls_movement_and_color() {
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<ButtonInput<KeyCode>>()
-            .add_systems(Update, input_controls)
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Update, (input_controls, update_target_color))
             .add_observer(select_target);
         let window = app.world_mut().spawn_empty().id();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
         let target = app
             .world_mut()
-            .spawn((Target, TargetSelection::default(), Transform::default()))
+            .spawn((
+                Target,
+                TargetSelection::default(),
+                Transform::default(),
+                MeshMaterial3d(material.clone()),
+            ))
             .id();
         app.world_mut()
             .spawn((Camera3d::default(), Transform::default()));
@@ -133,6 +164,15 @@ mod tests {
             duration: Duration::from_millis(50),
             count: 1,
         };
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&material)
+                .unwrap()
+                .base_color,
+            IDLE_COLOR
+        );
         app.world_mut()
             .trigger(click(target, PointerButton::Primary));
         assert!(app.world().get::<TargetSelection>(target).unwrap().0);
@@ -140,6 +180,14 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyW);
         app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&material)
+                .unwrap()
+                .base_color,
+            FOLLOW_COLOR
+        );
         assert_eq!(
             app.world().get::<Transform>(target).unwrap().translation,
             Vec3::NEG_Z * 2.0
@@ -151,6 +199,14 @@ mod tests {
             .trigger(click(window, PointerButton::Primary));
         assert!(!app.world().get::<TargetSelection>(target).unwrap().0);
         app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&material)
+                .unwrap()
+                .base_color,
+            IDLE_COLOR
+        );
         assert_eq!(
             app.world().get::<Transform>(target).unwrap().translation,
             Vec3::NEG_Z * 2.0
