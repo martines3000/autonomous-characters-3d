@@ -33,9 +33,6 @@ struct VehicleVelocity(pub Vector3<f32>);
 struct VehicleAcceleration(pub Vector3<f32>);
 
 #[derive(Component, Default)]
-struct VehicleMass(f32);
-
-#[derive(Component, Default)]
 struct VehicleWanderRotation {
     theta: f32,
     phi: f32,
@@ -58,8 +55,8 @@ impl Plugin for VehiclePlugin {
 }
 
 impl VehicleAcceleration {
-    fn apply_force(&mut self, force: Vector3<f32>, mass: &VehicleMass) {
-        self.0 += force / mass.0;
+    fn apply_force(&mut self, force: Vector3<f32>, mass: f32) {
+        self.0 += force / mass;
     }
 }
 
@@ -86,7 +83,6 @@ fn vehicle_spawner(
                 random_direction().mul(state.vehicle_max_speed),
             ))
             .insert(VehicleAcceleration(Vector3::zeros()))
-            .insert(VehicleMass(state.vehicle_mass))
             .insert(VehicleWanderRotation {
                 theta: 0.0,
                 phi: 0.0,
@@ -103,7 +99,6 @@ type SteeringQuery<'w, 's> = Query<
         &'static VehicleVelocity,
         &'static mut VehicleAcceleration,
         &'static mut Transform,
-        &'static VehicleMass,
         &'static mut VehicleWanderRotation,
     ),
     With<Vehicle>,
@@ -129,8 +124,9 @@ fn movement(
         flock(&mut vehicle_query, &state);
 
         // Seek
-        vehicle_query.par_iter_mut().for_each(
-            |(_, velocity, mut acceleration, transform, mass, _)| {
+        vehicle_query
+            .par_iter_mut()
+            .for_each(|(_, velocity, mut acceleration, transform, _)| {
                 // Calculate force
                 let mut force: Vector3<f32> =
                     (target_transform.translation - transform.translation).into();
@@ -141,9 +137,8 @@ fn movement(
                 limit(&mut force, limit_seek);
 
                 // Apply force
-                acceleration.apply_force(force, mass);
-            },
-        );
+                acceleration.apply_force(force, state.vehicle_mass);
+            });
     } else {
         let wander_delta = wander_step_bound(time.delta_secs());
 
@@ -155,7 +150,7 @@ fn movement(
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_iter_mut().for_each(
-            |(_, velocity, mut acceleration, transform, mass, mut wander_rotation)| {
+            |(_, velocity, mut acceleration, transform, mut wander_rotation)| {
                 // Check if in bounds
                 let fx = transform.translation.x < -walls.x || transform.translation.x > walls.x;
                 let fy = transform.translation.y < -walls.y || transform.translation.y > walls.y;
@@ -190,7 +185,7 @@ fn movement(
                     limit(&mut force, limit_wander);
 
                     // Apply force
-                    acceleration.apply_force(force, mass);
+                    acceleration.apply_force(force, state.vehicle_mass);
                 }
 
                 // Calculate force
@@ -230,7 +225,7 @@ fn movement(
                 limit(&mut force, limit_wall_avoid);
 
                 // Apply force
-                acceleration.apply_force(force, mass);
+                acceleration.apply_force(force, state.vehicle_mass);
             },
         );
     }
@@ -324,12 +319,12 @@ struct OctreeData {
 
 fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
     if state.use_octree {
-        let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
+        let Some((_, _, _, first_transform, _)) = vehicle_query.iter().next() else {
             return;
         };
         let mut min = first_transform.translation;
         let mut max = min;
-        for (_, _, _, transform, _, _) in vehicle_query.iter() {
+        for (_, _, _, transform, _) in vehicle_query.iter() {
             min = min.min(transform.translation);
             max = max.max(transform.translation);
         }
@@ -366,7 +361,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
             * state.vehicle_size;
 
         // Insert all vehicles into octree
-        for (entity, velocity, _, transform, _, _) in &mut vehicle_query.iter() {
+        for (entity, velocity, _, transform, _) in &mut vehicle_query.iter() {
             octree.insert(
                 Point {
                     x: transform.translation.x,
@@ -383,7 +378,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
 
         // Find all neighbors for each vehicle
         vehicle_query.par_iter_mut().for_each(
-            |(entity, velocity, mut acceleration, transform, mass, _)| {
+            |(entity, velocity, mut acceleration, transform, _)| {
                 let force = flocking_force(
                     transform.translation.into(),
                     velocity.0,
@@ -404,7 +399,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                     },
                     state,
                 );
-                acceleration.apply_force(force, mass);
+                acceleration.apply_force(force, state.vehicle_mass);
             },
         );
 
@@ -413,13 +408,12 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
 
     let others = vehicle_query
         .iter()
-        .map(|(entity, velocity, _, transform, _, _)| {
-            (entity.index(), velocity.0, transform.clone())
-        })
+        .map(|(entity, velocity, _, transform, _)| (entity.index(), velocity.0, transform.clone()))
         .collect::<Vec<_>>();
 
-    vehicle_query.par_iter_mut().for_each(
-        |(entity, velocity, mut acceleration, transform, mass, _)| {
+    vehicle_query
+        .par_iter_mut()
+        .for_each(|(entity, velocity, mut acceleration, transform, _)| {
             let force = flocking_force(
                 transform.translation.into(),
                 velocity.0,
@@ -432,9 +426,8 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                 },
                 state,
             );
-            acceleration.apply_force(force, mass);
-        },
-    );
+            acceleration.apply_force(force, state.vehicle_mass);
+        });
 }
 
 fn flocking_force(
@@ -538,15 +531,11 @@ mod tests {
                     .init_resource::<Time>()
                     .add_systems(Startup, crate::configure_global_state);
                 app.update();
-                let (max_speed, mass, octree_size) = {
+                let (max_speed, octree_size) = {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
                     state.use_octree = use_octree;
                     state.vehicle_count = count;
-                    (
-                        state.vehicle_max_speed,
-                        state.vehicle_mass,
-                        state.octree_size,
-                    )
+                    (state.vehicle_max_speed, state.octree_size)
                 };
                 if count == 200 && !use_octree {
                     let threads = bevy::tasks::ComputeTaskPool::get().thread_num();
@@ -563,7 +552,6 @@ mod tests {
                         Vehicle,
                         VehicleVelocity(direction * max_speed),
                         VehicleAcceleration::default(),
-                        VehicleMass(mass),
                         VehicleWanderRotation::default(),
                         Transform::from_translation(position),
                     ));
@@ -638,6 +626,44 @@ mod tests {
     }
 
     #[test]
+    fn mass_slider_applies_to_existing_vehicles() {
+        let mut app = App::new();
+        app.insert_resource(GlobalState {
+            vehicle_seek_factor: 7.0,
+            ..flocking_state()
+        })
+        .init_resource::<Time>()
+        .add_systems(Update, movement);
+        app.world_mut().spawn((
+            Target,
+            TargetSelection(true),
+            Transform::from_translation(Vec3::X * 100.0),
+        ));
+        let vehicle = app
+            .world_mut()
+            .spawn((
+                Vehicle,
+                VehicleVelocity::default(),
+                VehicleAcceleration::default(),
+                VehicleWanderRotation::default(),
+                Transform::default(),
+            ))
+            .id();
+        let mut accelerations = vec![];
+        for mass in [1.0, 4.0] {
+            app.world_mut().resource_mut::<GlobalState>().vehicle_mass = mass;
+            app.world_mut()
+                .get_mut::<VehicleAcceleration>(vehicle)
+                .unwrap()
+                .0 = Vector3::zeros();
+            app.update();
+            accelerations.push(app.world().get::<VehicleAcceleration>(vehicle).unwrap().0);
+        }
+        assert!(accelerations[0].x > 0.0);
+        assert!((accelerations[0] - accelerations[1] * 4.0).magnitude() < 1e-4);
+    }
+
+    #[test]
     fn world_scale_keeps_density_above_the_reference_count() {
         assert_eq!(world_scale(0), 1.0);
         assert_eq!(world_scale(100), 1.0);
@@ -668,7 +694,7 @@ mod tests {
             .init_resource::<Time>()
             .add_systems(Update, update);
         let mut acceleration = VehicleAcceleration::default();
-        acceleration.apply_force(Vector3::new(1e6, -2e6, 3e6), &VehicleMass(1.0));
+        acceleration.apply_force(Vector3::new(1e6, -2e6, 3e6), 1.0);
         let entity = app
             .world_mut()
             .spawn((
@@ -702,11 +728,12 @@ mod tests {
             vehicle_seperation_distance: 4.0,
             vehicle_alignment_distance: 30.0,
             vehicle_cohesion_distance: 20.0,
+            vehicle_mass: 1.0,
             ..default()
         }
     }
 
-    fn flock_once(vehicles: &[(Vec3, Vector3<f32>, f32)], use_octree: bool) -> Vec<Vector3<f32>> {
+    fn flock_once(vehicles: &[(Vec3, Vector3<f32>)], use_octree: bool) -> Vec<Vector3<f32>> {
         let mut app = App::new();
         app.insert_resource(GlobalState {
             use_octree,
@@ -720,14 +747,13 @@ mod tests {
         );
         let entities: Vec<_> = vehicles
             .iter()
-            .map(|&(position, velocity, mass)| {
+            .map(|&(position, velocity)| {
                 app.world_mut()
                     .spawn((
                         Vehicle,
                         VehicleVelocity(velocity),
                         VehicleAcceleration::default(),
                         Transform::from_translation(position),
-                        VehicleMass(mass),
                         VehicleWanderRotation::default(),
                     ))
                     .id()
@@ -770,7 +796,7 @@ mod tests {
                     rng.random_range(-40.0..40.0),
                     rng.random_range(-40.0..40.0),
                 );
-                (position, velocity, rng.random_range(0.5..2.0))
+                (position, velocity)
             })
             .collect();
         let naive = flock_once(&vehicles, false);
@@ -799,7 +825,7 @@ mod tests {
     fn octree_flocking_handles_empty_and_degenerate_bounds() {
         assert!(flock_once(&[], true).is_empty());
         for count in [1, 32] {
-            let vehicles = vec![(Vec3::new(240.0, -230.0, 120.0), Vector3::x(), 1.0); count];
+            let vehicles = vec![(Vec3::new(240.0, -230.0, 120.0), Vector3::x()); count];
             assert_eq!(flock_once(&vehicles, true), flock_once(&vehicles, false));
         }
     }
@@ -929,7 +955,6 @@ mod tests {
                         Vehicle,
                         VehicleVelocity(velocity),
                         VehicleAcceleration::default(),
-                        VehicleMass(1.0),
                         VehicleWanderRotation::default(),
                         Transform::from_translation(position),
                     ));

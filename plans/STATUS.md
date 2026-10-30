@@ -11,7 +11,7 @@ No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting. A
 1. **GPU-side measurement at very high counts.** At 30,000 vehicles the CPU is no longer saturated but frames still take about 25–30 ms; capture a Metal frame or an Instruments GPU trace to see whether rendering (one glTF scene instance per vehicle) is the limit. Counts above 30,000 are unmeasured. Finding: F10.
 2. **CI.** A small workflow running format, tests and the release build, if the project gets collaborators. Finding: F12.
 
-Smaller follow-ups (no plan needed): retune `vehicle_max_speed`, `vehicle_wander_speed` and separation by eye (wander mode settles near 25 units/s against a max of 80; large flocks compress until some cones overlap; behavior is frame-rate independent, so tuning holds at any FPS); look at the app at startup and confirm the camera frames the flock (automated window capture lacks screen-recording permission); apply the mass slider to existing vehicles (F08).
+Smaller follow-ups (no plan needed): retune `vehicle_max_speed`, `vehicle_wander_speed` and separation by eye (wander mode settles near 25 units/s against a max of 80; large flocks compress until some cones overlap; behavior is frame-rate independent, so tuning holds at any FPS); look at the app at startup and confirm the camera frames the flock (automated window capture lacks screen-recording permission).
 
 ## Original review findings
 
@@ -26,11 +26,11 @@ Smaller follow-ups (no plan needed): retune `vehicle_max_speed`, `vehicle_wander
 | F05 | Cohesion distance measured after normalization | Resolved: numerical-safety plan |
 | F06 | Per-axis speed clamp allows √3 × max speed | Resolved: numerical-safety plan |
 | F07 | No explicit system order | Resolved in `262dc33` (chained spawn, cleanup, steering, integration) |
-| F08 | Mass slider affects only new vehicles | Outstanding: small follow-up |
+| F08 | Mass slider affects only new vehicles | Resolved: per-vehicle `VehicleMass` removed; steering reads `GlobalState::vehicle_mass` (test `mass_slider_applies_to_existing_vehicles`) |
 | F09 | Benchmark disabled; visibility toggle affects only new vehicles | Resolved: benchmark plan (headless `flocking_benchmark`; checkbox removed) |
 | F10 | Naive default mode is quadratic up to the 50,000 slider | Resolved up to 10,000 vehicles: octree default and count-scaled world (3.7 ms per step at 10,000); above 10,000 unmeasured (future task 1) |
 | F11 | Historical dependencies do not build on current toolchains | Resolved in `21769fd` and `262dc33` (Bevy 0.20.1, Rust 1.99.1) |
-| F12 | No automated tests or CI | Partly resolved: 22 regression tests; no CI |
+| F12 | No automated tests or CI | Partly resolved: 24 regression tests; no CI (optional future task 2) |
 | F13 | Unused direct dependencies | Resolved in `262dc33` |
 | F14 | Advisory matches in the lockfile | Resolved in `262dc33`: `cargo deny check advisories` passes for the native target |
 
