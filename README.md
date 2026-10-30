@@ -19,7 +19,7 @@ python3 scripts/smoke-native.py
 The smoke check opens the app for ten seconds and then closes it. It requires
 a desktop session with graphics support; it checks startup, not flocking correctness
 or performance. Rust regression tests cover camera input, target selection, vehicle cleanup,
-and numerical safety of steering (finite values, magnitude speed limit, cohesion arrival).
+the instance data sent to the renderer, and numerical safety of steering (finite values, magnitude speed limit, cohesion arrival).
 
 Agent and planning conventions are in `AGENTS.md`, `PLANS.md` and `plans/STATUS.md`.
 
@@ -41,6 +41,11 @@ selected target with WASD, Space and left Shift. Camera and target controls defe
 to the menu when it consumes input. The on-screen Controls panel lists these
 shortcuts and shows Follow ON/OFF. The target turns green while selected and
 returns to red when following is off.
+
+Vehicles are colored by heading (hue from the horizontal direction, lighter when
+climbing), so groups flying together share a color. The faint box marks the walls
+that wandering vehicles steer back into, with a grid on its floor; both, and the
+distance fog, grow with the vehicle count.
 
 For dependency diagnostics, install the separate CLI with
 `cargo install --locked --version 0.20.2 cargo-deny`, then run
@@ -83,6 +88,7 @@ Some sources I used for inspiration and help building this.
 - Octree mode answers exact radius queries, so it finds the same neighbors as the naive mode
 - IO and async task pools get one thread each, so the simulation's parallel queries get the remaining cores
 - The Octree is built in every call of the function "flock" - every time we update the speed of the boids
+- All vehicles are drawn with one instanced draw call: one entity holds per-vehicle position and rotation, uploaded to a reused GPU buffer each frame (`src/instancing.rs`, `assets/shaders/vehicle_instancing.wesl`); the shader uses Bevy's PBR lighting and fog
 - Steering, wander and target movement are scaled by frame time (tuned at a 60 Hz reference), so behavior does not depend on FPS
 
 ### Analysis
@@ -99,6 +105,11 @@ vehicle count, so density stays constant; octree mode is the default.
 | 2,000 | 1.46 | 0.84 |
 | 5,000 | 6.75 | 1.82 |
 | 10,000 | 25.53 | 3.74 |
+
+In the app (window, rendering included, no vsync), wandering flocks run at a median
+of about 4.5 ms per frame with 10,000 vehicles and about 12.5 ms with 30,000.
+Following the target at large counts is much slower, because the flock collapses onto
+it (see `plans/STATUS.md`).
 
 Run it with nothing else heavy running (timings roughly double on a busy machine):
 
@@ -117,4 +128,4 @@ neighbors, unknown machine and seed; not comparable with the table above):
 #### Possible improvements
 
 - Updating of Octree (instead of rebuilding)
-- Faster rendering speed (rendering has issues at higher number of boids)
+- Simulating on the GPU (compute shader with a uniform grid) for flocks of hundreds of thousands

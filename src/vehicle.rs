@@ -12,13 +12,14 @@ const REFERENCE_HZ: f32 = 60.0;
 use std::{f32::consts::PI, ops::Mul};
 
 use crate::{
+    instancing::VehicleInstances,
     octree::{Octree, Point},
     target::{Target, TargetSelection},
-    GlobalState, RenderState,
+    GlobalState,
 };
 use na::Vector3;
 
-use bevy::prelude::*;
+use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use rand::RngExt;
 
 pub struct VehiclePlugin;
@@ -45,12 +46,20 @@ struct VehicleSpawner {
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VehicleSpawner>().add_systems(
-            Update,
-            (vehicle_spawner, vehicle_cleanup, movement, update)
-                .chain()
-                .after(crate::target::input_controls),
-        );
+        app.init_resource::<VehicleSpawner>()
+            .add_systems(Startup, spawn_flock)
+            .add_systems(
+                Update,
+                (
+                    vehicle_spawner,
+                    vehicle_cleanup,
+                    movement,
+                    update,
+                    sync_instances,
+                )
+                    .chain()
+                    .after(crate::target::input_controls),
+            );
     }
 }
 
@@ -60,23 +69,42 @@ impl VehicleAcceleration {
     }
 }
 
+// One entity draws every vehicle; see `instancing`.
+fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+    commands.spawn((
+        // A slim dart reads its heading better than the original round cone.
+        Mesh3d(meshes.add(Cone::new(0.7, 2.5).mesh().resolution(8))),
+        VehicleInstances::default(),
+        // The shader places the instances; the entity's own bounds mean nothing.
+        NoFrustumCulling,
+    ));
+}
+
+fn sync_instances(
+    vehicles: Query<&Transform, With<Vehicle>>,
+    mut flock: Single<&mut VehicleInstances>,
+    state: Res<GlobalState>,
+) {
+    flock.0.clear();
+    flock.0.extend(vehicles.iter().map(|transform| {
+        [
+            transform.translation.extend(state.vehicle_size),
+            Vec4::from(transform.rotation),
+        ]
+    }));
+}
+
 fn vehicle_spawner(
     mut commands: Commands,
     mut vehicle_spawner: ResMut<VehicleSpawner>,
     state: Res<GlobalState>,
-    render_state: Res<RenderState>,
 ) {
     while state.vehicle_count > vehicle_spawner.vehicle_count {
-        // Cube at random position
         commands
-            .spawn((
-                WorldAssetRoot(render_state.vehicle_scene.clone()),
-                Transform::from_translation(
-                    (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
-                        * SPAWN_SIZE
-                        * world_scale(state.vehicle_count),
-                ),
-                Visibility::Inherited,
+            .spawn(Transform::from_translation(
+                (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
+                    * SPAWN_SIZE
+                    * world_scale(state.vehicle_count),
             ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
@@ -144,7 +172,7 @@ fn movement(
 
         let limit_wander = state.vehicle_max_speed * state.vehicle_wander_factor;
         let limit_wall_avoid = state.vehicle_max_speed * state.vehicle_wall_avoid_factor;
-        let walls = WORLD_SIZE * world_scale(state.vehicle_count);
+        let walls = walls(state.vehicle_count);
 
         flock(&mut vehicle_query, &state);
 
@@ -229,6 +257,11 @@ fn movement(
             },
         );
     }
+}
+
+// Half-extents of the box that wandering vehicles steer back into.
+pub(crate) fn walls(count: usize) -> Vec3 {
+    WORLD_SIZE * world_scale(count)
 }
 
 // Keeps density constant above REFERENCE_COUNT; smaller counts use the reference world.
@@ -498,6 +531,7 @@ fn flocking_force(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instancing::InstanceData;
     use rand::{rngs::StdRng, SeedableRng};
     use std::time::{Duration, Instant};
 
@@ -987,19 +1021,17 @@ mod tests {
     fn vehicles_spawn_in_the_spawn_cube_with_varied_headings() {
         let mut app = App::new();
         app.init_resource::<GlobalState>()
-            .init_resource::<RenderState>()
             .init_resource::<VehicleSpawner>()
             .add_systems(Startup, crate::configure_global_state)
             .add_systems(Update, vehicle_spawner);
         app.update();
         let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
         let mut negative_axes = [false; 3];
-        for (transform, velocity, visibility) in app
+        for (transform, velocity) in app
             .world_mut()
-            .query::<(&Transform, &VehicleVelocity, &Visibility)>()
+            .query::<(&Transform, &VehicleVelocity)>()
             .iter(app.world())
         {
-            assert_eq!(*visibility, Visibility::Inherited);
             assert!(transform.translation.abs().max_element() <= SPAWN_SIZE / 2.0);
             assert!((velocity.0.magnitude() - max_speed).abs() <= 1e-3);
             for (axis, negative) in negative_axes.iter_mut().enumerate() {
@@ -1010,50 +1042,51 @@ mod tests {
     }
 
     #[test]
-    fn vehicle_count_changes_remove_scene_children() {
+    fn instances_follow_vehicle_transforms_and_count() {
         let mut app = App::new();
         app.init_resource::<GlobalState>()
-            .init_resource::<RenderState>()
             .init_resource::<VehicleSpawner>()
+            .init_resource::<Time>()
             .add_systems(Startup, crate::configure_global_state)
-            .add_systems(Update, (vehicle_spawner, vehicle_cleanup).chain());
-        app.update();
-        assert_eq!(
+            .add_systems(
+                Update,
+                (vehicle_spawner, vehicle_cleanup, update, sync_instances).chain(),
+            );
+        let flock = app.world_mut().spawn(VehicleInstances::default()).id();
+        let sorted = |mut instances: Vec<InstanceData>| {
+            instances.sort_by(|a, b| a[0].x.total_cmp(&b[0].x));
+            instances
+        };
+        for count in [200, 3, 0, 5] {
+            app.world_mut().resource_mut::<GlobalState>().vehicle_count = count;
             app.world_mut()
-                .query::<&Vehicle>()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(1.0 / 60.0));
+            app.update();
+            let size = app.world().resource::<GlobalState>().vehicle_size;
+            let expected: Vec<InstanceData> = app
+                .world_mut()
+                .query_filtered::<&Transform, With<Vehicle>>()
                 .iter(app.world())
-                .count(),
-            200
-        );
-        let parents: Vec<_> = app
-            .world_mut()
-            .query_filtered::<Entity, With<Vehicle>>()
-            .iter(app.world())
-            .collect();
-        let children: Vec<_> = parents
-            .iter()
-            .map(|&parent| app.world_mut().spawn(ChildOf(parent)).id())
-            .collect();
-        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 0;
-        app.update();
-        assert_eq!(
-            app.world_mut()
-                .query::<&Vehicle>()
-                .iter(app.world())
-                .count(),
-            0
-        );
-        assert!(children
-            .iter()
-            .all(|&child| app.world().get_entity(child).is_err()));
-        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 3;
-        app.update();
-        assert_eq!(
-            app.world_mut()
-                .query::<&Vehicle>()
-                .iter(app.world())
-                .count(),
-            3
-        );
+                .map(|transform| {
+                    [
+                        transform.translation.extend(size),
+                        Vec4::from(transform.rotation),
+                    ]
+                })
+                .collect();
+            assert_eq!(expected.len(), count);
+            // Integration ran before the sync: headings are set, not the identity.
+            assert!(expected
+                .iter()
+                .all(|instance| instance[1] != Vec4::from(Quat::IDENTITY)));
+            let instances = app
+                .world()
+                .get::<VehicleInstances>(flock)
+                .unwrap()
+                .0
+                .clone();
+            assert_eq!(sorted(instances), sorted(expected));
+        }
     }
 }

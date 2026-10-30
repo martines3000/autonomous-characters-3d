@@ -1,3 +1,4 @@
+mod instancing;
 mod octree;
 mod target;
 mod vehicle;
@@ -12,16 +13,17 @@ use bevy::{
         PickingSystems,
     },
     prelude::*,
+    render::view::NoIndirectDrawing,
     text::FontSize,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use octree::*;
+use std::f32::consts::FRAC_PI_2;
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(Color::srgb(0.2, 0.2, 0.2)))
+        .insert_resource(ClearColor(BACKGROUND))
         .init_resource::<GlobalState>()
-        .init_resource::<RenderState>()
         .insert_resource(MeshPickingSettings {
             require_markers: true,
             ..default()
@@ -58,10 +60,10 @@ fn main() {
             DefaultPanOrbitCameraPlugins,
             EguiPlugin::default(),
             FrameTimeDiagnosticsPlugin::default(),
+            instancing::InstancingPlugin,
             vehicle::VehiclePlugin,
             target::TargetPlugin,
         ))
-        .add_systems(PreStartup, load_assets)
         .add_systems(Startup, (setup_scene, configure_global_state))
         .add_systems(
             PreUpdate,
@@ -69,7 +71,7 @@ fn main() {
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
-        .add_systems(Update, fps_update_system)
+        .add_systems(Update, (fps_update_system, draw_world))
         .add_systems(EguiPrimaryContextPass, ui)
         .run();
 }
@@ -184,11 +186,24 @@ pub fn test_octree_visualization(
     }
 }
 
+const BACKGROUND: Color = Color::srgb(0.035, 0.045, 0.07);
+const WALL_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.3);
+const GRID_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.12);
+// Fog visibility as a multiple of the wall half-width, so it scales with the world.
+const FOG_VISIBILITY: f32 = 5.0;
+
 fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(GlobalAmbientLight {
-        brightness: 1000.0,
+        brightness: 400.0,
         ..default()
     });
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 6000.0,
+            ..default()
+        },
+        Transform::from_xyz(1.0, 2.0, 0.6).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
     let font = TextFont {
         font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
         font_size: FontSize::Px(60.0),
@@ -217,10 +232,35 @@ fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((
         Camera3d::default(),
         Msaa::Sample4,
+        // The instanced flock draws directly, not through indirect draw buffers.
+        NoIndirectDrawing,
+        DistanceFog {
+            color: BACKGROUND,
+            ..default()
+        },
         Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
         PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
         MeshPickingCamera,
     ));
+}
+
+// Wall outline and a floor grid for orientation; fog follows the world size.
+fn draw_world(mut gizmos: Gizmos, state: Res<GlobalState>, mut fogs: Query<&mut DistanceFog>) {
+    let walls = vehicle::walls(state.vehicle_count);
+    gizmos.cube(Transform::from_scale(walls * 2.0), WALL_COLOR);
+    let cell = walls.z / 2.5;
+    gizmos.grid(
+        Isometry3d::new(
+            Vec3::new(0.0, -walls.y, 0.0),
+            Quat::from_rotation_x(FRAC_PI_2),
+        ),
+        UVec2::new((walls.x * 2.0 / cell) as u32, 5),
+        Vec2::splat(cell),
+        GRID_COLOR,
+    );
+    for mut fog in &mut fogs {
+        fog.falloff = FogFalloff::from_visibility(walls.x * FOG_VISIBILITY);
+    }
 }
 
 #[derive(Default, Resource)]
@@ -278,15 +318,6 @@ fn configure_global_state(mut state: ResMut<GlobalState>) {
 
     state.use_octree = true;
     state.octree_size = 100;
-}
-
-#[derive(Default, Resource)]
-struct RenderState {
-    vehicle_scene: Handle<WorldAsset>,
-}
-
-fn load_assets(mut render_state: ResMut<RenderState>, asset_server: Res<AssetServer>) {
-    render_state.vehicle_scene = asset_server.load("cone.glb#Scene0");
 }
 
 fn ui(
