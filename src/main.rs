@@ -232,10 +232,6 @@ struct GlobalState {
     // Toggle mode
     use_octree: bool,
     octree_size: usize,
-    benchmark_mode: bool,
-    benchmark_step: usize,
-    benchmark_results: Vec<f32>,
-    benchmark_current_results: Vec<f32>,
 }
 
 fn configure_global_state(mut state: ResMut<GlobalState>) {
@@ -262,11 +258,6 @@ fn configure_global_state(mut state: ResMut<GlobalState>) {
 
     state.use_octree = false;
     state.octree_size = 100;
-
-    state.benchmark_mode = false;
-    state.benchmark_step = 0;
-    state.benchmark_results = vec![];
-    state.benchmark_current_results = vec![];
 }
 
 #[derive(Default, Resource)]
@@ -367,9 +358,6 @@ fn ui(
                     .text("octree size")
                     .step_by(1.0),
             );
-
-            ui.separator();
-            ui.checkbox(&mut state.benchmark_mode, "Benchmark mode");
         });
     let following = targets.iter().any(|selection| selection.0);
     egui::Window::new("Controls")

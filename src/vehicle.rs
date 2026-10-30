@@ -52,7 +52,6 @@ impl Plugin for VehiclePlugin {
                 .chain()
                 .after(crate::target::input_controls),
         );
-        // .add_system(benchmark);
     }
 }
 
@@ -77,11 +76,7 @@ fn vehicle_spawner(
                     (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
                         * SPAWN_SIZE,
                 ),
-                if state.benchmark_mode {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Inherited
-                },
+                Visibility::Inherited,
             ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
@@ -321,44 +316,6 @@ struct OctreeData {
     pub velocity: Vector3<f32>,
 }
 
-fn benchmark(time: Res<Time>, mut state: ResMut<GlobalState>) {
-    if state.benchmark_mode {
-        state.benchmark_current_results.push(time.delta_secs());
-
-        // We check for 1010 because we want to skip the first 10 frames
-        if state.benchmark_current_results.len() >= 110 {
-            let mean = state.benchmark_current_results.iter().skip(10).sum::<f32>() / 100.0;
-            state.benchmark_results.push(mean);
-            state.benchmark_current_results.clear();
-            state.benchmark_step += 1;
-
-            println!(
-                "Octree [{}]: {} {}",
-                state.use_octree, state.vehicle_count, mean
-            );
-
-            if state.vehicle_count >= 100000 {
-                if state.use_octree {
-                    state.benchmark_mode = false;
-                    state.vehicle_count = 0;
-                }
-
-                state.use_octree = !state.use_octree;
-            }
-
-            let step = if state.vehicle_count < 1000 {
-                100
-            } else if state.vehicle_count < 10000 {
-                1000
-            } else {
-                10000
-            };
-
-            state.vehicle_count += step;
-        }
-    }
-}
-
 fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
     if state.use_octree {
         let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
@@ -540,7 +497,101 @@ fn flocking_force(
 mod tests {
     use super::*;
     use rand::{rngs::StdRng, SeedableRng};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    #[ignore = "headless performance measurement; run in release with --nocapture --test-threads=1"]
+    fn flocking_benchmark() {
+        const SEED: u64 = 0xB01D5;
+        const WARMUP: usize = 10;
+        const STEPS: usize = 60;
+        let dt = Duration::from_secs_f64(1.0 / 60.0);
+
+        for workload in ["app", "density"] {
+            for count in [200, 1000, 2000, 5000, 10000] {
+                let edge = if workload == "app" {
+                    SPAWN_SIZE
+                } else {
+                    SPAWN_SIZE * (count as f32 / 200.0).cbrt()
+                };
+                let mut rng = StdRng::seed_from_u64(SEED);
+                let vehicles: Vec<_> = (0..count)
+                    .map(|_| {
+                        let position = (Vec3::new(rng.random(), rng.random(), rng.random())
+                            - Vec3::splat(0.5))
+                            * edge;
+                        let z: f32 = rng.random_range(-1.0..=1.0);
+                        let angle: f32 = rng.random_range(0.0..2.0 * PI);
+                        let radius = (1.0 - z * z).sqrt();
+                        let direction = Vector3::new(radius * angle.cos(), radius * angle.sin(), z);
+                        (position, direction)
+                    })
+                    .collect();
+
+                for use_octree in [false, true] {
+                    let mut app = App::new();
+                    app.init_resource::<GlobalState>()
+                        .init_resource::<Time>()
+                        .add_systems(Startup, crate::configure_global_state);
+                    app.update();
+                    let (max_speed, mass, octree_size) = {
+                        let mut state = app.world_mut().resource_mut::<GlobalState>();
+                        state.use_octree = use_octree;
+                        (
+                            state.vehicle_max_speed,
+                            state.vehicle_mass,
+                            state.octree_size,
+                        )
+                    };
+                    if workload == "app" && count == 200 && !use_octree {
+                        let threads = bevy::tasks::ComputeTaskPool::get().thread_num();
+                        println!(
+                            "flocking_benchmark: seed={SEED:#x} threads={threads} octree_size={octree_size} dt={:.9}s warmup={WARMUP} steps={STEPS} (large naive cases capped at ~20s)",
+                            dt.as_secs_f64()
+                        );
+                    }
+                    app.add_systems(Update, (movement, update).chain());
+                    app.world_mut()
+                        .spawn((Target, TargetSelection(false), Transform::default()));
+                    for &(position, direction) in &vehicles {
+                        app.world_mut().spawn((
+                            Vehicle,
+                            VehicleVelocity(direction * max_speed),
+                            VehicleAcceleration::default(),
+                            VehicleMass(mass),
+                            VehicleWanderRotation::default(),
+                            Transform::from_translation(position),
+                        ));
+                    }
+                    for _ in 0..WARMUP {
+                        app.world_mut().resource_mut::<Time>().advance_by(dt);
+                        app.update();
+                    }
+                    let mut timings = Vec::with_capacity(STEPS);
+                    let mut elapsed = Duration::ZERO;
+                    for _ in 0..STEPS {
+                        app.world_mut().resource_mut::<Time>().advance_by(dt);
+                        let start = Instant::now();
+                        app.update();
+                        let duration = start.elapsed();
+                        timings.push(duration.as_secs_f64() * 1000.0);
+                        elapsed += duration;
+                        if !use_octree && count >= 5000 && elapsed >= Duration::from_secs(20) {
+                            break;
+                        }
+                    }
+                    timings.sort_by(f64::total_cmp);
+                    let steps = timings.len();
+                    let median = (timings[(steps - 1) / 2] + timings[steps / 2]) / 2.0;
+                    let p95 = timings[(95 * steps).div_ceil(100) - 1];
+                    let mode = if use_octree { "octree" } else { "naive" };
+                    println!(
+                        "workload={workload} count={count} mode={mode} median_ms={median:.3} p95_ms={p95:.3} steps={steps}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn constant_acceleration_is_frame_rate_independent() {
@@ -894,11 +945,12 @@ mod tests {
         app.update();
         let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
         let mut negative_axes = [false; 3];
-        for (transform, velocity) in app
+        for (transform, velocity, visibility) in app
             .world_mut()
-            .query::<(&Transform, &VehicleVelocity)>()
+            .query::<(&Transform, &VehicleVelocity, &Visibility)>()
             .iter(app.world())
         {
+            assert_eq!(*visibility, Visibility::Inherited);
             assert!(transform.translation.abs().max_element() <= SPAWN_SIZE / 2.0);
             assert!((velocity.0.magnitude() - max_speed).abs() <= 1e-3);
             for (axis, negative) in negative_axes.iter_mut().enumerate() {
