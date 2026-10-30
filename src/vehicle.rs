@@ -4,6 +4,8 @@ extern crate nalgebra as na;
 const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
 // Edge length of the cube around the origin where vehicles spawn.
 const SPAWN_SIZE: f32 = 100.0;
+// Tuning and headless measurements used this reference rate.
+const REFERENCE_HZ: f32 = 60.0;
 
 use std::{f32::consts::PI, ops::Mul};
 
@@ -46,7 +48,9 @@ impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VehicleSpawner>().add_systems(
             Update,
-            (vehicle_spawner, vehicle_cleanup, movement, update).chain(),
+            (vehicle_spawner, vehicle_cleanup, movement, update)
+                .chain()
+                .after(crate::target::input_controls),
         );
         // .add_system(benchmark);
     }
@@ -112,6 +116,7 @@ fn movement(
     mut vehicle_query: SteeringQuery,
     target_query: Query<(&Transform, &TargetSelection), (With<Target>, Without<Vehicle>)>,
     state: Res<GlobalState>,
+    time: Res<Time>,
 ) {
     let (target_transform, selection) = target_query.single().unwrap();
     let mut wander = true;
@@ -142,7 +147,7 @@ fn movement(
             },
         );
     } else {
-        let wander_delta = PI / 16.0;
+        let wander_delta = wander_step_bound(time.delta_secs());
 
         let limit_wander = state.vehicle_max_speed * state.vehicle_wander_factor;
         let limit_wall_avoid = state.vehicle_max_speed * state.vehicle_wall_avoid_factor;
@@ -235,6 +240,10 @@ fn movement(
     }
 }
 
+fn wander_step_bound(dt: f32) -> f32 {
+    PI / 16.0 * (dt * REFERENCE_HZ).sqrt()
+}
+
 fn vehicle_cleanup(
     mut commands: Commands,
     mut vehicle_spawner: ResMut<VehicleSpawner>,
@@ -270,7 +279,7 @@ fn update(
     vehicle_query
         .par_iter_mut()
         .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
-            velocity.0 += acceleration.0;
+            velocity.0 += acceleration.0 * (time.delta_secs() * REFERENCE_HZ);
             limit(&mut velocity.0, state.vehicle_max_speed);
 
             transform.translation.x += velocity.0.x * time.delta_secs();
@@ -531,6 +540,93 @@ fn flocking_force(
 mod tests {
     use super::*;
     use rand::{rngs::StdRng, SeedableRng};
+    use std::time::Duration;
+
+    #[test]
+    fn constant_acceleration_is_frame_rate_independent() {
+        let acceleration = Vector3::new(0.1, -0.2, 0.3);
+        let expected = Vector3::new(6.0, -12.0, 18.0);
+        for steps in [30_u64, 60, 120, 144] {
+            let mut app = App::new();
+            app.insert_resource(flocking_state())
+                .init_resource::<Time>()
+                .add_systems(Update, update);
+            let entity = app
+                .world_mut()
+                .spawn((
+                    Vehicle,
+                    VehicleVelocity::default(),
+                    VehicleAcceleration::default(),
+                    Transform::default(),
+                ))
+                .id();
+            for step in 1..=steps {
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_to(Duration::from_nanos(step * 1_000_000_000 / steps));
+                app.world_mut()
+                    .get_mut::<VehicleAcceleration>(entity)
+                    .unwrap()
+                    .0 = acceleration;
+                app.update();
+            }
+            assert_eq!(
+                app.world().resource::<Time>().elapsed(),
+                Duration::from_secs(1)
+            );
+            let velocity = app.world().get::<VehicleVelocity>(entity).unwrap().0;
+            assert!(
+                (velocity - expected).magnitude() < 1e-4,
+                "{steps} steps: {velocity:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wander_step_bound_scales_with_square_root_of_time() {
+        let reference = PI / 16.0;
+        assert_eq!(wander_step_bound(1.0 / 60.0), reference);
+        assert_eq!(wander_step_bound(0.0), 0.0);
+        for (dt, scale) in [
+            (1.0 / 30.0, 2.0_f32.sqrt()),
+            (1.0 / 120.0, 0.5_f32.sqrt()),
+            (1.0 / 144.0, (60.0_f32 / 144.0).sqrt()),
+            (0.25, 15.0_f32.sqrt()),
+        ] {
+            assert!((wander_step_bound(dt) - reference * scale).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn large_time_step_with_large_force_stays_finite_and_within_max_speed() {
+        let mut app = App::new();
+        app.insert_resource(flocking_state())
+            .init_resource::<Time>()
+            .add_systems(Update, update);
+        let mut acceleration = VehicleAcceleration::default();
+        acceleration.apply_force(Vector3::new(1e6, -2e6, 3e6), &VehicleMass(1.0));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Vehicle,
+                VehicleVelocity::default(),
+                acceleration,
+                Transform::default(),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(250));
+        app.update();
+        let velocity = app.world().get::<VehicleVelocity>(entity).unwrap().0;
+        let transform = app.world().get::<Transform>(entity).unwrap();
+        assert!(velocity.iter().all(|value| value.is_finite()));
+        assert!(
+            velocity.magnitude() <= app.world().resource::<GlobalState>().vehicle_max_speed + 1e-3
+        );
+        assert!(transform.translation.is_finite());
+        assert!(transform.rotation.is_finite());
+    }
 
     fn flocking_state() -> GlobalState {
         GlobalState {

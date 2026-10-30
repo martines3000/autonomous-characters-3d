@@ -19,6 +19,7 @@ pub struct TargetSelection(pub bool);
 
 const IDLE_COLOR: Color = Color::srgba(1.0, 0.0, 0.0, 0.1);
 const FOLLOW_COLOR: Color = Color::srgba(0.1, 1.0, 0.2, 0.35);
+const TARGET_SPEED: f32 = 120.0;
 
 fn spawn_target(
     mut commands: Commands,
@@ -76,11 +77,12 @@ fn select_target(
 }
 
 // Move the selected target relative to the current camera.
-fn input_controls(
+pub(crate) fn input_controls(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut target_query: Query<(&mut Transform, &TargetSelection), With<Target>>,
     camera_query: Query<&Transform, (With<Camera3d>, Without<Target>)>,
     mut contexts: EguiContexts,
+    time: Res<Time>,
 ) {
     if contexts
         .ctx_mut()
@@ -106,7 +108,10 @@ fn input_controls(
         }
     }
     let camera_transform = camera_query.single().unwrap();
-    transform.translation += camera_transform.rotation * direction.normalize_or_zero() * 2.0;
+    transform.translation += camera_transform.rotation
+        * direction.normalize_or_zero()
+        * TARGET_SPEED
+        * time.delta_secs();
 }
 
 #[cfg(test)]
@@ -125,10 +130,46 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn held_key_movement_is_frame_rate_independent() {
+        for steps in [30_u64, 60, 120, 144] {
+            let mut app = App::new();
+            app.init_resource::<EguiUserTextures>()
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Time>()
+                .add_systems(Update, input_controls);
+            let target = app
+                .world_mut()
+                .spawn((Target, TargetSelection(true), Transform::default()))
+                .id();
+            app.world_mut()
+                .spawn((Camera3d::default(), Transform::default()));
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyW);
+            for step in 1..=steps {
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_to(Duration::from_nanos(step * 1_000_000_000 / steps));
+                app.update();
+            }
+            assert_eq!(
+                app.world().resource::<Time>().elapsed(),
+                Duration::from_secs(1)
+            );
+            let position = app.world().get::<Transform>(target).unwrap().translation;
+            assert!(
+                position.distance(Vec3::NEG_Z * 120.0) < 1e-3,
+                "{steps} steps: {position:?}"
+            );
+        }
+    }
+
+    #[test]
     fn target_selection_controls_movement_and_color() {
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Time>()
             .init_resource::<Assets<StandardMaterial>>()
             .add_systems(Update, (input_controls, update_target_color))
             .add_observer(select_target);
@@ -179,6 +220,9 @@ mod tests {
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyW);
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(1.0 / 60.0));
         app.update();
         assert_eq!(
             app.world()
