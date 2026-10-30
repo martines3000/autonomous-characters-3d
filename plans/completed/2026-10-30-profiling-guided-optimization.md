@@ -129,3 +129,4 @@ Revision notes:
 
 - 2026-10-30: Initial plan.
 - 2026-10-30: Recorded profiles, decisions, sweep, before/after frame times; closed with GPU measurement deferred.
+- 2026-10-30: Correction from `2026-10-30-high-count-frame-limit.md`: the after-change 30,000-vehicle runs above were taken at load average 13; at load 5–8 the same build measures 18.7–18.9 ms (about 53 FPS), a clear improvement over 27.8 ms. The app is CPU-bound on its critical path there, not GPU-bound.
