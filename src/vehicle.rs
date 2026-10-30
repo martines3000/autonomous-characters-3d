@@ -1,6 +1,6 @@
 extern crate nalgebra as na;
 
-// Wall half-extents: wandering vehicles steer back inside, and the octree root spans them.
+// Wall half-extents: wandering vehicles steer back inside.
 const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
 // Edge length of the cube around the origin where vehicles spawn.
 const SPAWN_SIZE: f32 = 100.0;
@@ -93,19 +93,23 @@ fn vehicle_spawner(
     }
 }
 
+type SteeringQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static VehicleVelocity,
+        &'static mut VehicleAcceleration,
+        &'static mut Transform,
+        &'static VehicleMass,
+        &'static mut VehicleWanderRotation,
+    ),
+    With<Vehicle>,
+>;
+
 // Boids algorithm
 fn movement(
-    mut vehicle_query: Query<
-        (
-            Entity,
-            &VehicleVelocity,
-            &mut VehicleAcceleration,
-            &mut Transform,
-            &VehicleMass,
-            &mut VehicleWanderRotation,
-        ),
-        With<Vehicle>,
-    >,
+    mut vehicle_query: SteeringQuery,
     target_query: Query<(&Transform, &TargetSelection), (With<Target>, Without<Vehicle>)>,
     state: Res<GlobalState>,
 ) {
@@ -346,39 +350,48 @@ fn benchmark(time: Res<Time>, mut state: ResMut<GlobalState>) {
     }
 }
 
-fn flock(
-    vehicle_query: &mut Query<
-        (
-            Entity,
-            &VehicleVelocity,
-            &mut VehicleAcceleration,
-            &mut Transform,
-            &VehicleMass,
-            &mut VehicleWanderRotation,
-        ),
-        With<Vehicle>,
-    >,
-    state: &Res<GlobalState>,
-) {
+fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
     if state.use_octree {
+        let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
+            return;
+        };
+        let mut min = first_transform.translation;
+        let mut max = min;
+        for (_, _, _, transform, _, _) in vehicle_query.iter() {
+            min = min.min(transform.translation);
+            max = max.max(transform.translation);
+        }
+        for axis in 0..3 {
+            if min[axis] == max[axis] {
+                let padding = 0.001_f32.max(min[axis].abs() * f32::EPSILON);
+                min[axis] -= padding;
+                max[axis] += padding;
+            }
+        }
+        let center = min * 0.5 + max * 0.5;
         let mut octree = Octree::new(state.octree_size);
         octree.create_root(
             Point {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
+                x: center.x,
+                y: center.y,
+                z: center.z,
             },
             Point {
-                x: -WORLD_SIZE.x,
-                y: -WORLD_SIZE.y,
-                z: -WORLD_SIZE.z,
+                x: min.x,
+                y: min.y,
+                z: min.z,
             },
             Point {
-                x: WORLD_SIZE.x,
-                y: WORLD_SIZE.y,
-                z: WORLD_SIZE.z,
+                x: max.x,
+                y: max.y,
+                z: max.z,
             },
         );
+        let radius = state
+            .vehicle_seperation_distance
+            .max(state.vehicle_alignment_distance)
+            .max(state.vehicle_cohesion_distance)
+            * state.vehicle_size;
 
         // Insert all vehicles into octree
         for (entity, velocity, _, transform, _, _) in &mut vehicle_query.iter() {
@@ -399,11 +412,14 @@ fn flock(
         // Find all neighbors for each vehicle
         vehicle_query.par_iter_mut().for_each(
             |(entity, velocity, mut acceleration, transform, mass, _)| {
-                let neighbors = octree.find_neighbors(&Point {
-                    x: transform.translation.x,
-                    y: transform.translation.y,
-                    z: transform.translation.z,
-                });
+                let neighbors = octree.query_radius(
+                    &Point {
+                        x: transform.translation.x,
+                        y: transform.translation.y,
+                        z: transform.translation.z,
+                    },
+                    radius,
+                );
 
                 let force = flocking_force(
                     transform.translation.into(),
@@ -514,6 +530,7 @@ fn flocking_force(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{rngs::StdRng, SeedableRng};
 
     fn flocking_state() -> GlobalState {
         GlobalState {
@@ -526,6 +543,95 @@ mod tests {
             vehicle_alignment_distance: 30.0,
             vehicle_cohesion_distance: 20.0,
             ..default()
+        }
+    }
+
+    fn flock_once(vehicles: &[(Vec3, Vector3<f32>, f32)], use_octree: bool) -> Vec<Vector3<f32>> {
+        let mut app = App::new();
+        app.insert_resource(GlobalState {
+            use_octree,
+            octree_size: 4,
+            vehicle_size: 1.25,
+            ..flocking_state()
+        })
+        .add_systems(
+            Update,
+            |mut query: SteeringQuery, state: Res<GlobalState>| flock(&mut query, &state),
+        );
+        let entities: Vec<_> = vehicles
+            .iter()
+            .map(|&(position, velocity, mass)| {
+                app.world_mut()
+                    .spawn((
+                        Vehicle,
+                        VehicleVelocity(velocity),
+                        VehicleAcceleration::default(),
+                        Transform::from_translation(position),
+                        VehicleMass(mass),
+                        VehicleWanderRotation::default(),
+                    ))
+                    .id()
+            })
+            .collect();
+        app.update();
+        entities
+            .into_iter()
+            .map(|entity| app.world().get::<VehicleAcceleration>(entity).unwrap().0)
+            .collect()
+    }
+
+    #[test]
+    fn octree_flocking_matches_naive_on_seeded_world() {
+        let mut rng = StdRng::seed_from_u64(0xB01D5);
+        let vehicles: Vec<_> = (0..384)
+            .map(|i| {
+                let position = match i % 4 {
+                    0 => Vec3::new(
+                        rng.random_range(-320.0..320.0),
+                        rng.random_range(-320.0..320.0),
+                        rng.random_range(-160.0..160.0),
+                    ),
+                    cluster => {
+                        let center = match cluster {
+                            1 => Vec3::new(240.0, -230.0, 120.0),
+                            2 => Vec3::ZERO,
+                            _ => Vec3::new(-40.0, 10.0, -5.0),
+                        };
+                        center
+                            + Vec3::new(
+                                rng.random_range(-2.0..2.0),
+                                rng.random_range(-2.0..2.0),
+                                rng.random_range(-2.0..2.0),
+                            )
+                    }
+                };
+                let velocity = Vector3::new(
+                    rng.random_range(-40.0..40.0),
+                    rng.random_range(-40.0..40.0),
+                    rng.random_range(-40.0..40.0),
+                );
+                (position, velocity, rng.random_range(0.5..2.0))
+            })
+            .collect();
+        let naive = flock_once(&vehicles, false);
+        let octree = flock_once(&vehicles, true);
+        for (i, (expected, actual)) in naive.iter().zip(&octree).enumerate() {
+            for axis in 0..3 {
+                let tolerance = 1e-4_f32.max(expected[axis].abs() * 1e-5);
+                assert!(
+                    (actual[axis] - expected[axis]).abs() <= tolerance,
+                    "vehicle {i}, axis {axis}: naive={expected:?}, octree={actual:?}, tolerance={tolerance}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn octree_flocking_handles_empty_and_degenerate_bounds() {
+        assert!(flock_once(&[], true).is_empty());
+        for count in [1, 32] {
+            let vehicles = vec![(Vec3::new(240.0, -230.0, 120.0), Vector3::x(), 1.0); count];
+            assert_eq!(flock_once(&vehicles, true), flock_once(&vehicles, false));
         }
     }
 

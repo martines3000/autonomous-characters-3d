@@ -80,6 +80,7 @@ Some sources I used for inspiration and help building this.
 - The Naive and the Octree implementation include multithreading
 - Menu for changing the parameters of the simulation
 - Octree stores append-only nodes and points in vectors, with indices linking them
+- Octree mode answers exact radius queries, so it finds the same neighbors as the naive mode
 - The Octree is built in every call of the function "flock" - every time we update the speed of the boids
 
 ### Analysis

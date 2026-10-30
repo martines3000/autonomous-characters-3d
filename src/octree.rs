@@ -1,3 +1,6 @@
+// Sixteen splits resolve 1/65,536 of each root axis while bounding coincident-point growth.
+const MAX_DEPTH: usize = 16;
+
 // Entries are append-only until the whole tree is discarded.
 pub struct Octree<T> {
     pub max_points: usize,
@@ -54,72 +57,34 @@ impl<T> Octree<T> {
         let index = self.points.len();
         self.points.push(PointWrapper { data, point });
 
-        let point = self.points.get(index).unwrap();
-
         if let Some(root) = self.root {
             let mut node_index = root;
-            let mut node = self.nodes.get(node_index).unwrap();
-
+            let mut depth = 0;
             loop {
-                // Check if point is in bounds
-                // if !Self::is_point_in_bounds(node, &point.point) {
-                //     continue;
-                // }
-
-                if node.children.len() == 0 {
-                    let mut_node = self.nodes.get_mut(node_index).unwrap();
-                    mut_node.points.push(index);
-
-                    if mut_node.points.len() > self.max_points {
+                let node = &mut self.nodes[node_index];
+                if node.children.is_empty() {
+                    node.points.push(index);
+                    if node.points.len() > self.max_points && depth < MAX_DEPTH {
                         self.subdivide(node_index);
                     }
-
                     break;
-                } else {
-                    let mut selected_index = -1;
-                    let mut min_distance = f32::MAX;
-
-                    for (i, child_index) in node.children.iter().enumerate() {
-                        let child = self.nodes.get(*child_index).unwrap();
-
-                        // Find closest center to child
-                        let distance = (child.bounds.0.x - point.point.x).powi(2)
-                            + (child.bounds.0.y - point.point.y).powi(2)
-                            + (child.bounds.0.z - point.point.z).powi(2);
-
-                        if distance < min_distance {
-                            min_distance = distance;
-                            selected_index = i as i32;
-                        }
-
-                        // if Self::is_point_in_bounds(child, &point.point) {
-                        //     selected_index = i as i32;
-                        //     break;
-                        // }
-                    }
-
-                    if selected_index == -1 {
-                        break;
-                    }
-
-                    node_index = node.children[selected_index as usize];
-                    node = self.nodes.get(node_index).unwrap();
                 }
+                node_index = self.child_for_point(node_index, &self.points[index].point);
+                depth += 1;
             }
         }
 
         index
     }
 
-    fn is_point_in_bounds(node: &OctreeNode, point: &Point) -> bool {
-        let (_, min, max) = &node.bounds;
-
-        point.x >= min.x
-            && point.x <= max.x
-            && point.y >= min.y
-            && point.y <= max.y
-            && point.z >= min.z
-            && point.z <= max.z
+    fn child_for_point(&self, node_index: usize, point: &Point) -> usize {
+        let node = &self.nodes[node_index];
+        let center = &node.bounds.0;
+        // Squared center distances can round to ties across a split in thin boxes.
+        let octant = usize::from(point.x >= center.x)
+            | (usize::from(point.y < center.y) << 1)
+            | (usize::from(point.z < center.z) << 2);
+        node.children[octant]
     }
 
     fn subdivide(&mut self, node_index: usize) {
@@ -285,41 +250,10 @@ impl<T> Octree<T> {
         let points = mut_node.points.clone();
         mut_node.points = vec![];
 
-        // Fix points
-        // for child_index in children.iter() {
-        // let child = self.nodes.get_mut(*child_index).unwrap();
-
-        // Assign points to children nodes (closest center)
-        for point_index in points.iter() {
-            let point = &self.points.get(*point_index).unwrap().point;
-            let mut closest_child_index = None;
-            let mut closest_distance = f32::MAX;
-
-            for child_index in children.iter() {
-                let child = self.nodes.get(*child_index).unwrap();
-                let distance = (child.bounds.0.x - point.x).powi(2)
-                    + (child.bounds.0.y - point.y).powi(2)
-                    + (child.bounds.0.z - point.z).powi(2);
-
-                if distance < closest_distance {
-                    closest_child_index = Some(child_index);
-                    closest_distance = distance;
-                }
-            }
-
-            let closest_child = self.nodes.get_mut(*closest_child_index.unwrap()).unwrap();
-            closest_child.points.push(*point_index);
+        for point_index in points {
+            let child_index = self.child_for_point(node_index, &self.points[point_index].point);
+            self.nodes[child_index].points.push(point_index);
         }
-
-        // for point_index in points.iter() {
-        //     if Octree::<T>::is_point_in_bounds(
-        //         &child,
-        //         &self.points.get(*point_index).unwrap().point,
-        //     ) {
-        //         child.points.push(*point_index);
-        //     }
-        // }
-        // }
     }
 
     fn create_node(&mut self, center: Point, min: Point, max: Point) -> usize {
@@ -334,52 +268,47 @@ impl<T> Octree<T> {
         index
     }
 
-    pub fn find_neighbors(&self, point: &Point) -> Vec<&T> {
+    /// Returns points at squared distance <= radius²; inserted points must lie in the root bounds.
+    pub fn query_radius(&self, point: &Point, radius: f32) -> Vec<&T> {
         let mut neighbors = vec![];
-
-        if let Some(root) = self.root {
-            let node_index = root;
-            let mut node = self.nodes.get(node_index).unwrap();
-
-            while node.children.len() > 0 {
-                // Find the child that contains the point (closest center)
-                let mut closest_child_index = None;
-                let mut closest_distance = f32::MAX;
-
-                for child_index in node.children.iter() {
-                    let child = self.nodes.get(*child_index).unwrap();
-                    let distance = (child.bounds.0.x - point.x).powi(2)
-                        + (child.bounds.0.y - point.y).powi(2)
-                        + (child.bounds.0.z - point.z).powi(2);
-
-                    if distance < closest_distance {
-                        closest_child_index = Some(child_index);
-                        closest_distance = distance;
-                    }
-
-                    // if Octree::<T>::is_point_in_bounds(&child, point) {
-                    //     node_index = *child_index;
-                    //     node = self.nodes.get(node_index).unwrap();
-                    //     break;
-                    // }
+        let Some(root) = self.root else {
+            return vec![];
+        };
+        let radius_squared = radius * radius;
+        let mut pending = vec![root];
+        while let Some(node_index) = pending.pop() {
+            let node = &self.nodes[node_index];
+            let (_, min, max) = &node.bounds;
+            let distance_to_bounds_squared = (point.x - point.x.clamp(min.x, max.x)).powi(2)
+                + (point.y - point.y.clamp(min.y, max.y)).powi(2)
+                + (point.z - point.z.clamp(min.z, max.z)).powi(2);
+            if distance_to_bounds_squared > radius_squared {
+                continue;
+            }
+            for &point_index in &node.points {
+                let candidate = &self.points[point_index];
+                let distance_squared = (candidate.point.x - point.x).powi(2)
+                    + (candidate.point.y - point.y).powi(2)
+                    + (candidate.point.z - point.z).powi(2);
+                if distance_squared <= radius_squared {
+                    neighbors.push(point_index);
                 }
-
-                node = self.nodes.get(*closest_child_index.unwrap()).unwrap();
             }
-
-            for point_index in node.points.iter() {
-                let neighbor = self.points.get(*point_index).unwrap();
-
-                neighbors.push(&neighbor.data);
-            }
+            pending.extend(&node.children);
         }
+        // Preserve insertion order so flocking sums match the naive iteration order.
+        neighbors.sort_unstable();
         neighbors
+            .into_iter()
+            .map(|index| &self.points[index].data)
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     #[test]
     fn point_indices_and_leaf_contents_survive_subdivision() {
@@ -412,7 +341,199 @@ mod tests {
         assert_eq!(tree.nodes.len(), 9);
         for (index, point) in tree.points.iter().enumerate() {
             assert_eq!(point.data, index);
-            assert_eq!(tree.find_neighbors(&point.point), vec![&index]);
+            assert_eq!(tree.query_radius(&point.point, 0.0), vec![&index]);
         }
+    }
+
+    #[test]
+    fn radius_queries_match_brute_force_on_seeded_points() {
+        let mut rng = StdRng::seed_from_u64(0x0C7B01D);
+        let uniform: Vec<_> = (0..256)
+            .map(|_| Point {
+                x: rng.random_range(-10.0..10.0),
+                y: rng.random_range(-10.0..10.0),
+                z: rng.random_range(-10.0..10.0),
+            })
+            .collect();
+        let clustered: Vec<_> = (0..128)
+            .map(|_| Point {
+                x: 0.25 + rng.random_range(-1e-4..1e-4),
+                y: -0.5 + rng.random_range(-1e-4..1e-4),
+                z: 0.75 + rng.random_range(-1e-4..1e-4),
+            })
+            .collect();
+        let mut split_planes_and_boundary = vec![];
+        for x in [-10.0, 0.0, 10.0] {
+            for y in [-10.0, 0.0, 10.0] {
+                for z in [-10.0, 0.0, 10.0] {
+                    split_planes_and_boundary.push(Point { x, y, z });
+                }
+            }
+        }
+        for axis in 0..3 {
+            for _ in 0..32 {
+                let mut coords = [
+                    rng.random_range(-10.0..10.0),
+                    rng.random_range(-10.0..10.0),
+                    rng.random_range(-10.0..10.0),
+                ];
+                coords[axis] = 0.0;
+                split_planes_and_boundary.push(Point {
+                    x: coords[0],
+                    y: coords[1],
+                    z: coords[2],
+                });
+            }
+        }
+        split_planes_and_boundary.push(Point {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        let coincident = vec![
+            Point {
+                x: 0.25,
+                y: -0.5,
+                z: 0.75
+            };
+            64
+        ];
+        for points in [uniform, clustered, split_planes_and_boundary, coincident] {
+            let mut queries = points.clone();
+            queries.push(Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            queries.extend((0..64).map(|_| Point {
+                x: rng.random_range(-15.0..15.0),
+                y: rng.random_range(-15.0..15.0),
+                z: rng.random_range(-15.0..15.0),
+            }));
+            for capacity in [1, 2, 8] {
+                let mut tree = Octree::new(capacity);
+                tree.create_root(
+                    Point {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    Point {
+                        x: -10.0,
+                        y: -10.0,
+                        z: -10.0,
+                    },
+                    Point {
+                        x: 10.0,
+                        y: 10.0,
+                        z: 10.0,
+                    },
+                );
+                for (index, point) in points.iter().enumerate() {
+                    tree.insert(point.clone(), index);
+                }
+                for query in &queries {
+                    for radius in [0.0_f32, 0.001, 0.5, 1.0, 5.0, 40.0] {
+                        let expected: Vec<_> = points
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, p)| {
+                                (p.x - query.x).powi(2)
+                                    + (p.y - query.y).powi(2)
+                                    + (p.z - query.z).powi(2)
+                                    <= radius * radius
+                            })
+                            .map(|(index, _)| index)
+                            .collect();
+                        let mut actual: Vec<_> = tree
+                            .query_radius(query, radius)
+                            .into_iter()
+                            .copied()
+                            .collect();
+                        actual.sort_unstable();
+                        assert_eq!(
+                            actual, expected,
+                            "capacity={capacity}, query={query:?}, radius={radius}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thin_root_keeps_points_in_containing_children() {
+        let mut tree = Octree::new(1);
+        tree.create_root(
+            Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Point {
+                x: -1.0,
+                y: -1e6,
+                z: -1.0,
+            },
+            Point {
+                x: 1.0,
+                y: 1e6,
+                z: 1.0,
+            },
+        );
+        let point = Point {
+            x: 0.5,
+            y: 1e6,
+            z: 0.5,
+        };
+        for index in 0..3 {
+            tree.insert(point.clone(), index);
+        }
+        for node in &tree.nodes {
+            let (_, min, max) = &node.bounds;
+            for &index in &node.points {
+                let p = &tree.points[index].point;
+                assert!(p.x >= min.x && p.x <= max.x);
+                assert!(p.y >= min.y && p.y <= max.y);
+                assert!(p.z >= min.z && p.z <= max.z);
+            }
+        }
+        let mut actual: Vec<_> = tree
+            .query_radius(&point, 0.0)
+            .into_iter()
+            .copied()
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(actual, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn coincident_points_have_bounded_node_count() {
+        let mut tree = Octree::new(2);
+        let point = Point {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(tree.query_radius(&point, 1.0).is_empty());
+        tree.create_root(
+            point.clone(),
+            Point {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
+            Point {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        );
+        for index in 0..5000 {
+            tree.insert(point.clone(), index);
+        }
+        // One occupied path: the root plus eight children for each permitted split.
+        assert_eq!(tree.nodes.len(), 1 + 8 * MAX_DEPTH);
+        assert_eq!(tree.query_radius(&point, 0.0).len(), 5000);
     }
 }
