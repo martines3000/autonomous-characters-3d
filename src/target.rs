@@ -1,97 +1,159 @@
-use bevy::{pbr::NotShadowCaster, prelude::*};
-use bevy_mod_picking::{PickableBundle, Selection};
-
-use crate::RenderState;
+use bevy::{light::NotShadowCaster, picking::pointer::PointerButton, prelude::*};
+use bevy_egui::EguiContexts;
 
 pub struct TargetPlugin;
 
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
-        app.add_startup_system(spawn_target)
-            .add_system(input_controls);
+        app.add_systems(Startup, spawn_target)
+            .add_systems(Update, input_controls)
+            .add_observer(select_target);
     }
 }
 
 #[derive(Component)]
 pub struct Target;
 
+#[derive(Component, Default)]
+pub struct TargetSelection(pub bool);
+
 fn spawn_target(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut render_state: ResMut<RenderState>,
 ) {
-    let mesh_handle = meshes.get(&render_state.mesh);
-
-    if mesh_handle.is_none() {
-        render_state.mesh = meshes.add(Mesh::from(shape::Icosphere {
-            radius: 2.0,
-            subdivisions: 3,
-        }));
-    }
-
-    commands
-        .spawn(SpatialBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-            ..Default::default()
-        })
-        .insert(PbrBundle {
-            mesh: meshes.get_handle(&render_state.mesh),
-            material: materials.add(StandardMaterial {
-                base_color: Color::rgba(1.0, 0.0, 0.0, 0.1).into(),
-                alpha_mode: AlphaMode::Blend,
-                ..Default::default()
-            }),
-            ..Default::default()
-        })
-        .insert(NotShadowCaster)
-        .insert(Target)
-        .insert(PickableBundle::default());
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(2.0).mesh().ico(3).unwrap())),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.0, 0.0, 0.1),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        })),
+        Transform::default(),
+        NotShadowCaster,
+        Target,
+        TargetSelection::default(),
+        Pickable::default(),
+    ));
 }
 
-// Move 3D object WASD + Space + Shift based on current camera position
-fn input_controls(
-    keyboard_input: Res<Input<KeyCode>>,
-    mut target_query: Query<(&mut Transform, &Selection), With<Target>>,
-    camera_query: Query<&Transform, (With<Camera>, Without<Target>)>,
+fn select_target(
+    click: On<PointerClick>,
+    mut targets: Query<(Entity, &mut TargetSelection), With<Target>>,
+    mut contexts: EguiContexts,
 ) {
-    let (mut transform, selection) = target_query.get_single_mut().unwrap();
-
-    if !selection.selected() {
+    if click.button != PointerButton::Primary
+        || contexts
+            .ctx_mut()
+            .is_ok_and(|ctx| ctx.egui_wants_pointer_input())
+    {
         return;
     }
+    for (entity, mut selection) in &mut targets {
+        selection.0 = entity == click.original_event_target();
+    }
+}
 
+// Move the selected target relative to the current camera.
+fn input_controls(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut target_query: Query<(&mut Transform, &TargetSelection), With<Target>>,
+    camera_query: Query<&Transform, (With<Camera3d>, Without<Target>)>,
+    mut contexts: EguiContexts,
+) {
+    if contexts
+        .ctx_mut()
+        .is_ok_and(|ctx| ctx.egui_wants_keyboard_input())
+    {
+        return;
+    }
+    let (mut transform, selection) = target_query.single_mut().unwrap();
+    if !selection.0 {
+        return;
+    }
     let mut direction = Vec3::ZERO;
-
-    if keyboard_input.pressed(KeyCode::W) {
-        direction += Vec3::new(0.0, 0.0, -1.0);
+    for (key, axis) in [
+        (KeyCode::KeyW, Vec3::NEG_Z),
+        (KeyCode::KeyS, Vec3::Z),
+        (KeyCode::KeyA, Vec3::NEG_X),
+        (KeyCode::KeyD, Vec3::X),
+        (KeyCode::Space, Vec3::Y),
+        (KeyCode::ShiftLeft, Vec3::NEG_Y),
+    ] {
+        if keyboard_input.pressed(key) {
+            direction += axis;
+        }
     }
+    let camera_transform = camera_query.single().unwrap();
+    transform.translation += camera_transform.rotation * direction.normalize_or_zero() * 2.0;
+}
 
-    if keyboard_input.pressed(KeyCode::S) {
-        direction += Vec3::new(0.0, 0.0, 1.0);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{
+        camera::NormalizedRenderTarget,
+        picking::{
+            backend::HitData,
+            events::Pointer,
+            pointer::{Location, PointerId},
+        },
+        window::WindowRef,
+    };
+    use bevy_egui::EguiUserTextures;
+    use std::time::Duration;
+
+    #[test]
+    fn primary_click_selects_target_and_background_clears_it() {
+        let mut app = App::new();
+        app.init_resource::<EguiUserTextures>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update, input_controls)
+            .add_observer(select_target);
+        let window = app.world_mut().spawn_empty().id();
+        let target = app
+            .world_mut()
+            .spawn((Target, TargetSelection::default(), Transform::default()))
+            .id();
+        app.world_mut()
+            .spawn((Camera3d::default(), Transform::default()));
+        let click = |entity, button| PointerClick {
+            entity,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: NormalizedRenderTarget::Window(
+                        WindowRef::Entity(window).normalize(None).unwrap(),
+                    ),
+                    position: Vec2::ZERO,
+                },
+            ),
+            button,
+            hit: HitData::new(window, 1.0, None, None),
+            duration: Duration::from_millis(50),
+            count: 1,
+        };
+        app.world_mut()
+            .trigger(click(target, PointerButton::Primary));
+        assert!(app.world().get::<TargetSelection>(target).unwrap().0);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(target).unwrap().translation,
+            Vec3::NEG_Z * 2.0
+        );
+        app.world_mut()
+            .trigger(click(window, PointerButton::Secondary));
+        assert!(app.world().get::<TargetSelection>(target).unwrap().0);
+        app.world_mut()
+            .trigger(click(window, PointerButton::Primary));
+        assert!(!app.world().get::<TargetSelection>(target).unwrap().0);
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(target).unwrap().translation,
+            Vec3::NEG_Z * 2.0
+        );
     }
-
-    if keyboard_input.pressed(KeyCode::A) {
-        direction += Vec3::new(-1.0, 0.0, 0.0);
-    }
-
-    if keyboard_input.pressed(KeyCode::D) {
-        direction += Vec3::new(1.0, 0.0, 0.0);
-    }
-
-    if keyboard_input.pressed(KeyCode::Space) {
-        direction += Vec3::new(0.0, 1.0, 0.0);
-    }
-
-    if keyboard_input.pressed(KeyCode::LShift) {
-        direction += Vec3::new(0.0, -1.0, 0.0);
-    }
-
-    if direction.length_squared() > 0.0 {
-        direction = direction.normalize();
-    }
-
-    let camera_transform = camera_query.single();
-
-    transform.translation += camera_transform.rotation * direction * 2.0;
 }

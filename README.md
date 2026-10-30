@@ -5,7 +5,7 @@
 ## Local native development
 
 Use `rustup` and run commands from the repository root. `rust-toolchain.toml`
-selects the tested Rust 1.95.0 toolchain, including formatting and lint tools.
+selects the tested Rust 1.99.1 toolchain, including formatting and lint tools.
 On macOS, Xcode command-line tools are also required.
 
 ```sh
@@ -18,7 +18,7 @@ python3 scripts/smoke-native.py
 
 The smoke check opens the app for ten seconds and then closes it. It requires
 a desktop session with graphics support; it checks startup, not flocking correctness
-or performance. There are currently no Rust unit tests.
+or performance. Rust regression tests cover camera input, target selection, and vehicle cleanup.
 
 `cargo run` supplies the asset root. When running the binary directly, set it:
 
@@ -26,17 +26,22 @@ or performance. There are currently no Rust unit tests.
 CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d
 ```
 
-This native baseline retains Bevy 0.9.1 and the existing simulation behavior.
-The lockfile updates only `coreaudio-sys` and `bindgen` for current macOS SDKs.
-A macOS window-size workaround handles invalid resize events from the old
-windowing library until the Bevy/windowing upgrade.
+Native development uses Bevy 0.20.1 and bevy_egui 0.43.1. Camera control and
+mesh picking use Bevy's built-in plugins; audio is disabled because the app does
+not use it. The original native compatibility build is preserved on the
+`codex/native-baseline` branch. The HTML report describes the original codebase;
+web builds are outside this migration's scope.
+
+Controls: right-drag to orbit, middle-drag to pan, and scroll to zoom. Left-click
+the red target to select it; click the background to return to wandering. Move a
+selected target with WASD, Space and left Shift. Camera and target controls defer
+to the menu when it consumes input.
 
 For dependency diagnostics, install the separate CLI with
 `cargo install --locked --version 0.20.2 cargo-deny`, then run
 `cargo deny --locked --target aarch64-apple-darwin check advisories` on this Mac.
-Existing advisories are expected;
-this command does not upgrade packages. `samply` is an optional native CPU
-profiler; after installing version 0.13.1, run
+No advisory suppressions are configured. This command does not upgrade packages.
+`samply` is an optional native CPU profiler; after installing version 0.13.1, run
 `CARGO_MANIFEST_DIR="$PWD" samply record ./target/release/autonomous-characters-3d`.
 For source line information, first rebuild with
 `CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --locked`.
@@ -60,18 +65,16 @@ Some sources I used for inspiration and help building this.
 
 ### Language and libraries used
 
-- Rust 1.95.0 (tested local development toolchain)
-- Bevy 0.9.1 (game engine)
-- Rayon 1.6.1 (multithreading)
-- Nalgebra 0.31.4 (linear algebra library)
+- Rust 1.99.1 (tested local development toolchain)
+- Bevy 0.20.1 (game engine)
+- Bevy parallel queries (multithreading)
+- Nalgebra 0.35.0 (linear algebra library)
 
 ### Implementation
 
 - The Naive and the Octree implementation include multithreading
 - Menu for changing the parameters of the simulation
-- Octree is implemented as an "arena allocated tree"
-  - [Example 1](https://dev.to/deciduously/no-more-tears-no-more-knots-arena-allocated-trees-in-rust-44k6)
-  - [Example 2 - library](https://github.com/fitzgen/generational-arena)
+- Octree stores append-only nodes and points in vectors, with indices linking them
 - The Octree is built in every call of the function "flock" - every time we update the speed of the boids
 
 ### Analysis

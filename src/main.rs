@@ -3,68 +3,103 @@ mod target;
 mod vehicle;
 
 use bevy::{
-    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
+    camera_controller::pan_orbit_camera::prelude::*,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    picking::{
+        mesh_picking::{MeshPickingCamera, MeshPickingSettings},
+        PickingSystems,
+    },
     prelude::*,
+    text::FontSize,
 };
-use bevy_mod_picking::*;
+use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use octree::*;
-use smooth_bevy_cameras::{
-    controllers::orbit::{OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin},
-    LookTransformPlugin,
-};
-
-use bevy_egui::{egui, EguiContext, EguiPlugin};
 
 fn main() {
-    let mut app = App::new();
-    app.insert_resource(ClearColor(Color::rgb(0.2, 0.2, 0.2)))
-        .insert_resource(Msaa { samples: 4 })
+    App::new()
+        .insert_resource(ClearColor(Color::srgb(0.2, 0.2, 0.2)))
         .init_resource::<GlobalState>()
         .init_resource::<RenderState>()
-        .add_startup_system_to_stage(StartupStage::PreStartup, load_assets)
-        .add_startup_system(setup_scene)
-        .add_startup_system(configure_global_state)
-        // .add_startup_system(test_octree_visualization)
-        // .add_system(bevy::window::close_on_esc)
+        .insert_resource(MeshPickingSettings {
+            require_markers: true,
+            ..default()
+        })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            window: WindowDescriptor {
+            primary_window: Some(Window {
                 title: "Autonomous characters 3D".to_string(),
-                width: 1280.,
-                height: 720.,
-                canvas: Some("#bevy".to_owned()),
-                fit_canvas_to_parent: true,
+                resolution: (1280, 720).into(),
                 ..default()
-            },
+            }),
             ..default()
         }))
-        .add_plugins(DefaultPickingPlugins)
-        .add_plugin(LookTransformPlugin)
-        .add_plugin(OrbitCameraPlugin::default())
-        .add_plugin(EguiPlugin)
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .add_plugin(vehicle::VehiclePlugin)
-        .add_plugin(target::TargetPlugin)
-        .add_system(fps_update_system)
-        .add_system(ui);
-
-    #[cfg(target_os = "macos")]
-    app.add_system_to_stage(CoreStage::First, sync_native_window_sizes);
-
-    app.run();
+        .add_plugins((
+            MeshPickingPlugin,
+            DefaultPanOrbitCameraPlugins,
+            EguiPlugin::default(),
+            FrameTimeDiagnosticsPlugin::default(),
+            vehicle::VehiclePlugin,
+            target::TargetPlugin,
+        ))
+        .add_systems(PreStartup, load_assets)
+        .add_systems(Startup, (setup_scene, configure_global_state))
+        .add_systems(
+            PreUpdate,
+            camera_input
+                .after(PickingSystems::Last)
+                .before(PanOrbitCamera::update_camera_positions),
+        )
+        .add_systems(Update, fps_update_system)
+        .add_systems(EguiPrimaryContextPass, ui)
+        .run();
 }
 
-#[cfg(target_os = "macos")]
-fn sync_native_window_sizes(
-    native_windows: NonSend<bevy::winit::WinitWindows>,
-    mut windows: ResMut<Windows>,
+// The built-in controller deliberately leaves input mapping to the application.
+fn camera_input(
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut contexts: EguiContexts,
+    mut cameras: Query<&mut PanOrbitCamera>,
+    mut previous_mode: Local<u8>,
 ) {
-    // shortcut: winit 0.27 reports invalid macOS resize events; remove after its upgrade.
-    for window in windows.iter_mut() {
-        if let Some(native_window) = native_windows.get_window(window.id()) {
-            let size = native_window.inner_size();
-            window.update_actual_size_from_backend(size.width, size.height);
+    let blocked = contexts
+        .ctx_mut()
+        .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
+    let mode = if blocked {
+        0
+    } else if buttons.pressed(MouseButton::Right) {
+        1
+    } else if buttons.pressed(MouseButton::Middle) {
+        2
+    } else if scroll.delta.y != 0.0 {
+        3
+    } else {
+        0
+    };
+    for mut camera in &mut cameras {
+        if mode != *previous_mode {
+            camera.end_move();
+            match mode {
+                1 => camera.start_orbit(None),
+                2 => camera.start_pan(None),
+                3 => camera.start_zoom(None),
+                _ => (),
+            }
+        }
+        if mode == 1 || mode == 2 {
+            camera.send_screenspace_input(motion.delta);
+        }
+        if !blocked && scroll.delta.y != 0.0 {
+            let scale = if scroll.unit == MouseScrollUnit::Line {
+                150.0
+            } else {
+                1.0
+            };
+            camera.send_zoom_input(scroll.delta.y * scale);
         }
     }
+    *previous_mode = mode;
 }
 
 pub fn test_octree_visualization(
@@ -103,7 +138,7 @@ pub fn test_octree_visualization(
     }
 
     // Print nodes and their points
-    for (_, node) in octree.nodes.iter() {
+    for node in &octree.nodes {
         println!("Bounds: {:?}", node.bounds);
 
         for point_index in node.points.iter() {
@@ -113,75 +148,58 @@ pub fn test_octree_visualization(
     }
 
     // Draw nodes
-    for (_, node) in octree.nodes.iter() {
+    for node in &octree.nodes {
         if node.children.len() > 0 {
             continue;
         }
         let (center, min, max) = &node.bounds;
 
-        let mesh = meshes.add(Mesh::from(shape::Cube {
-            size: 8.0 * (max.x - min.x) / 10.0,
-        }));
+        let mesh = meshes.add(Cuboid::from_length(8.0 * (max.x - min.x) / 10.0));
 
-        commands.spawn(PbrBundle {
-            mesh,
-            material: materials.add(Color::rgb(0.0, 0.0, 1.0).into()),
-            transform: Transform::from_translation(Vec3::new(center.x, center.y, center.z)),
-            ..Default::default()
-        });
+        commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(materials.add(Color::srgb(0.0, 0.0, 1.0))),
+            Transform::from_translation(Vec3::new(center.x, center.y, center.z)),
+        ));
     }
 }
 
 fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // AMBIENT LIGHT
-    commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 1.0,
+    commands.insert_resource(GlobalAmbientLight {
+        brightness: 1000.0,
+        ..default()
     });
-
-    // FPS TEXT
-    commands.spawn((
-        // Create a TextBundle that has a Text with a list of sections.
-        TextBundle::from_sections([
-            TextSection::new(
-                "FPS: ",
-                TextStyle {
-                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                    font_size: 60.0,
-                    color: Color::WHITE,
-                },
-            ),
-            TextSection::from_style(TextStyle {
-                font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 60.0,
-                color: Color::GOLD,
-            }),
-        ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            position: UiRect {
-                top: Val::Px(5.0),
-                left: Val::Px(5.0),
+    let font = TextFont {
+        font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
+        font_size: FontSize::Px(60.0),
+        ..default()
+    };
+    commands
+        .spawn((
+            Text::new("FPS: "),
+            font.clone(),
+            TextColor(Color::WHITE),
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(5),
+                right: px(5),
                 ..default()
             },
-            ..Default::default()
-        }),
-        FpsText,
-    ));
-
-    // ORBIT CAMERA
-    commands
-        .spawn(Camera3dBundle::default())
-        .insert(OrbitCameraBundle::new(
-            OrbitCameraController {
-                mouse_rotate_sensitivity: Vec2 { x: 0.5, y: 0.5 },
-                mouse_translate_sensitivity: Vec2 { x: 0.5, y: 0.5 },
-                ..Default::default()
-            },
-            Vec3::new(-2.0, 5.0, 5.0),
-            Vec3::new(0., 0., 0.),
         ))
-        .insert(PickingCameraBundle::default());
+        .with_child((
+            TextSpan::new(""),
+            font,
+            TextColor(Color::srgb(1.0, 0.84, 0.0)),
+            FpsText,
+        ));
+    let eye = Vec3::new(-2.0, 5.0, 5.0);
+    commands.spawn((
+        Camera3d::default(),
+        Msaa::Sample4,
+        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
+        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+        MeshPickingCamera,
+    ));
 }
 
 #[derive(Default, Resource)]
@@ -252,32 +270,17 @@ fn configure_global_state(mut state: ResMut<GlobalState>) {
 
 #[derive(Default, Resource)]
 struct RenderState {
-    mesh: Handle<Mesh>,
-    vehicle_material: Handle<StandardMaterial>,
-    vehicle_mesh: Handle<Mesh>,
-    vehicle_scene: Handle<Scene>,
+    vehicle_scene: Handle<WorldAsset>,
 }
 
-fn load_assets(
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut render_state: ResMut<RenderState>,
-    asset_server: Res<AssetServer>,
-) {
-    render_state.vehicle_material = materials.add(StandardMaterial {
-        base_color: Color::rgba(0.0, 0.0, 1.0, 1.0).into(),
-        ..Default::default()
-    });
-
-    render_state.vehicle_mesh = meshes.add(Mesh::from(shape::Cube { size: 1.0 }));
-
+fn load_assets(mut render_state: ResMut<RenderState>, asset_server: Res<AssetServer>) {
     render_state.vehicle_scene = asset_server.load("cone.glb#Scene0");
 }
 
-fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
+fn ui(mut egui_context: EguiContexts, mut state: ResMut<GlobalState>) -> Result {
     egui::Window::new("Menu")
         .default_size([300.0, 100.0])
-        .show(egui_context.ctx_mut(), |ui| {
+        .show(egui_context.ctx_mut()?, |ui| {
             ui.label("Vehicle count");
             ui.add(egui::Slider::new(&mut state.vehicle_count, 0..=50000).text("count"));
             ui.label("Vehicle mass");
@@ -362,18 +365,97 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
             ui.separator();
             ui.checkbox(&mut state.benchmark_mode, "Benchmark mode");
         });
+    Ok(())
 }
 
 #[derive(Component)]
 struct FpsText;
 
-fn fps_update_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text, With<FpsText>>) {
-    for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                // Update the value of the second section
-                text.sections[1].value = format!("{value:.2}");
-            }
+fn fps_update_system(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut TextSpan, With<FpsText>>,
+) {
+    if let Some(value) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+    {
+        for mut text in &mut query {
+            **text = format!("{value:.2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{
+        camera::{CameraProjection, ComputedCameraValues, RenderTargetInfo},
+        window::RequestRedraw,
+    };
+    use bevy_egui::EguiUserTextures;
+    use std::time::Duration;
+
+    #[test]
+    fn camera_mouse_adapter_applies_orbit_and_scroll() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<EguiUserTextures>()
+            .init_resource::<Time<Real>>()
+            .add_message::<RequestRedraw>()
+            .add_systems(
+                Update,
+                (camera_input, PanOrbitCamera::update_camera_positions).chain(),
+            );
+        let eye = Vec3::new(-2.0, 5.0, 5.0);
+        let original = Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y);
+        let projection = PerspectiveProjection {
+            aspect_ratio: 1280.0 / 720.0,
+            ..default()
+        };
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Camera {
+                    computed: ComputedCameraValues {
+                        clip_from_view: projection.get_clip_from_view(),
+                        target_info: Some(RenderTargetInfo {
+                            physical_size: UVec2::new(1280, 720),
+                            scale_factor: 1.0,
+                        }),
+                        ..default()
+                    },
+                    ..default()
+                },
+                Projection::Perspective(projection),
+                PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+                original,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(16));
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta
+            .y = 1.0;
+        app.update();
+        let zoomed = *app.world().get::<Transform>(camera).unwrap();
+        assert!(zoomed.translation.distance(original.translation) > 0.001);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::ZERO;
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(50.0, 25.0);
+        app.update();
+        let orbited = app.world().get::<Transform>(camera).unwrap();
+        assert!(orbited.rotation.angle_between(zoomed.rotation) > 0.001);
+        assert!(orbited.translation.is_finite());
     }
 }

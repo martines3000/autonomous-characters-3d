@@ -33,7 +33,7 @@ with tempfile.TemporaryFile(mode="w+") as log:
     log.seek(0)
     output = log.read()
 
-errors = ("panicked at", "wgpu error:", "path not found:", "fatal runtime error")
-if exited or any(error in output for error in errors):
+errors = ("panicked at", "error", "failed to load", "path not found")
+if exited or any(error in output.lower() for error in errors):
     raise SystemExit(f"Native startup smoke check failed:\n{output}")
 print("PASS: native release survived 10 seconds without startup or asset errors.")

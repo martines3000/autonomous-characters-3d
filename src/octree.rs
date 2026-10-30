@@ -1,11 +1,9 @@
-use generational_arena::{Arena, Index};
-
-// Octree struct usng arena allocator
+// Entries are append-only until the whole tree is discarded.
 pub struct Octree<T> {
     pub max_points: usize,
-    pub root: Option<Index>,
-    pub nodes: Arena<OctreeNode>,
-    pub points: Arena<PointWrapper<T>>,
+    pub root: Option<usize>,
+    pub nodes: Vec<OctreeNode>,
+    pub points: Vec<PointWrapper<T>>,
 }
 
 #[derive(Debug)]
@@ -22,8 +20,8 @@ pub struct Point {
 }
 
 pub struct OctreeNode {
-    pub points: Vec<Index>,
-    pub children: Vec<Index>,
+    pub points: Vec<usize>,
+    pub children: Vec<usize>,
     // center, min, max
     pub bounds: (Point, Point, Point),
 }
@@ -34,13 +32,14 @@ impl<T> Octree<T> {
         Self {
             max_points: max_points,
             root: None,
-            nodes: Arena::new(),
-            points: Arena::new(),
+            nodes: Vec::new(),
+            points: Vec::new(),
         }
     }
 
-    pub fn create_root(&mut self, center: Point, min: Point, max: Point) -> Index {
-        let index = self.nodes.insert(OctreeNode {
+    pub fn create_root(&mut self, center: Point, min: Point, max: Point) -> usize {
+        let index = self.nodes.len();
+        self.nodes.push(OctreeNode {
             points: vec![],
             children: vec![],
             bounds: (center, min, max),
@@ -51,8 +50,9 @@ impl<T> Octree<T> {
         index
     }
 
-    pub fn insert(&mut self, point: Point, data: T) -> Index {
-        let index = self.points.insert(PointWrapper { data, point });
+    pub fn insert(&mut self, point: Point, data: T) -> usize {
+        let index = self.points.len();
+        self.points.push(PointWrapper { data, point });
 
         let point = self.points.get(index).unwrap();
 
@@ -122,7 +122,7 @@ impl<T> Octree<T> {
             && point.z <= max.z
     }
 
-    fn subdivide(&mut self, node_index: Index) {
+    fn subdivide(&mut self, node_index: usize) {
         let node = self.nodes.get(node_index).unwrap();
         let (center, min, max) = node.bounds.clone();
         let mut children = vec![];
@@ -279,7 +279,7 @@ impl<T> Octree<T> {
             },
         ));
 
-        let mut mut_node = self.nodes.get_mut(node_index).unwrap();
+        let mut_node = self.nodes.get_mut(node_index).unwrap();
         mut_node.children = children.clone();
 
         let points = mut_node.points.clone();
@@ -322,21 +322,23 @@ impl<T> Octree<T> {
         // }
     }
 
-    fn create_node(&mut self, center: Point, min: Point, max: Point) -> Index {
+    fn create_node(&mut self, center: Point, min: Point, max: Point) -> usize {
         let node = OctreeNode {
             bounds: (center, min, max),
             children: vec![],
             points: vec![],
         };
 
-        self.nodes.insert(node)
+        let index = self.nodes.len();
+        self.nodes.push(node);
+        index
     }
 
     pub fn find_neighbors(&self, point: &Point) -> Vec<&T> {
         let mut neighbors = vec![];
 
         if let Some(root) = self.root {
-            let mut node_index = root;
+            let node_index = root;
             let mut node = self.nodes.get(node_index).unwrap();
 
             while node.children.len() > 0 {
@@ -372,5 +374,45 @@ impl<T> Octree<T> {
             }
         }
         neighbors
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_indices_and_leaf_contents_survive_subdivision() {
+        let mut tree = Octree::new(1);
+        tree.create_root(
+            Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Point {
+                x: -10.0,
+                y: -10.0,
+                z: -10.0,
+            },
+            Point {
+                x: 10.0,
+                y: 10.0,
+                z: 10.0,
+            },
+        );
+        for i in 0..8 {
+            let point = Point {
+                x: if i & 1 == 0 { -5.0 } else { 5.0 },
+                y: if i & 2 == 0 { -5.0 } else { 5.0 },
+                z: if i & 4 == 0 { -5.0 } else { 5.0 },
+            };
+            assert_eq!(tree.insert(point, i), i);
+        }
+        assert_eq!(tree.nodes.len(), 9);
+        for (index, point) in tree.points.iter().enumerate() {
+            assert_eq!(point.data, index);
+            assert_eq!(tree.find_neighbors(&point.point), vec![&index]);
+        }
     }
 }

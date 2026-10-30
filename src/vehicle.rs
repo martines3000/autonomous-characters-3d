@@ -10,14 +10,13 @@ use std::{
 
 use crate::{
     octree::{Octree, Point},
-    target::Target,
+    target::{Target, TargetSelection},
     GlobalState, RenderState,
 };
-use bevy_mod_picking::Selection;
 use na::{SimdPartialOrd, Vector3};
 
 use bevy::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 
 pub struct VehiclePlugin;
 
@@ -46,11 +45,10 @@ struct VehicleSpawner {
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VehicleSpawner>()
-            .add_system(vehicle_spawner)
-            .add_system(vehicle_cleanup)
-            .add_system(movement)
-            .add_system(update);
+        app.init_resource::<VehicleSpawner>().add_systems(
+            Update,
+            (vehicle_spawner, vehicle_cleanup, movement, update).chain(),
+        );
         // .add_system(benchmark);
     }
 }
@@ -63,29 +61,26 @@ impl VehicleAcceleration {
 
 fn vehicle_spawner(
     mut commands: Commands,
-    meshes: Res<Assets<Mesh>>,
-    materials: Res<Assets<StandardMaterial>>,
     mut vehicle_spawner: ResMut<VehicleSpawner>,
     state: Res<GlobalState>,
     render_state: Res<RenderState>,
-    assets_server: Res<AssetServer>,
 ) {
     while state.vehicle_count > vehicle_spawner.vehicle_count {
         // Cube at random position
         commands
-            .spawn(SceneBundle {
-                // scene: assets_server.load("cone.glb#Scene0"),
-                scene: render_state.vehicle_scene.clone(),
-                transform: Transform::from_translation(Vec3::new(
+            .spawn((
+                WorldAssetRoot(render_state.vehicle_scene.clone()),
+                Transform::from_translation(Vec3::new(
                     -WORLD_SIZE.x / 2.0 + rand::random::<f32>() * WORLD_SIZE.x,
                     -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
                     -WORLD_SIZE.z / 2.0 + rand::random::<f32>() * WORLD_SIZE.z,
                 )),
-                visibility: Visibility {
-                    is_visible: if state.benchmark_mode { false } else { true },
+                if state.benchmark_mode {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
                 },
-                ..Default::default()
-            })
+            ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
                 Vector3::new(
@@ -119,13 +114,13 @@ fn movement(
         ),
         With<Vehicle>,
     >,
-    target_query: Query<(&Transform, &Selection), (With<Target>, Without<Vehicle>)>,
+    target_query: Query<(&Transform, &TargetSelection), (With<Target>, Without<Vehicle>)>,
     state: Res<GlobalState>,
 ) {
-    let (target_transform, selection) = target_query.get_single().unwrap();
+    let (target_transform, selection) = target_query.single().unwrap();
     let mut wander = true;
 
-    if selection.selected() {
+    if selection.0 {
         wander = false;
     }
 
@@ -135,8 +130,7 @@ fn movement(
         flock(&mut vehicle_query, &state);
 
         // Seek
-        vehicle_query.par_for_each_mut(
-            64,
+        vehicle_query.par_iter_mut().for_each(
             |(_, velocity, mut acceleration, transform, mass, _)| {
                 // Calculate force
                 let mut force: Vector3<f32> =
@@ -160,8 +154,7 @@ fn movement(
         flock(&mut vehicle_query, &state);
 
         // Wander (random steering force within a Sphere)
-        vehicle_query.par_for_each_mut(
-            64,
+        vehicle_query.par_iter_mut().for_each(
             |(_, velocity, mut acceleration, transform, mass, mut wander_rotation)| {
                 // Check if in bounds
                 let fx = transform.translation.x < -WORLD_SIZE.x
@@ -175,10 +168,10 @@ fn movement(
                 if !fx && !fy && !fz {
                     let center = velocity.0.normalize().mul(state.vehicle_wander_distance)
                         + Into::<Vector3<f32>>::into(transform.translation);
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
 
-                    let delta_theta = rng.gen_range(-wander_delta..=wander_delta);
-                    let delta_phi = rng.gen_range(-wander_delta..=wander_delta);
+                    let delta_theta = rng.random_range(-wander_delta..=wander_delta);
+                    let delta_phi = rng.random_range(-wander_delta..=wander_delta);
                     wander_rotation.theta += delta_theta;
                     wander_rotation.phi += delta_phi;
 
@@ -257,7 +250,7 @@ fn vehicle_cleanup(
     }
 
     for entity in &mut query {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
         vehicle_spawner.vehicle_count -= 1;
         if state.vehicle_count >= vehicle_spawner.vehicle_count {
             break;
@@ -281,20 +274,22 @@ fn update(
     let min = Vector3::from_element(state.vehicle_max_speed * -1.0);
     let max = Vector3::from_element(state.vehicle_max_speed);
 
-    vehicle_query.par_for_each_mut(64, |(_, mut velocity, mut acceleration, mut transform)| {
-        velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
+    vehicle_query
+        .par_iter_mut()
+        .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
+            velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
 
-        transform.translation.x += velocity.0.x * time.delta_seconds();
-        transform.translation.y += velocity.0.y * time.delta_seconds();
-        transform.translation.z += velocity.0.z * time.delta_seconds();
+            transform.translation.x += velocity.0.x * time.delta_secs();
+            transform.translation.y += velocity.0.y * time.delta_secs();
+            transform.translation.z += velocity.0.z * time.delta_secs();
 
-        transform.rotation = Quat::from_rotation_arc(
-            Vec3::new(0.0, 1.0, 0.0).into(),
-            velocity.0.normalize().into(),
-        );
+            transform.rotation = Quat::from_rotation_arc(
+                Vec3::new(0.0, 1.0, 0.0).into(),
+                velocity.0.normalize().into(),
+            );
 
-        acceleration.0 *= 0.0;
-    });
+            acceleration.0 *= 0.0;
+        });
 }
 
 fn limit(data: &mut Vector3<f32>, max: f32) {
@@ -311,7 +306,7 @@ struct OctreeData {
 
 fn benchmark(time: Res<Time>, mut state: ResMut<GlobalState>) {
     if state.benchmark_mode {
-        state.benchmark_current_results.push(time.delta_seconds());
+        state.benchmark_current_results.push(time.delta_secs());
 
         // We check for 1010 because we want to skip the first 10 frames
         if state.benchmark_current_results.len() >= 110 {
@@ -405,8 +400,7 @@ fn flock(
         }
 
         // Find all neighbors for each vehicle
-        vehicle_query.par_for_each_mut(
-            64,
+        vehicle_query.par_iter_mut().for_each(
             |(entity, velocity, mut acceleration, transform, mass, _)| {
                 let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
                 let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
@@ -504,8 +498,7 @@ fn flock(
         })
         .collect::<Vec<_>>();
 
-    vehicle_query.par_for_each_mut(
-        64,
+    vehicle_query.par_iter_mut().for_each(
         |(entity, velocity, mut acceleration, transform, mass, _)| {
             let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
             let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
@@ -585,4 +578,57 @@ fn flock(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vehicle_count_changes_remove_scene_children() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<RenderState>()
+            .init_resource::<VehicleSpawner>()
+            .add_systems(Startup, crate::configure_global_state)
+            .add_systems(Update, (vehicle_spawner, vehicle_cleanup).chain());
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&Vehicle>()
+                .iter(app.world())
+                .count(),
+            100
+        );
+        let parents: Vec<_> = app
+            .world_mut()
+            .query_filtered::<Entity, With<Vehicle>>()
+            .iter(app.world())
+            .collect();
+        let children: Vec<_> = parents
+            .iter()
+            .map(|&parent| app.world_mut().spawn(ChildOf(parent)).id())
+            .collect();
+        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 0;
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&Vehicle>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(children
+            .iter()
+            .all(|&child| app.world().get_entity(child).is_err()));
+        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 3;
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&Vehicle>()
+                .iter(app.world())
+                .count(),
+            3
+        );
+    }
 }

@@ -4,18 +4,12 @@ version = "1.0.0"
 authors = ["Martin Domajnko <https://github.com/martines3000>"]
 edition = "2021"
 exclude = ["dist", "build", "assets", "credits"]
-rust-version = "1.67.1"
+rust-version = "1.97.1"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = { version = "0.9.1" }
-bevy-inspector-egui = "0.14.0"
-rand = "0.8.5"
-bevy_egui = "0.18"
-nalgebra = {version = "0.31.4", features = ["convert-glam022"]}
-smooth-bevy-cameras = "0.6.0"
-rayon = "1.6.1"
-bevy_mod_picking = "0.11.0"
-rustc-hash = "1.1.0"
-generational-arena = "0.2.8"
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui", "pan_orbit_camera"] }
+bevy_egui = "0.43.1"
+rand = "0.10.3"
+nalgebra = { version = "0.35.0", features = ["convert-glam033"] }
