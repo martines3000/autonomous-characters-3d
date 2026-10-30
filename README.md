@@ -88,16 +88,16 @@ Some sources I used for inspiration and help building this.
 
 Headless simulation benchmark (steering and integration per 1/60 s step, no rendering;
 seed `0xB01D5`; Apple M3 Pro, release build; median ms). Both modes get identical inputs
-and compute the same flocking. "App spawn" puts every vehicle in the 100-unit spawn cube,
-as the app does; "constant density" grows the cube with the count.
+and compute the same flocking. The spawn cube and walls grow with the cube root of the
+vehicle count, so density stays constant; octree mode is the default.
 
-| Vehicles | App spawn: naive | App spawn: octree | Constant density: naive | Constant density: octree |
-| --- | --- | --- | --- | --- |
-| 200 | 0.08 | 0.14 | 0.08 | 0.14 |
-| 1,000 | 0.45 | 0.70 | 0.42 | 0.45 |
-| 2,000 | 1.95 | 1.68 | 1.26 | 0.86 |
-| 5,000 | 6.93 | 7.55 | 6.53 | 1.84 |
-| 10,000 | 26.96 | 23.61 | 25.61 | 3.77 |
+| Vehicles | Naive | Octree (default) |
+| --- | --- | --- |
+| 200 | 0.07 | 0.14 |
+| 1,000 | 0.59 | 0.56 |
+| 2,000 | 1.46 | 0.84 |
+| 5,000 | 6.75 | 1.82 |
+| 10,000 | 25.53 | 3.74 |
 
 Run it with nothing else heavy running (timings roughly double on a busy machine):
 
@@ -105,7 +105,8 @@ Run it with nothing else heavy running (timings roughly double on a busy machine
 cargo test --release --locked flocking_benchmark -- --ignored --nocapture --test-threads=1
 ```
 
-Details and caveats are in `plans/completed/2026-10-30-seeded-headless-benchmarks.md`.
+Details and caveats are in `plans/completed/2026-10-30-seeded-headless-benchmarks.md` and
+`plans/completed/2026-10-30-count-scaled-spawn-region.md`.
 
 Historical chart from the original version (single-leaf octree queries that skipped
 neighbors, unknown machine and seed; not comparable with the table above):

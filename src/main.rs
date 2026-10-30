@@ -256,7 +256,7 @@ fn configure_global_state(mut state: ResMut<GlobalState>) {
     state.vehicle_wander_distance = 4.0;
     state.vehicle_wander_radius = 1.5;
 
-    state.use_octree = false;
+    state.use_octree = true;
     state.octree_size = 100;
 }
 

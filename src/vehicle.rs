@@ -1,9 +1,11 @@
 extern crate nalgebra as na;
 
-// Wall half-extents: wandering vehicles steer back inside.
+// Wall half-extents at REFERENCE_COUNT: wandering vehicles steer back inside.
 const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
-// Edge length of the cube around the origin where vehicles spawn.
+// Edge length at REFERENCE_COUNT of the cube around the origin where vehicles spawn.
 const SPAWN_SIZE: f32 = 100.0;
+// Vehicle count whose density was measured to flock well; larger counts scale the world.
+const REFERENCE_COUNT: f32 = 200.0;
 // Tuning and headless measurements used this reference rate.
 const REFERENCE_HZ: f32 = 60.0;
 
@@ -74,7 +76,8 @@ fn vehicle_spawner(
                 WorldAssetRoot(render_state.vehicle_scene.clone()),
                 Transform::from_translation(
                     (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
-                        * SPAWN_SIZE,
+                        * SPAWN_SIZE
+                        * world_scale(state.vehicle_count),
                 ),
                 Visibility::Inherited,
             ))
@@ -146,6 +149,7 @@ fn movement(
 
         let limit_wander = state.vehicle_max_speed * state.vehicle_wander_factor;
         let limit_wall_avoid = state.vehicle_max_speed * state.vehicle_wall_avoid_factor;
+        let walls = WORLD_SIZE * world_scale(state.vehicle_count);
 
         flock(&mut vehicle_query, &state);
 
@@ -153,13 +157,10 @@ fn movement(
         vehicle_query.par_iter_mut().for_each(
             |(_, velocity, mut acceleration, transform, mass, mut wander_rotation)| {
                 // Check if in bounds
-                let fx = transform.translation.x < -WORLD_SIZE.x
-                    || transform.translation.x > WORLD_SIZE.x;
-                let fy = transform.translation.y < -WORLD_SIZE.y
-                    || transform.translation.y > WORLD_SIZE.y;
+                let fx = transform.translation.x < -walls.x || transform.translation.x > walls.x;
+                let fy = transform.translation.y < -walls.y || transform.translation.y > walls.y;
 
-                let fz = transform.translation.z < -WORLD_SIZE.z
-                    || transform.translation.z > WORLD_SIZE.z;
+                let fz = transform.translation.z < -walls.z || transform.translation.z > walls.z;
 
                 if !fx && !fy && !fz {
                     let center = normalize_or_zero(velocity.0).mul(state.vehicle_wander_distance)
@@ -195,7 +196,7 @@ fn movement(
                 // Calculate force
                 let mut force = Vector3::new(
                     if fx {
-                        if transform.translation.x < -WORLD_SIZE.x {
+                        if transform.translation.x < -walls.x {
                             state.vehicle_max_speed
                         } else {
                             -state.vehicle_max_speed
@@ -204,7 +205,7 @@ fn movement(
                         0.0
                     },
                     if fy {
-                        if transform.translation.y < -WORLD_SIZE.y {
+                        if transform.translation.y < -walls.y {
                             state.vehicle_max_speed
                         } else {
                             -state.vehicle_max_speed
@@ -213,7 +214,7 @@ fn movement(
                         0.0
                     },
                     if fz {
-                        if transform.translation.z < -WORLD_SIZE.z {
+                        if transform.translation.z < -walls.z {
                             state.vehicle_max_speed
                         } else {
                             -state.vehicle_max_speed
@@ -233,6 +234,11 @@ fn movement(
             },
         );
     }
+}
+
+// Keeps density constant above REFERENCE_COUNT; smaller counts use the reference world.
+fn world_scale(count: usize) -> f32 {
+    (count as f32 / REFERENCE_COUNT).cbrt().max(1.0)
 }
 
 fn wander_step_bound(dt: f32) -> f32 {
@@ -507,88 +513,83 @@ mod tests {
         const STEPS: usize = 60;
         let dt = Duration::from_secs_f64(1.0 / 60.0);
 
-        for workload in ["app", "density"] {
-            for count in [200, 1000, 2000, 5000, 10000] {
-                let edge = if workload == "app" {
-                    SPAWN_SIZE
-                } else {
-                    SPAWN_SIZE * (count as f32 / 200.0).cbrt()
-                };
-                let mut rng = StdRng::seed_from_u64(SEED);
-                let vehicles: Vec<_> = (0..count)
-                    .map(|_| {
-                        let position = (Vec3::new(rng.random(), rng.random(), rng.random())
-                            - Vec3::splat(0.5))
-                            * edge;
-                        let z: f32 = rng.random_range(-1.0..=1.0);
-                        let angle: f32 = rng.random_range(0.0..2.0 * PI);
-                        let radius = (1.0 - z * z).sqrt();
-                        let direction = Vector3::new(radius * angle.cos(), radius * angle.sin(), z);
-                        (position, direction)
-                    })
-                    .collect();
+        for count in [200, 1000, 2000, 5000, 10000] {
+            let edge = SPAWN_SIZE * world_scale(count);
+            let mut rng = StdRng::seed_from_u64(SEED);
+            let vehicles: Vec<_> = (0..count)
+                .map(|_| {
+                    let position = (Vec3::new(rng.random(), rng.random(), rng.random())
+                        - Vec3::splat(0.5))
+                        * edge;
+                    let z: f32 = rng.random_range(-1.0..=1.0);
+                    let angle: f32 = rng.random_range(0.0..2.0 * PI);
+                    let radius = (1.0 - z * z).sqrt();
+                    let direction = Vector3::new(radius * angle.cos(), radius * angle.sin(), z);
+                    (position, direction)
+                })
+                .collect();
 
-                for use_octree in [false, true] {
-                    let mut app = App::new();
-                    app.init_resource::<GlobalState>()
-                        .init_resource::<Time>()
-                        .add_systems(Startup, crate::configure_global_state);
-                    app.update();
-                    let (max_speed, mass, octree_size) = {
-                        let mut state = app.world_mut().resource_mut::<GlobalState>();
-                        state.use_octree = use_octree;
-                        (
-                            state.vehicle_max_speed,
-                            state.vehicle_mass,
-                            state.octree_size,
-                        )
-                    };
-                    if workload == "app" && count == 200 && !use_octree {
-                        let threads = bevy::tasks::ComputeTaskPool::get().thread_num();
-                        println!(
+            for use_octree in [false, true] {
+                let mut app = App::new();
+                app.init_resource::<GlobalState>()
+                    .init_resource::<Time>()
+                    .add_systems(Startup, crate::configure_global_state);
+                app.update();
+                let (max_speed, mass, octree_size) = {
+                    let mut state = app.world_mut().resource_mut::<GlobalState>();
+                    state.use_octree = use_octree;
+                    state.vehicle_count = count;
+                    (
+                        state.vehicle_max_speed,
+                        state.vehicle_mass,
+                        state.octree_size,
+                    )
+                };
+                if count == 200 && !use_octree {
+                    let threads = bevy::tasks::ComputeTaskPool::get().thread_num();
+                    println!(
                             "flocking_benchmark: seed={SEED:#x} threads={threads} octree_size={octree_size} dt={:.9}s warmup={WARMUP} steps={STEPS} (large naive cases capped at ~20s)",
                             dt.as_secs_f64()
                         );
-                    }
-                    app.add_systems(Update, (movement, update).chain());
-                    app.world_mut()
-                        .spawn((Target, TargetSelection(false), Transform::default()));
-                    for &(position, direction) in &vehicles {
-                        app.world_mut().spawn((
-                            Vehicle,
-                            VehicleVelocity(direction * max_speed),
-                            VehicleAcceleration::default(),
-                            VehicleMass(mass),
-                            VehicleWanderRotation::default(),
-                            Transform::from_translation(position),
-                        ));
-                    }
-                    for _ in 0..WARMUP {
-                        app.world_mut().resource_mut::<Time>().advance_by(dt);
-                        app.update();
-                    }
-                    let mut timings = Vec::with_capacity(STEPS);
-                    let mut elapsed = Duration::ZERO;
-                    for _ in 0..STEPS {
-                        app.world_mut().resource_mut::<Time>().advance_by(dt);
-                        let start = Instant::now();
-                        app.update();
-                        let duration = start.elapsed();
-                        timings.push(duration.as_secs_f64() * 1000.0);
-                        elapsed += duration;
-                        if !use_octree && count >= 5000 && elapsed >= Duration::from_secs(20) {
-                            break;
-                        }
-                    }
-                    timings.sort_by(f64::total_cmp);
-                    let steps = timings.len();
-                    let median = (timings[(steps - 1) / 2] + timings[steps / 2]) / 2.0;
-                    let p95 = timings[(95 * steps).div_ceil(100) - 1];
-                    let mode = if use_octree { "octree" } else { "naive" };
-                    println!(
-                        "workload={workload} count={count} mode={mode} median_ms={median:.3} p95_ms={p95:.3} steps={steps}"
-                    );
                 }
+                app.add_systems(Update, (movement, update).chain());
+                app.world_mut()
+                    .spawn((Target, TargetSelection(false), Transform::default()));
+                for &(position, direction) in &vehicles {
+                    app.world_mut().spawn((
+                        Vehicle,
+                        VehicleVelocity(direction * max_speed),
+                        VehicleAcceleration::default(),
+                        VehicleMass(mass),
+                        VehicleWanderRotation::default(),
+                        Transform::from_translation(position),
+                    ));
+                }
+                for _ in 0..WARMUP {
+                    app.world_mut().resource_mut::<Time>().advance_by(dt);
+                    app.update();
+                }
+                let mut timings = Vec::with_capacity(STEPS);
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..STEPS {
+                    app.world_mut().resource_mut::<Time>().advance_by(dt);
+                    let start = Instant::now();
+                    app.update();
+                    let duration = start.elapsed();
+                    timings.push(duration.as_secs_f64() * 1000.0);
+                    elapsed += duration;
+                    if !use_octree && count >= 5000 && elapsed >= Duration::from_secs(20) {
+                        break;
+                    }
+                }
+                timings.sort_by(f64::total_cmp);
+                let steps = timings.len();
+                let median = (timings[(steps - 1) / 2] + timings[steps / 2]) / 2.0;
+                let p95 = timings[(95 * steps).div_ceil(100) - 1];
+                let mode = if use_octree { "octree" } else { "naive" };
+                println!(
+                    "count={count} mode={mode} median_ms={median:.3} p95_ms={p95:.3} steps={steps}"
+                );
             }
         }
     }
@@ -631,6 +632,15 @@ mod tests {
                 "{steps} steps: {velocity:?}"
             );
         }
+    }
+
+    #[test]
+    fn world_scale_keeps_density_above_the_reference_count() {
+        assert_eq!(world_scale(0), 1.0);
+        assert_eq!(world_scale(100), 1.0);
+        assert_eq!(world_scale(200), 1.0);
+        assert!((world_scale(1600) - 2.0).abs() < 1e-5);
+        assert!((world_scale(25_000) - 5.0).abs() < 1e-4);
     }
 
     #[test]
