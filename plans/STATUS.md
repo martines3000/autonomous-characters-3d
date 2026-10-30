@@ -8,7 +8,7 @@ None. Pick the next item below.
 
 No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting.
 
-1. **Follow-mode collapse and crowd separation.** When vehicles follow the target, the whole flock collapses onto it (5,000 vehicles: median nearest neighbor 0.23 units, every vehicle within 30 units of all others), which looks like a solid ball and makes neighbor queries quadratic. Changing separation distance, the separation and cohesion factors (they are caps, not weights) or adding seek arrival or a gather radius does not fix flocks above about 1,000; separation's normalized average direction cancels inside crowds. Needs a model change, for example distance-weighted separation without normalizing the sum, plus seek arrival, verified with the headless probe in `completed/2026-10-30-instanced-rendering-and-visuals.md`. Wander mode is fine (0.5% of vehicles closer than the dart width at 5,000).
+1. **Follow-mode cost at large counts.** Followers no longer collapse, but they gather into a ball about 20 units across, inside the 30-unit alignment radius, so at 5,000 vehicles every vehicle still visits almost every other one (about 30 ms per simulation step, about 31 FPS in the app). Options: limit each vehicle to its nearest k neighbors (topological interaction, as in real starling flocks), or a smaller alignment radius in follow mode. Either changes query behavior or defaults and needs its own plan.
 2. **Flocking on the GPU, if much larger flocks matter.** A compute shader with a uniform grid feeding the instance buffer directly, added as a third mode next to naive and octree. At 30,000 vehicles the CPU simulation (flocking about 9 ms) is now the main cost.
 
 Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye (wander mode settles near 25 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS); look at the app at startup and confirm the camera frames the flock.
@@ -38,6 +38,7 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Keep vehicles apart when they follow the target](completed/2026-10-30-follow-mode-separation.md) (2026-10-30): separation pushes add up and grow with closeness; followers at 1,000 and 5,000 go from 100% overlapping to none; wander flocks keep their look with no overlapping pairs; follow-mode cost at large counts deferred.
 - [Instanced vehicle rendering and a visual pass](completed/2026-10-30-instanced-rendering-and-visuals.md) (2026-10-30): one instanced draw for the flock; 30,000 vehicles 53 → about 80 FPS, 10,000 about 138 → 220 FPS; heading colors, directional light, fog, wall box and floor grid; separation retune investigated, follow-mode collapse deferred to future task 1.
 - [What limits frame time at 30,000 vehicles](completed/2026-10-30-high-count-frame-limit.md) (2026-10-30): CPU critical path, not GPU; 30,000 vehicles at about 53 FPS and 10,000 at about 138 FPS at low machine load; no code change; GPU time unmeasurable with available tools.
 - [Profiling-guided optimization](completed/2026-10-30-profiling-guided-optimization.md) (2026-10-30): compute pool 5 → 9 threads; sort- and allocation-free neighbor queries; 10,000 vehicles about 60 → 120–138 FPS and 30,000 about 36 → 53 FPS in the app (see the frame-limit plan for the corrected 30,000 numbers).

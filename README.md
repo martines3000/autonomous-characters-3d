@@ -19,7 +19,8 @@ python3 scripts/smoke-native.py
 The smoke check opens the app for ten seconds and then closes it. It requires
 a desktop session with graphics support; it checks startup, not flocking correctness
 or performance. Rust regression tests cover camera input, target selection, vehicle cleanup,
-the instance data sent to the renderer, and numerical safety of steering (finite values, magnitude speed limit, cohesion arrival).
+the instance data sent to the renderer, separation that keeps followers apart, and numerical
+safety of steering (finite values, magnitude speed limit, cohesion arrival).
 
 Agent and planning conventions are in `AGENTS.md`, `PLANS.md` and `plans/STATUS.md`.
 
@@ -46,6 +47,12 @@ Vehicles are colored by heading (hue from the horizontal direction, lighter when
 climbing), so groups flying together share a color. The faint box marks the walls
 that wandering vehicles steer back into, with a grid on its floor; both, and the
 distance fog, grow with the vehicle count.
+
+Separation pushes a vehicle away from each neighbor closer than the separation distance,
+harder the closer it is, and the pushes add up; the separation factor scales them. A
+crowd therefore pushes back instead of collapsing, so followers form a loose ball around
+the target with visible gaps between vehicles. Alignment and cohesion factors still cap
+their steering force.
 
 For dependency diagnostics, install the separate CLI with
 `cargo install --locked --version 0.20.2 cargo-deny`, then run
@@ -108,8 +115,9 @@ vehicle count, so density stays constant; octree mode is the default.
 
 In the app (window, rendering included, no vsync), wandering flocks run at a median
 of about 4.5 ms per frame with 10,000 vehicles and about 12.5 ms with 30,000.
-Following the target at large counts is much slower, because the flock collapses onto
-it (see `plans/STATUS.md`).
+Following the target at large counts is slower (about 30 ms per simulation step at
+5,000 vehicles), because the whole flock gathers within the 30-unit alignment radius of
+each vehicle, so every vehicle visits almost every other one (see `plans/STATUS.md`).
 
 Run it with nothing else heavy running (timings roughly double on a busy machine):
 

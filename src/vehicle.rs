@@ -8,6 +8,9 @@ const SPAWN_SIZE: f32 = 100.0;
 const REFERENCE_COUNT: f32 = 200.0;
 // Tuning and headless measurements used this reference rate.
 const REFERENCE_HZ: f32 = 60.0;
+// Largest push from one neighbor, in units of separation factor × max speed; reached
+// at a quarter of the separation distance so near-coincident vehicles stay bounded.
+const MAX_SEPERATION_PUSH: f32 = 3.0;
 
 use std::{f32::consts::PI, ops::Mul};
 
@@ -469,13 +472,13 @@ fn flocking_force(
     neighbors: impl FnOnce(&mut dyn FnMut(Vector3<f32>, Vector3<f32>)),
     state: &GlobalState,
 ) -> Vector3<f32> {
-    let dist_seperate = (state.vehicle_size * state.vehicle_seperation_distance).powi(2);
+    let seperate_radius = state.vehicle_size * state.vehicle_seperation_distance;
+    let dist_seperate = seperate_radius.powi(2);
     let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
     let dist_cohesion = (state.vehicle_size * state.vehicle_cohesion_distance).powi(2);
     let mut seperate_sum = Vector3::zeros();
     let mut align_sum = Vector3::zeros();
     let mut cohesion_sum = Vector3::zeros();
-    let mut seperate_count = 0;
     let mut align_count = 0;
     let mut cohesion_count = 0;
 
@@ -484,8 +487,11 @@ fn flocking_force(
         let distance_squared = diff.magnitude_squared();
 
         if distance_squared > 0.0 && distance_squared < dist_seperate {
-            seperate_sum += diff / distance_squared;
-            seperate_count += 1;
+            // Pushes grow as neighbors get closer and add up, so a crowd pushes back
+            // harder than seek and cohesion can pull it together.
+            let distance = distance_squared.sqrt();
+            seperate_sum +=
+                diff / distance * (seperate_radius / distance - 1.0).min(MAX_SEPERATION_PUSH);
         }
         if distance_squared < dist_align {
             align_sum += other_velocity;
@@ -497,14 +503,7 @@ fn flocking_force(
         }
     });
 
-    if seperate_count > 0 {
-        seperate_sum /= seperate_count as f32;
-        seperate_sum = normalize_or_zero(seperate_sum) * state.vehicle_max_speed - velocity;
-        limit(
-            &mut seperate_sum,
-            state.vehicle_max_speed * state.vehicle_seperation_factor,
-        );
-    }
+    seperate_sum *= state.vehicle_max_speed * state.vehicle_seperation_factor;
     if align_count > 0 {
         align_sum /= align_count as f32;
         align_sum = normalize_or_zero(align_sum) * state.vehicle_max_speed - velocity;
@@ -846,7 +845,7 @@ mod tests {
         for (i, (expected, actual)) in naive.iter().zip(&octree).enumerate() {
             for axis in 0..3 {
                 // Spatial traversal changes summation order, especially for offset clusters.
-                let tolerance = 1e-3_f32.max(expected[axis].abs() * 1e-5);
+                let tolerance = 1e-3_f32.max(expected.magnitude() * 1e-5);
                 assert!(
                     (actual[axis] - expected[axis]).abs() <= tolerance,
                     "vehicle {i}, axis {axis}: naive={expected:?}, octree={actual:?}, tolerance={tolerance}"
@@ -926,6 +925,99 @@ mod tests {
             &state,
         );
         assert_eq!(force, Vector3::x() * state.vehicle_max_speed * 0.5);
+    }
+
+    #[test]
+    fn separation_grows_with_closeness_and_crowding() {
+        let state = GlobalState {
+            vehicle_alignment_distance: 0.01,
+            vehicle_cohesion_distance: 0.01,
+            ..flocking_state()
+        };
+        let separation = |distance: f32, count: usize| {
+            flocking_force(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                |visit| {
+                    for _ in 0..count {
+                        visit(Vector3::x() * distance, Vector3::zeros());
+                    }
+                },
+                &state,
+            )
+        };
+        let unit = state.vehicle_max_speed * state.vehicle_seperation_factor;
+        assert_eq!(separation(2.0, 1), -Vector3::x() * unit);
+        assert_eq!(separation(1.0, 1), -Vector3::x() * unit * 3.0);
+        // Capped closer in than a quarter of the separation distance.
+        assert_eq!(separation(0.1, 1), -Vector3::x() * unit * 3.0);
+        assert_eq!(separation(1.0, 10), -Vector3::x() * unit * 30.0);
+        assert_eq!(separation(4.5, 1), Vector3::zeros());
+    }
+
+    #[test]
+    fn followers_keep_apart_around_the_target() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<Time>()
+            .add_systems(Startup, crate::configure_global_state);
+        app.update();
+        let count = 300;
+        let max_speed = {
+            let mut state = app.world_mut().resource_mut::<GlobalState>();
+            state.vehicle_count = count;
+            state.vehicle_max_speed
+        };
+        app.add_systems(Update, (movement, update).chain());
+        app.world_mut()
+            .spawn((Target, TargetSelection(true), Transform::default()));
+        let mut rng = StdRng::seed_from_u64(7);
+        let edge = SPAWN_SIZE * world_scale(count);
+        for _ in 0..count {
+            let position =
+                (Vec3::new(rng.random(), rng.random(), rng.random()) - Vec3::splat(0.5)) * edge;
+            let velocity = Vector3::new(
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+            ) * max_speed;
+            app.world_mut().spawn((
+                Vehicle,
+                VehicleVelocity(velocity),
+                VehicleAcceleration::default(),
+                VehicleWanderRotation::default(),
+                Transform::from_translation(position),
+            ));
+        }
+        for _ in 0..600 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(1.0 / 60.0));
+            app.update();
+        }
+        let points: Vec<Vec3> = app
+            .world_mut()
+            .query_filtered::<&Transform, With<Vehicle>>()
+            .iter(app.world())
+            .map(|transform| transform.translation)
+            .collect();
+        let crowded = points
+            .iter()
+            .enumerate()
+            .filter(|&(i, a)| {
+                points
+                    .iter()
+                    .enumerate()
+                    .any(|(j, b)| i != j && a.distance(*b) < 1.4)
+            })
+            .count();
+        let mean_distance = points.iter().map(|p| p.length()).sum::<f32>() / count as f32;
+        // The old averaged separation left almost every follower overlapping a neighbor.
+        assert!(crowded * 20 < count, "{crowded} of {count} overlap");
+        assert!(
+            mean_distance < 40.0,
+            "flock is {mean_distance} from the target"
+        );
     }
 
     #[test]
