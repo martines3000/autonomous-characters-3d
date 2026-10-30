@@ -6,9 +6,10 @@ None. Pick the next item below.
 
 ## Prioritized future tasks
 
-No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting.
+No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting. All tasks from the 2026-10-30 handoff are done; these are optional.
 
-1. **Profiling-guided optimization and optional tooling.** Use `samply` and Bevy tracing against `flocking_benchmark` and the running app (rendering is not in the benchmark); candidates include per-vehicle query allocations and the per-frame octree rebuild. Consider Puffin, Criterion or CI only when a measured question needs them. Findings: F10, F12.
+1. **GPU-side measurement at very high counts.** At 30,000 vehicles the CPU is no longer saturated but frames still take about 25–30 ms; capture a Metal frame or an Instruments GPU trace to see whether rendering (one glTF scene instance per vehicle) is the limit. Counts above 30,000 are unmeasured. Finding: F10.
+2. **CI.** A small workflow running format, tests and the release build, if the project gets collaborators. Finding: F12.
 
 Smaller follow-ups (no plan needed): retune `vehicle_max_speed`, `vehicle_wander_speed` and separation by eye (wander mode settles near 25 units/s against a max of 80; large flocks compress until some cones overlap; behavior is frame-rate independent, so tuning holds at any FPS); look at the app at startup and confirm the camera frames the flock (automated window capture lacks screen-recording permission); apply the mass slider to existing vehicles (F08).
 
@@ -35,6 +36,7 @@ Smaller follow-ups (no plan needed): retune `vehicle_max_speed`, `vehicle_wander
 
 ## Completed
 
+- [Profiling-guided optimization](completed/2026-10-30-profiling-guided-optimization.md) (2026-10-30): compute pool 5 → 9 threads; sort- and allocation-free neighbor queries; 10,000 vehicles about 60 → 120 FPS in the app; 30,000 no longer CPU-bound; GPU unmeasured.
 - [Scale the spawn region with vehicle count](completed/2026-10-30-count-scaled-spawn-region.md) (2026-10-30): spawn cube and walls scale with cbrt(count / 200); octree default; 1.8 ms per step at 5,000 and 3.7 ms at 10,000 vehicles; large flocks contained but cluster tightly over time.
 - [Seeded headless benchmarks](completed/2026-10-30-seeded-headless-benchmarks.md) (2026-10-30): `flocking_benchmark` ignored test for both modes on identical seeded inputs; in-app benchmark removed; naive stays default (faster at 200 vehicles); octree 6.7× faster at 10,000 only when density is constant.
 - [Frame-rate-independent simulation and target movement](completed/2026-10-30-frame-rate-independence.md) (2026-10-30): acceleration and wander scaled to a 60 Hz reference, target at 120 units/s, target input ordered before steering; probe shows matching seek and overlapping flock metrics at 30/60/144 FPS.

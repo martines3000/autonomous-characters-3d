@@ -3,6 +3,7 @@ mod target;
 mod vehicle;
 
 use bevy::{
+    app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
     camera_controller::pan_orbit_camera::prelude::*,
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
@@ -25,14 +26,33 @@ fn main() {
             require_markers: true,
             ..default()
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Autonomous characters 3D".to_string(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(TaskPoolPlugin {
+                    // Assets and async work are negligible; simulation needs the cores.
+                    task_pool_options: TaskPoolOptions {
+                        io: TaskPoolThreadAssignmentPolicy {
+                            min_threads: 1,
+                            max_threads: 1,
+                            ..TaskPoolOptions::default().io
+                        },
+                        async_compute: TaskPoolThreadAssignmentPolicy {
+                            min_threads: 1,
+                            max_threads: 1,
+                            ..TaskPoolOptions::default().async_compute
+                        },
+                        ..default()
+                    },
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Autonomous characters 3D".to_string(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .add_plugins((
             MeshPickingPlugin,
             DefaultPanOrbitCameraPlugins,

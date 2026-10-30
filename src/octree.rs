@@ -268,15 +268,19 @@ impl<T> Octree<T> {
         index
     }
 
-    /// Returns points at squared distance <= radius²; inserted points must lie in the root bounds.
-    pub fn query_radius(&self, point: &Point, radius: f32) -> Vec<&T> {
-        let mut neighbors = vec![];
+    /// Visits points at squared distance <= radius²; inserted points must lie in the root bounds.
+    pub fn for_each_in_radius(&self, point: &Point, radius: f32, mut visit: impl FnMut(&T)) {
         let Some(root) = self.root else {
-            return vec![];
+            return;
         };
         let radius_squared = radius * radius;
-        let mut pending = vec![root];
-        while let Some(node_index) = pending.pop() {
+        // Each split replaces one pending node with eight, adding at most seven per depth.
+        let mut pending = [0; MAX_DEPTH * 7 + 1];
+        pending[0] = root;
+        let mut pending_len = 1;
+        while pending_len > 0 {
+            pending_len -= 1;
+            let node_index = pending[pending_len];
             let node = &self.nodes[node_index];
             let (_, min, max) = &node.bounds;
             let distance_to_bounds_squared = (point.x - point.x.clamp(min.x, max.x)).powi(2)
@@ -291,17 +295,13 @@ impl<T> Octree<T> {
                     + (candidate.point.y - point.y).powi(2)
                     + (candidate.point.z - point.z).powi(2);
                 if distance_squared <= radius_squared {
-                    neighbors.push(point_index);
+                    visit(&candidate.data);
                 }
             }
-            pending.extend(&node.children);
+            let end = pending_len + node.children.len();
+            pending[pending_len..end].copy_from_slice(&node.children);
+            pending_len = end;
         }
-        // Preserve insertion order so flocking sums match the naive iteration order.
-        neighbors.sort_unstable();
-        neighbors
-            .into_iter()
-            .map(|index| &self.points[index].data)
-            .collect()
     }
 }
 
@@ -341,7 +341,9 @@ mod tests {
         assert_eq!(tree.nodes.len(), 9);
         for (index, point) in tree.points.iter().enumerate() {
             assert_eq!(point.data, index);
-            assert_eq!(tree.query_radius(&point.point, 0.0), vec![&index]);
+            let mut actual = vec![];
+            tree.for_each_in_radius(&point.point, 0.0, |data| actual.push(*data));
+            assert_eq!(actual, vec![index]);
         }
     }
 
@@ -445,11 +447,8 @@ mod tests {
                             })
                             .map(|(index, _)| index)
                             .collect();
-                        let mut actual: Vec<_> = tree
-                            .query_radius(query, radius)
-                            .into_iter()
-                            .copied()
-                            .collect();
+                        let mut actual = vec![];
+                        tree.for_each_in_radius(query, radius, |data| actual.push(*data));
                         actual.sort_unstable();
                         assert_eq!(
                             actual, expected,
@@ -498,11 +497,8 @@ mod tests {
                 assert!(p.z >= min.z && p.z <= max.z);
             }
         }
-        let mut actual: Vec<_> = tree
-            .query_radius(&point, 0.0)
-            .into_iter()
-            .copied()
-            .collect();
+        let mut actual = vec![];
+        tree.for_each_in_radius(&point, 0.0, |data| actual.push(*data));
         actual.sort_unstable();
         assert_eq!(actual, vec![0, 1, 2]);
     }
@@ -510,14 +506,19 @@ mod tests {
     #[test]
     fn coincident_points_have_bounded_node_count() {
         let mut tree = Octree::new(2);
+        // The last child at every split exercises the maximum pending traversal stack.
         let point = Point {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
+            x: 1.0,
+            y: -1.0,
+            z: -1.0,
         };
-        assert!(tree.query_radius(&point, 1.0).is_empty());
+        tree.for_each_in_radius(&point, 1.0, |_| panic!("empty tree visited a point"));
         tree.create_root(
-            point.clone(),
+            Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             Point {
                 x: -1.0,
                 y: -1.0,
@@ -534,6 +535,8 @@ mod tests {
         }
         // One occupied path: the root plus eight children for each permitted split.
         assert_eq!(tree.nodes.len(), 1 + 8 * MAX_DEPTH);
-        assert_eq!(tree.query_radius(&point, 0.0).len(), 5000);
+        let mut visited = 0;
+        tree.for_each_in_radius(&point, 0.0, |_| visited += 1);
+        assert_eq!(visited, 5000);
     }
 }
