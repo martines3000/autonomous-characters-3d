@@ -1,7 +1,9 @@
 extern crate nalgebra as na;
 
-// const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
-const WORLD_SIZE: Vec3 = Vec3::new(2000.0, 2000.0, 1000.0);
+// Wall half-extents: wandering vehicles steer back inside, and the octree root spans them.
+const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
+// Edge length of the cube around the origin where vehicles spawn.
+const SPAWN_SIZE: f32 = 100.0;
 
 use std::{f32::consts::PI, ops::Mul};
 
@@ -67,11 +69,10 @@ fn vehicle_spawner(
         commands
             .spawn((
                 WorldAssetRoot(render_state.vehicle_scene.clone()),
-                Transform::from_translation(Vec3::new(
-                    -WORLD_SIZE.x / 2.0 + rand::random::<f32>() * WORLD_SIZE.x,
-                    -WORLD_SIZE.y / 2.0 + rand::random::<f32>() * WORLD_SIZE.y,
-                    -WORLD_SIZE.z / 2.0 + rand::random::<f32>() * WORLD_SIZE.z,
-                )),
+                Transform::from_translation(
+                    (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
+                        * SPAWN_SIZE,
+                ),
                 if state.benchmark_mode {
                     Visibility::Hidden
                 } else {
@@ -80,12 +81,7 @@ fn vehicle_spawner(
             ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
-                normalize_or_zero(Vector3::new(
-                    rand::random::<f32>() * state.vehicle_max_speed,
-                    rand::random::<f32>() * state.vehicle_max_speed,
-                    rand::random::<f32>() * state.vehicle_max_speed,
-                ))
-                .mul(state.vehicle_max_speed),
+                random_direction().mul(state.vehicle_max_speed),
             ))
             .insert(VehicleAcceleration(Vector3::zeros()))
             .insert(VehicleMass(state.vehicle_mass))
@@ -284,6 +280,14 @@ fn update(
 
             acceleration.0 *= 0.0;
         });
+}
+
+// Uniform on the unit sphere, so the flock starts disordered.
+fn random_direction() -> Vector3<f32> {
+    let z: f32 = rand::random_range(-1.0..=1.0);
+    let angle: f32 = rand::random_range(0.0..2.0 * PI);
+    let radius = (1.0 - z * z).sqrt();
+    Vector3::new(radius * angle.cos(), radius * angle.sin(), z)
 }
 
 fn normalize_or_zero(vector: Vector3<f32>) -> Vector3<f32> {
@@ -678,6 +682,31 @@ mod tests {
     }
 
     #[test]
+    fn vehicles_spawn_in_the_spawn_cube_with_varied_headings() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<RenderState>()
+            .init_resource::<VehicleSpawner>()
+            .add_systems(Startup, crate::configure_global_state)
+            .add_systems(Update, vehicle_spawner);
+        app.update();
+        let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
+        let mut negative_axes = [false; 3];
+        for (transform, velocity) in app
+            .world_mut()
+            .query::<(&Transform, &VehicleVelocity)>()
+            .iter(app.world())
+        {
+            assert!(transform.translation.abs().max_element() <= SPAWN_SIZE / 2.0);
+            assert!((velocity.0.magnitude() - max_speed).abs() <= 1e-3);
+            for (axis, negative) in negative_axes.iter_mut().enumerate() {
+                *negative |= velocity.0[axis] < 0.0;
+            }
+        }
+        assert_eq!(negative_axes, [true; 3]);
+    }
+
+    #[test]
     fn vehicle_count_changes_remove_scene_children() {
         let mut app = App::new();
         app.init_resource::<GlobalState>()
@@ -691,7 +720,7 @@ mod tests {
                 .query::<&Vehicle>()
                 .iter(app.world())
                 .count(),
-            100
+            200
         );
         let parents: Vec<_> = app
             .world_mut()

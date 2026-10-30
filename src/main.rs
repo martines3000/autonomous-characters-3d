@@ -192,7 +192,8 @@ fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextColor(Color::srgb(1.0, 0.84, 0.0)),
             FpsText,
         ));
-    let eye = Vec3::new(-2.0, 5.0, 5.0);
+    // Frames the spawn cube around the target.
+    let eye = Vec3::new(0.0, 60.0, 170.0);
     commands.spawn((
         Camera3d::default(),
         Msaa::Sample4,
@@ -238,7 +239,7 @@ struct GlobalState {
 }
 
 fn configure_global_state(mut state: ResMut<GlobalState>) {
-    state.vehicle_count = 100;
+    state.vehicle_count = 200;
     state.vehicle_size = 1.0;
     state.vehicle_mass = 60.0;
     state.vehicle_wander_speed = 40.0;
