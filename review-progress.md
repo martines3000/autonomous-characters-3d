@@ -188,3 +188,14 @@ User changed scope from analysis-only to native local development: first build/r
 4. Add optional Puffin scopes/viewer once profiling questions and version integration are chosen; keep HTML/WASM out of scope until user requests them.
 
 No benchmark/performance guarantee, numerical fix, full interaction suite, Clippy clean result or upgrade-all completion is claimed. Native baseline and starter CLI installation are complete.
+
+## Commit/push and native profiling checkpoint — 2026-10-30
+- User requested committing/pushing completed work and continuing native development.
+- Committed d3dc75a (review documents) and21769fd (native release startup compatibility, toolchain, README, smoke script); pushed codex/native-baseline with upstream tracking. Remote SHA verified21769fd41a640c82482efe11e68d81103ea13d2a.
+- Built symbolized native release: CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --locked PASS (2m06s, existing7 warnings).
+- Closed the extra temporary native baseline app before capture.
+- samply0.13.1 native launch capture succeeded: requested15s/1000Hz,25 threads,656653-byte compressed profile plus415670-byte pre-symbolication sidecar. App terminated intentionally after recording; sampler exit0. No panic or missing asset warnings.
+- Local artifacts in target/native-baseline/: native-21769fd.json.gz, native-21769fd.json.syms.json, metadata.json, capture.log, thread-cpu-summary.json and leaf-cpu-summary.json. Files stay local/ignored; no profile upload or service connection.
+- Scenario: default100 agents,naive mode,capacity100,1280x720 requested window,VSync/default presentation; random seed uncontrolled, startup included. This is a diagnostic reference, not a deterministic benchmark or comparable FPS result.
+- Sampled thread CPU totals: main thread2917.77ms; five compute workers344.81–365.38ms each. These are CPU deltas across a capture, not frame times or GPU measurements. Symbolized leaf attribution is approximate and includes startup.
+- Next: continue coordinated native modernization on a separate branch; baseline branch retained for rollback. Keep HTML/WASM work excluded. Research agent checking exact Bevy0.20.1 APIs against primary sources.
