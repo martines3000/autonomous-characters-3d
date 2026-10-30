@@ -2,6 +2,46 @@
 
 [demo](https://ac3d.skippy-ai.com/)
 
+## Local native development
+
+Use `rustup` and run commands from the repository root. `rust-toolchain.toml`
+selects the tested Rust 1.95.0 toolchain, including formatting and lint tools.
+On macOS, Xcode command-line tools are also required.
+
+```sh
+cargo build --release --locked
+cargo run --release --locked
+cargo fmt --all -- --check
+cargo test --release --locked
+python3 scripts/smoke-native.py
+```
+
+The smoke check opens the app for ten seconds and then closes it. It requires
+a desktop session with graphics support; it checks startup, not flocking correctness
+or performance. There are currently no Rust unit tests.
+
+`cargo run` supplies the asset root. When running the binary directly, set it:
+
+```sh
+CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d
+```
+
+This native baseline retains Bevy 0.9.1 and the existing simulation behavior.
+The lockfile updates only `coreaudio-sys` and `bindgen` for current macOS SDKs.
+A macOS window-size workaround handles invalid resize events from the old
+windowing library until the Bevy/windowing upgrade.
+
+For dependency diagnostics, install the separate CLI with
+`cargo install --locked --version 0.20.2 cargo-deny`, then run
+`cargo deny --locked --target aarch64-apple-darwin check advisories` on this Mac.
+Existing advisories are expected;
+this command does not upgrade packages. `samply` is an optional native CPU
+profiler; after installing version 0.13.1, run
+`CARGO_MANIFEST_DIR="$PWD" samply record ./target/release/autonomous-characters-3d`.
+For source line information, first rebuild with
+`CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --locked`.
+Keep profiling separate from uninstrumented performance measurements.
+
 ## Sources
 
 Some sources I used for inspiration and help building this.
@@ -20,7 +60,7 @@ Some sources I used for inspiration and help building this.
 
 ### Language and libraries used
 
-- Rust 1.66 (programming language)
+- Rust 1.95.0 (tested local development toolchain)
 - Bevy 0.9.1 (game engine)
 - Rayon 1.6.1 (multithreading)
 - Nalgebra 0.31.4 (linear algebra library)

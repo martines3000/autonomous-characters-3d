@@ -16,8 +16,8 @@ use smooth_bevy_cameras::{
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 
 fn main() {
-    App::new()
-        .insert_resource(ClearColor(Color::rgb(0.2, 0.2, 0.2)))
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::rgb(0.2, 0.2, 0.2)))
         .insert_resource(Msaa { samples: 4 })
         .init_resource::<GlobalState>()
         .init_resource::<RenderState>()
@@ -45,8 +45,26 @@ fn main() {
         .add_plugin(vehicle::VehiclePlugin)
         .add_plugin(target::TargetPlugin)
         .add_system(fps_update_system)
-        .add_system(ui)
-        .run();
+        .add_system(ui);
+
+    #[cfg(target_os = "macos")]
+    app.add_system_to_stage(CoreStage::First, sync_native_window_sizes);
+
+    app.run();
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_window_sizes(
+    native_windows: NonSend<bevy::winit::WinitWindows>,
+    mut windows: ResMut<Windows>,
+) {
+    // shortcut: winit 0.27 reports invalid macOS resize events; remove after its upgrade.
+    for window in windows.iter_mut() {
+        if let Some(native_window) = native_windows.get_window(window.id()) {
+            let size = native_window.inner_size();
+            window.update_actual_size_from_backend(size.width, size.height);
+        }
+    }
 }
 
 pub fn test_octree_visualization(
