@@ -226,3 +226,6 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 - Validation ran sequentially with CARGO_BUILD_JOBS=4: cargo test --release --locked PASS (4 tests), cargo build --release --locked PASS, native startup smoke PASS (10s), formatting and git diff --check PASS. Two existing dead-code compiler warnings remain. No dependency or simulation-math changes.
 - Native visual inspection confirmed the Controls panel fits alongside the menu and FPS, and the idle status is visible. CUA coordinate clicks remain unreliable on this host; follow color transitions are covered by the automated ECS test, rather than claimed as a completed manual click test.
 - Numerical safety remains the next handoff task. The previous prompt's branch/checkpoint description should use the latest HEAD rather than assuming262dc33.
+
+## Planning moved to plans/ — 2026-10-30
+- This log is now historical. New work is tracked with ExecPlans: see `AGENTS.md`, `PLANS.md` and `plans/STATUS.md` (which also records the current status of findings F01–F14).

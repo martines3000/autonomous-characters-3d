@@ -3,17 +3,14 @@ extern crate nalgebra as na;
 // const WORLD_SIZE: Vec3 = Vec3::new(200.0, 200.0, 100.0);
 const WORLD_SIZE: Vec3 = Vec3::new(2000.0, 2000.0, 1000.0);
 
-use std::{
-    f32::consts::PI,
-    ops::{Div, Mul},
-};
+use std::{f32::consts::PI, ops::Mul};
 
 use crate::{
     octree::{Octree, Point},
     target::{Target, TargetSelection},
     GlobalState, RenderState,
 };
-use na::{SimdPartialOrd, Vector3};
+use na::Vector3;
 
 use bevy::prelude::*;
 use rand::RngExt;
@@ -83,12 +80,11 @@ fn vehicle_spawner(
             ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
-                Vector3::new(
+                normalize_or_zero(Vector3::new(
                     rand::random::<f32>() * state.vehicle_max_speed,
                     rand::random::<f32>() * state.vehicle_max_speed,
                     rand::random::<f32>() * state.vehicle_max_speed,
-                )
-                .normalize()
+                ))
                 .mul(state.vehicle_max_speed),
             ))
             .insert(VehicleAcceleration(Vector3::zeros()))
@@ -135,7 +131,7 @@ fn movement(
                 // Calculate force
                 let mut force: Vector3<f32> =
                     (target_transform.translation - transform.translation).into();
-                force = force.normalize().mul(state.vehicle_max_speed);
+                force = normalize_or_zero(force).mul(state.vehicle_max_speed);
                 force -= velocity.0;
 
                 // Limit force
@@ -166,7 +162,7 @@ fn movement(
                     || transform.translation.z > WORLD_SIZE.z;
 
                 if !fx && !fy && !fz {
-                    let center = velocity.0.normalize().mul(state.vehicle_wander_distance)
+                    let center = normalize_or_zero(velocity.0).mul(state.vehicle_wander_distance)
                         + Into::<Vector3<f32>>::into(transform.translation);
                     let mut rng = rand::rng();
 
@@ -186,7 +182,7 @@ fn movement(
                     // Calculate force
                     let mut force: Vector3<f32> =
                         (target - Into::<Vector3<f32>>::into(transform.translation)).into();
-                    force = force.normalize().mul(state.vehicle_wander_speed);
+                    force = normalize_or_zero(force).mul(state.vehicle_wander_speed);
                     force -= velocity.0;
 
                     // Limit force
@@ -271,25 +267,29 @@ fn update(
     time: Res<Time>,
     state: Res<GlobalState>,
 ) {
-    let min = Vector3::from_element(state.vehicle_max_speed * -1.0);
-    let max = Vector3::from_element(state.vehicle_max_speed);
-
     vehicle_query
         .par_iter_mut()
         .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
-            velocity.0 = (velocity.0 + acceleration.0).simd_clamp(min, max);
+            velocity.0 += acceleration.0;
+            limit(&mut velocity.0, state.vehicle_max_speed);
 
             transform.translation.x += velocity.0.x * time.delta_secs();
             transform.translation.y += velocity.0.y * time.delta_secs();
             transform.translation.z += velocity.0.z * time.delta_secs();
 
-            transform.rotation = Quat::from_rotation_arc(
-                Vec3::new(0.0, 1.0, 0.0).into(),
-                velocity.0.normalize().into(),
-            );
+            let direction = normalize_or_zero(velocity.0);
+            if direction != Vector3::zeros() {
+                transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction.into());
+            }
 
             acceleration.0 *= 0.0;
         });
+}
+
+fn normalize_or_zero(vector: Vector3<f32>) -> Vector3<f32> {
+    vector
+        .try_normalize(f32::EPSILON)
+        .unwrap_or(Vector3::zeros())
 }
 
 fn limit(data: &mut Vector3<f32>, max: f32) {
@@ -356,13 +356,6 @@ fn flock(
     >,
     state: &Res<GlobalState>,
 ) {
-    let limit_seperate = state.vehicle_max_speed * state.vehicle_seperation_factor;
-    let limit_align = state.vehicle_max_speed * state.vehicle_alignment_factor;
-    let limit_cohesion = state.vehicle_max_speed * state.vehicle_cohesion_factor;
-    let dist_seperate = (state.vehicle_size * state.vehicle_seperation_distance).powi(2);
-    let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
-    let dist_cohesion = (state.vehicle_size * state.vehicle_cohesion_distance).powi(2);
-
     if state.use_octree {
         let mut octree = Octree::new(state.octree_size);
         octree.create_root(
@@ -402,89 +395,22 @@ fn flock(
         // Find all neighbors for each vehicle
         vehicle_query.par_iter_mut().for_each(
             |(entity, velocity, mut acceleration, transform, mass, _)| {
-                let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
-                let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
-                let mut cohesion_sum = Vector3::new(0.0, 0.0, 0.0);
-                let mut seperate_count = 0;
-                let mut align_count = 0;
-                let mut cohesion_count = 0;
-
                 let neighbors = octree.find_neighbors(&Point {
                     x: transform.translation.x,
                     y: transform.translation.y,
                     z: transform.translation.z,
                 });
 
-                neighbors.iter().for_each(|neighbor| {
-                    let (other_entity, other_transform, other_velocity) =
-                        (neighbor.entity, &neighbor.transform, &neighbor.velocity);
-
-                    if entity == other_entity {
-                        return;
-                    }
-
-                    let distance: f32 = Into::<Vector3<f32>>::into(
-                        other_transform.translation - transform.translation,
-                    )
-                    .magnitude_squared();
-
-                    if distance < dist_seperate {
-                        let mut diff = Into::<Vector3<f32>>::into(
-                            transform.translation - other_transform.translation,
-                        );
-                        diff = diff.normalize().div(distance.sqrt());
-                        seperate_sum += diff;
-                        seperate_count += 1;
-                    }
-
-                    if distance < dist_align {
-                        align_sum += other_velocity;
-                        align_count += 1;
-                    }
-
-                    if distance < dist_cohesion {
-                        cohesion_sum += Into::<Vector3<f32>>::into(other_transform.translation);
-                        cohesion_count += 1;
-                    }
-                });
-
-                //Apply seperation
-                if seperate_count > 0 {
-                    seperate_sum /= seperate_count as f32;
-                    seperate_sum = seperate_sum.normalize() * state.vehicle_max_speed;
-                    seperate_sum -= velocity.0;
-                    limit(&mut seperate_sum, limit_seperate);
-                    acceleration.apply_force(seperate_sum, mass);
-                }
-
-                // Apply alignment
-                if align_count > 0 {
-                    align_sum /= align_count as f32;
-                    align_sum = align_sum.normalize() * state.vehicle_max_speed;
-                    align_sum -= velocity.0;
-                    limit(&mut align_sum, limit_align);
-                    acceleration.apply_force(align_sum, mass);
-                }
-
-                // Apply cohesion
-                if cohesion_count > 0 {
-                    cohesion_sum /= cohesion_count as f32;
-                    cohesion_sum = cohesion_sum - Into::<Vector3<f32>>::into(transform.translation);
-                    cohesion_sum = cohesion_sum
-                        .try_normalize(f32::MIN)
-                        .unwrap_or(Vector3::zeros());
-
-                    let dist = cohesion_sum.magnitude();
-
-                    if dist < 10.0 {
-                        cohesion_sum *= dist / 10.0;
-                    }
-
-                    cohesion_sum *= state.vehicle_max_speed;
-                    cohesion_sum -= velocity.0;
-                    limit(&mut cohesion_sum, limit_cohesion);
-                    acceleration.apply_force(cohesion_sum, mass);
-                }
+                let force = flocking_force(
+                    transform.translation.into(),
+                    velocity.0,
+                    neighbors
+                        .iter()
+                        .filter(|neighbor| neighbor.entity != entity)
+                        .map(|neighbor| (neighbor.transform.translation.into(), neighbor.velocity)),
+                    state,
+                );
+                acceleration.apply_force(force, mass);
             },
         );
 
@@ -500,89 +426,256 @@ fn flock(
 
     vehicle_query.par_iter_mut().for_each(
         |(entity, velocity, mut acceleration, transform, mass, _)| {
-            let mut seperate_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut align_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut cohesion_sum = Vector3::new(0.0, 0.0, 0.0);
-            let mut seperate_count = 0;
-            let mut align_count = 0;
-            let mut cohesion_count = 0;
-
-            others
-                .iter()
-                .for_each(|(other_index, other_velocity, other_transform)| {
-                    if entity.index() == *other_index {
-                        return;
-                    }
-
-                    let distance: f32 = Into::<Vector3<f32>>::into(
-                        other_transform.translation - transform.translation,
-                    )
-                    .magnitude_squared();
-
-                    if distance < dist_seperate {
-                        let mut diff = Into::<Vector3<f32>>::into(
-                            transform.translation - other_transform.translation,
-                        );
-                        diff = diff.normalize().div(distance.sqrt());
-                        seperate_sum += diff;
-                        seperate_count += 1;
-                    }
-
-                    if distance < dist_align {
-                        align_sum += other_velocity;
-                        align_count += 1;
-                    }
-
-                    if distance < dist_cohesion {
-                        cohesion_sum += Into::<Vector3<f32>>::into(other_transform.translation);
-                        cohesion_count += 1;
-                    }
-                });
-
-            //Apply seperation
-            if seperate_count > 0 {
-                seperate_sum /= seperate_count as f32;
-                seperate_sum = seperate_sum.normalize() * state.vehicle_max_speed;
-                seperate_sum -= velocity.0;
-                limit(&mut seperate_sum, limit_seperate);
-                acceleration.apply_force(seperate_sum, mass);
-            }
-
-            // Apply alignment
-            if align_count > 0 {
-                align_sum /= align_count as f32;
-                align_sum = align_sum.normalize() * state.vehicle_max_speed;
-                align_sum -= velocity.0;
-                limit(&mut align_sum, limit_align);
-                acceleration.apply_force(align_sum, mass);
-            }
-
-            // Apply cohesion
-            if cohesion_count > 0 {
-                cohesion_sum /= cohesion_count as f32;
-                cohesion_sum = cohesion_sum - Into::<Vector3<f32>>::into(transform.translation);
-                cohesion_sum = cohesion_sum
-                    .try_normalize(f32::MIN)
-                    .unwrap_or(Vector3::zeros());
-
-                let dist = cohesion_sum.magnitude();
-
-                if dist < 10.0 {
-                    cohesion_sum *= dist / 10.0;
-                }
-
-                cohesion_sum *= state.vehicle_max_speed;
-                cohesion_sum -= velocity.0;
-                limit(&mut cohesion_sum, limit_cohesion);
-                acceleration.apply_force(cohesion_sum, mass);
-            }
+            let force = flocking_force(
+                transform.translation.into(),
+                velocity.0,
+                others
+                    .iter()
+                    .filter(|(other_index, _, _)| entity.index() != *other_index)
+                    .map(|(_, other_velocity, other_transform)| {
+                        (other_transform.translation.into(), *other_velocity)
+                    }),
+                state,
+            );
+            acceleration.apply_force(force, mass);
         },
     );
+}
+
+fn flocking_force(
+    position: Vector3<f32>,
+    velocity: Vector3<f32>,
+    neighbors: impl Iterator<Item = (Vector3<f32>, Vector3<f32>)>,
+    state: &GlobalState,
+) -> Vector3<f32> {
+    let dist_seperate = (state.vehicle_size * state.vehicle_seperation_distance).powi(2);
+    let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
+    let dist_cohesion = (state.vehicle_size * state.vehicle_cohesion_distance).powi(2);
+    let mut seperate_sum = Vector3::zeros();
+    let mut align_sum = Vector3::zeros();
+    let mut cohesion_sum = Vector3::zeros();
+    let mut seperate_count = 0;
+    let mut align_count = 0;
+    let mut cohesion_count = 0;
+
+    for (other_position, other_velocity) in neighbors {
+        let diff = position - other_position;
+        let distance_squared = diff.magnitude_squared();
+
+        if distance_squared > 0.0 && distance_squared < dist_seperate {
+            seperate_sum += diff / distance_squared;
+            seperate_count += 1;
+        }
+        if distance_squared < dist_align {
+            align_sum += other_velocity;
+            align_count += 1;
+        }
+        if distance_squared < dist_cohesion {
+            cohesion_sum += other_position;
+            cohesion_count += 1;
+        }
+    }
+
+    if seperate_count > 0 {
+        seperate_sum /= seperate_count as f32;
+        seperate_sum = normalize_or_zero(seperate_sum) * state.vehicle_max_speed - velocity;
+        limit(
+            &mut seperate_sum,
+            state.vehicle_max_speed * state.vehicle_seperation_factor,
+        );
+    }
+    if align_count > 0 {
+        align_sum /= align_count as f32;
+        align_sum = normalize_or_zero(align_sum) * state.vehicle_max_speed - velocity;
+        limit(
+            &mut align_sum,
+            state.vehicle_max_speed * state.vehicle_alignment_factor,
+        );
+    }
+    if cohesion_count > 0 {
+        let offset = cohesion_sum / cohesion_count as f32 - position;
+        let distance = offset.magnitude();
+        cohesion_sum =
+            normalize_or_zero(offset) * state.vehicle_max_speed * (distance / 10.0).min(1.0)
+                - velocity;
+        limit(
+            &mut cohesion_sum,
+            state.vehicle_max_speed * state.vehicle_cohesion_factor,
+        );
+    }
+
+    seperate_sum + align_sum + cohesion_sum
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flocking_state() -> GlobalState {
+        GlobalState {
+            vehicle_size: 1.0,
+            vehicle_max_speed: 80.0,
+            vehicle_seperation_factor: 1.5,
+            vehicle_alignment_factor: 3.0,
+            vehicle_cohesion_factor: 4.0,
+            vehicle_seperation_distance: 4.0,
+            vehicle_alignment_distance: 30.0,
+            vehicle_cohesion_distance: 20.0,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn normalization_handles_zero_and_near_zero() {
+        assert_eq!(normalize_or_zero(Vector3::zeros()), Vector3::zeros());
+        assert_eq!(normalize_or_zero(Vector3::repeat(1e-10)), Vector3::zeros());
+        assert_eq!(normalize_or_zero(Vector3::new(3.0, 0.0, 0.0)), Vector3::x());
+    }
+
+    #[test]
+    fn coincident_neighbor_gives_finite_force() {
+        let force = flocking_force(
+            Vector3::zeros(),
+            Vector3::x(),
+            [(Vector3::zeros(), Vector3::zeros())].into_iter(),
+            &flocking_state(),
+        );
+        assert!(force.iter().all(|value| value.is_finite()));
+        assert_eq!(force, Vector3::new(-2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn opposing_neighbor_velocities_give_finite_force() {
+        let force = flocking_force(
+            Vector3::zeros(),
+            Vector3::zeros(),
+            [
+                (Vector3::x() * 5.0, Vector3::x()),
+                (Vector3::x() * 6.0, -Vector3::x()),
+            ]
+            .into_iter(),
+            &flocking_state(),
+        );
+        assert!(force.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn vehicle_at_neighbors_center_gives_finite_force() {
+        let force = flocking_force(
+            Vector3::zeros(),
+            Vector3::zeros(),
+            [(Vector3::x(), Vector3::y()), (-Vector3::x(), Vector3::y())].into_iter(),
+            &flocking_state(),
+        );
+        assert!(force.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn cohesion_arrives_at_half_speed_five_units_away() {
+        let state = GlobalState {
+            vehicle_seperation_distance: 1.0,
+            vehicle_alignment_distance: 1.0,
+            vehicle_cohesion_factor: 10.0,
+            ..flocking_state()
+        };
+        let force = flocking_force(
+            Vector3::zeros(),
+            Vector3::zeros(),
+            [(Vector3::x() * 5.0, Vector3::zeros())].into_iter(),
+            &state,
+        );
+        assert_eq!(force, Vector3::x() * state.vehicle_max_speed * 0.5);
+    }
+
+    #[test]
+    fn diagonal_velocity_is_limited_by_magnitude() {
+        let mut velocity = Vector3::repeat(80.0);
+        limit(&mut velocity, 80.0);
+        assert!((velocity.magnitude() - 80.0).abs() <= 1e-3);
+    }
+
+    #[test]
+    fn stationary_vehicle_keeps_its_rotation() {
+        let mut app = App::new();
+        app.insert_resource(flocking_state())
+            .init_resource::<Time>()
+            .add_systems(Update, update);
+        let rotation = Quat::from_rotation_x(0.5);
+        let entity = app
+            .world_mut()
+            .spawn((
+                Vehicle,
+                VehicleVelocity::default(),
+                VehicleAcceleration::default(),
+                Transform::from_rotation(rotation),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().rotation,
+            rotation
+        );
+    }
+
+    #[test]
+    fn degenerate_vehicles_stay_finite_and_within_max_speed() {
+        for use_octree in [false, true] {
+            for following in [true, false] {
+                let mut app = App::new();
+                app.init_resource::<GlobalState>()
+                    .init_resource::<Time>()
+                    .add_systems(Startup, crate::configure_global_state);
+                app.update();
+                {
+                    let mut state = app.world_mut().resource_mut::<GlobalState>();
+                    state.use_octree = use_octree;
+                    state.octree_size = 2;
+                    state.vehicle_mass = 1.0;
+                }
+                app.add_systems(Update, (movement, update).chain());
+                let position = Vec3::splat(10.0);
+                app.world_mut().spawn((
+                    Target,
+                    TargetSelection(following),
+                    Transform::from_translation(position),
+                ));
+                for velocity in [
+                    Vector3::zeros(),
+                    Vector3::repeat(80.0),
+                    Vector3::repeat(-80.0),
+                ] {
+                    app.world_mut().spawn((
+                        Vehicle,
+                        VehicleVelocity(velocity),
+                        VehicleAcceleration::default(),
+                        VehicleMass(1.0),
+                        VehicleWanderRotation::default(),
+                        Transform::from_translation(position),
+                    ));
+                }
+                for frame in 0..8 {
+                    app.world_mut()
+                        .resource_mut::<Time>()
+                        .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+                    app.update();
+                    let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
+                    for (transform, velocity) in app
+                        .world_mut()
+                        .query_filtered::<(&Transform, &VehicleVelocity), With<Vehicle>>()
+                        .iter(app.world())
+                    {
+                        assert!(
+                            transform.translation.is_finite(),
+                            "translation: octree={use_octree}, following={following}, frame={frame}"
+                        );
+                        assert!(transform.rotation.is_finite());
+                        assert!(velocity.0.iter().all(|value| value.is_finite()));
+                        assert!(velocity.0.magnitude() <= max_speed + 1e-3);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn vehicle_count_changes_remove_scene_children() {

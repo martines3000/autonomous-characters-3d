@@ -18,7 +18,10 @@ python3 scripts/smoke-native.py
 
 The smoke check opens the app for ten seconds and then closes it. It requires
 a desktop session with graphics support; it checks startup, not flocking correctness
-or performance. Rust regression tests cover camera input, target selection, and vehicle cleanup.
+or performance. Rust regression tests cover camera input, target selection, vehicle cleanup,
+and numerical safety of steering (finite values, magnitude speed limit, cohesion arrival).
+
+Agent and planning conventions are in `AGENTS.md`, `PLANS.md` and `plans/STATUS.md`.
 
 `cargo run` supplies the asset root. When running the binary directly, set it:
 
