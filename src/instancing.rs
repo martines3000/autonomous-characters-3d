@@ -37,11 +37,13 @@ use bevy::{
 use crate::{
     gpu_flock::GpuParams,
     scene::{Appearance, HeadingPalette},
+    vehicle, GlobalState,
 };
 
 const SHADER_ASSET_PATH: &str = "shaders/vehicle_instancing.wesl";
 
-/// Per-vehicle data: `[position.xyz, scale]` and the rotation quaternion `[x, y, z, w]`.
+/// Per-vehicle data: `[position.xyz, packed speed/group]` and rotation `[x, y, z, w]`.
+/// See `vehicle_appearance::pack_speed_group`; physical and render scale live in the uniform.
 pub type InstanceData = [Vec4; 2];
 
 /// Instance data for every vehicle, drawn with this entity's `Mesh3d`.
@@ -90,7 +92,7 @@ impl Plugin for InstancingPlugin {
     }
 }
 
-/// Shared render-only parameters. Neutral scale/color-mode slots are reserved for stage 2.
+/// Shared appearance parameters; simulation size is copied here without changing its meaning.
 #[derive(Resource, ExtractResource, ShaderType, Clone, Default, PartialEq, Debug)]
 #[extract_app(RenderApp)]
 struct AppearanceUniform {
@@ -101,28 +103,53 @@ struct AppearanceUniform {
     shading: Vec4,
     // palette (0 = original HSV), color mode (0 = heading), reserved, reserved.
     modes: UVec4,
+    // width, length, width, altitude half-height.
+    proportions: Vec4,
+    solid_color: Vec4,
 }
 
-impl From<&Appearance> for AppearanceUniform {
-    fn from(appearance: &Appearance) -> Self {
+impl AppearanceUniform {
+    fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
         let look = appearance.style.settings();
         Self {
             colors: appearance.palette.colors(),
-            material: Vec4::new(look.roughness, look.metallic, look.rim, 1.0),
+            material: Vec4::new(
+                look.roughness,
+                look.metallic,
+                look.rim,
+                state.vehicle_size * appearance.vehicles.visual_size,
+            ),
             shading: Vec4::new(look.emission, 0.0, 0.0, 0.0),
             modes: UVec4::new(
                 u32::from(appearance.palette != HeadingPalette::Classic),
-                0,
+                appearance.vehicles.color_mode as u32,
                 0,
                 0,
             ),
+            proportions: Vec4::new(
+                appearance.vehicles.width,
+                appearance.vehicles.length,
+                appearance.vehicles.width,
+                vehicle::walls(state.vehicle_count).y,
+            ),
+            solid_color: Color::srgb_u8(
+                appearance.vehicles.solid_color[0],
+                appearance.vehicles.solid_color[1],
+                appearance.vehicles.solid_color[2],
+            )
+            .to_linear()
+            .to_vec4(),
         }
     }
 }
 
-fn update_appearance(appearance: Res<Appearance>, mut uniform: ResMut<AppearanceUniform>) {
-    if appearance.is_changed() {
-        uniform.set_if_neq(AppearanceUniform::from(&*appearance));
+fn update_appearance(
+    appearance: Res<Appearance>,
+    state: Res<GlobalState>,
+    mut uniform: ResMut<AppearanceUniform>,
+) {
+    if appearance.is_changed() || state.is_changed() {
+        uniform.set_if_neq(AppearanceUniform::from_settings(&appearance, &state));
     }
 }
 
@@ -411,6 +438,59 @@ mod tests {
     use crate::{scene::SceneStyle, GlobalState};
 
     #[test]
+    fn vehicle_appearance_changes_preserve_every_simulation_field_and_gpu_parameter() {
+        use crate::{
+            gpu_flock::gpu_params,
+            vehicle_appearance::{ColorMode, VehicleShape},
+        };
+        let state = GlobalState {
+            vehicle_size: 1.75,
+            ..default()
+        };
+        let mut app = App::new();
+        app.insert_resource(state.clone())
+            .init_resource::<Appearance>()
+            .init_resource::<AppearanceUniform>()
+            .add_systems(Update, update_appearance);
+        let encode = |state: &GlobalState| {
+            let mut bytes = encase::UniformBuffer::new(Vec::<u8>::new());
+            bytes
+                .write(&gpu_params(
+                    state,
+                    Vec3::new(3.0, 5.0, 7.0),
+                    true,
+                    1.0 / 60.0,
+                ))
+                .unwrap();
+            bytes.into_inner()
+        };
+        let before = encode(&state);
+        for shape in VehicleShape::ALL {
+            for color_mode in ColorMode::ALL {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.vehicles.shape = shape;
+                    appearance.vehicles.color_mode = color_mode;
+                    appearance.vehicles.visual_size = 2.0;
+                    appearance.vehicles.length = 2.5;
+                    appearance.vehicles.width = 0.5;
+                    appearance.vehicles.solid_color = [255, 40, 120];
+                }
+                app.update();
+                assert_eq!(app.world().resource::<GlobalState>(), &state);
+                assert_eq!(encode(app.world().resource::<GlobalState>()), before);
+                let uniform = app.world().resource::<AppearanceUniform>();
+                assert_eq!(uniform.material.w, 3.5);
+                assert_eq!(
+                    uniform.proportions,
+                    Vec4::new(0.5, 2.5, 0.5, vehicle::walls(state.vehicle_count).y)
+                );
+                assert_eq!(uniform.modes.y, color_mode as u32);
+            }
+        }
+    }
+
+    #[test]
     fn switching_style_and_palette_changes_only_render_parameters() {
         let mut app = App::new();
         app.init_resource::<GlobalState>()
@@ -437,7 +517,12 @@ mod tests {
             palette: HeadingPalette::Classic,
             ..default()
         };
-        assert_eq!(AppearanceUniform::from(&appearance).modes.x, 0);
-        assert_eq!(AppearanceUniform::min_size().get(), 160);
+        assert_eq!(
+            AppearanceUniform::from_settings(&appearance, &GlobalState::default())
+                .modes
+                .x,
+            0
+        );
+        assert_eq!(AppearanceUniform::min_size().get(), 192);
     }
 }

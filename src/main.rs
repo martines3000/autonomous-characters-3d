@@ -5,6 +5,7 @@ mod scenario;
 mod scene;
 mod target;
 mod vehicle;
+mod vehicle_appearance;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
@@ -144,7 +145,7 @@ impl SimulationMode {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, Debug, PartialEq)]
 struct GlobalState {
     // Basic info
     vehicle_count: usize,
@@ -211,7 +212,7 @@ fn ui(
     let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
     egui::Window::new("Menu")
-        .default_size([340.0, 440.0])
+        .default_size([340.0, 640.0])
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
@@ -322,7 +323,7 @@ fn ui(
             );
 
             });
-            egui::CollapsingHeader::new("Appearance / Scene").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Scene").default_open(true).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Style");
                     for style in scene::SceneStyle::ALL {
@@ -339,6 +340,9 @@ fn ui(
                 if ui.button("Frame world").clicked() {
                     appearance.frame_requested = true;
                 }
+            });
+            egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
+                vehicle_appearance::ui(ui, &mut appearance.vehicles);
             });
         });
     let following = targets.iter().any(|selection| selection.0);

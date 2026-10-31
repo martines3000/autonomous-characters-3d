@@ -145,6 +145,7 @@ impl HeadingPalette {
 pub struct Appearance {
     pub style: SceneStyle,
     pub palette: HeadingPalette,
+    pub vehicles: crate::vehicle_appearance::VehicleAppearance,
     pub auto_frame: bool,
     pub frame_requested: bool,
     pub count_editing: bool,
@@ -155,6 +156,7 @@ impl Default for Appearance {
         Self {
             style: SceneStyle::default(),
             palette: HeadingPalette::default(),
+            vehicles: default(),
             auto_frame: true,
             frame_requested: false,
             count_editing: false,

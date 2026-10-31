@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 43 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 48 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -82,7 +82,7 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- The Menu groups controls under **Simulation**, **Steering**, and **Appearance / Scene**.
+- The Menu groups controls under **Simulation**, **Steering**, **Scene**, and **Vehicles**.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
@@ -109,6 +109,37 @@ menu when it has focus.
 - Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
   `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
 
+### Vehicle appearance
+
+The **Vehicles** section changes the running flock without respawning or resetting it. Shapes are
+cached procedural meshes sharing the existing single instanced draw; every shape points along
+local +Y and measures 2.5 units long before scaling.
+
+| Shape | Triangles | Geometry |
+| --- | ---: | --- |
+| Dart (default / Classic) | 14 | Original Cone(0.7, 2.5), resolution 8 |
+| Chevron | 12 | Thin closed arrow/chevron prism |
+| Fish | 16 | Faceted body and tail fin |
+| Bird | 24 | Thin body and swept wings |
+
+**Render size** (0.1–5, default 1) is separate from `GlobalState::vehicle_size`. The latter retains
+its original physical meaning, scales neighbor radii, and remains 1 by default. Render size never
+changes that field, separation, velocities or steering. **Length** and **Width** (0.25–3, default 1)
+are also render-only: length scales forward (+Y); width scales both perpendicular axes (X and Z).
+The renderer combines these multipliers with the existing physical size for compatibility. There
+is no setting linking visual size to separation. Normals account for the non-uniform proportions.
+
+Coloring defaults to **Heading**, retaining the selected Stage 1 cyclic palette. **Altitude** maps
+world y from the lower to upper wall to a palette ramp, clamped outside the walls. **Speed** maps
+actual speed divided by the configured maximum speed to that ramp. Similar speeds correctly yield
+similar colors. Scalar ramps use the first through sixth distinct stops rather than closing the
+heading wheel; Classic scalar coloring uses a red-to-violet HSV ramp. **Solid** uses the sRGB color
+picker. Scene lighting, rim and Studio emission apply to every coloring mode.
+
+Style changes preserve shape, multipliers, coloring mode and solid color. To reproduce the original
+look, select **Classic** style, **Dart**, render size/length/width **1**, **Heading**, and **Classic**
+palette. Appearance changes preserve count, positions, velocities, follow state and all physical settings.
+
 ## How it works
 
 ```text
@@ -118,6 +149,7 @@ src/
 ├── octree.rs        # exact radius queries for the CPU octree mode
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
 ├── instancing.rs    # one instanced draw and shared appearance uniform
+├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
 ├── scene.rs         # styles, palettes, world grid, fog and framing
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
@@ -181,7 +213,8 @@ or nonfinite timestamps, and unpaired measurements fail with the file and line n
 Without the variable, no scenario resource or system is installed.
 
 Each line is `<seconds-since-start> <command> [args]`. Blank lines and `#` comments are ignored;
-times are real elapsed seconds, nonnegative and nondecreasing. Equal-time commands retain file
+`set solid_color #RRGGBB` treats its color token as a value rather than a comment.
+Times are real elapsed seconds, nonnegative and nondecreasing. Equal-time commands retain file
 order. Names and enum values are lowercase; paths and labels are single whitespace-free tokens.
 Commands run on the first frame at or after their timestamp, so separate dependent screenshots
 from changes by several frames. Screenshot paths are relative to the launch directory unless absolute;
@@ -218,6 +251,11 @@ pgrep -a autonomous   # no process should remain after exit
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio`, `classic` |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
+| `set shape` | `dart`, `chevron` (alias `arrow`), `fish`, `bird` (alias `glider`) |
+| `set visual_size` | Render-only multiplier, 0.1–5; default 1 |
+| `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
+| `set color_mode` | `heading`, `altitude`, `speed`, `solid` |
+| `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
 | `set auto_frame` | `on` / `off` (also `true` / `false`) |
 | `set gpu_max_neighbors` | Integer 0–512 |
 | `set octree_size` | Integer 2–500 |
@@ -235,7 +273,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `exit` | Exit normally; end any measurement first |
 
 `AC3D_MEASURE` reports frames, arithmetic mean/p50/p95 frame milliseconds, FPS (`1000 / mean`),
-physical window resolution, count, mode, style and palette. Samples use `Time<Real>` and include
+physical window resolution, count, mode, style, palette, shape, color mode and render multipliers. Samples use `Time<Real>` and include
 presentation, CPU/GPU overlap and desktop scheduling; these are rendered frame intervals, not GPU
 timestamps. Begin excludes the preceding interval; end includes the final interval. Metadata reflects
 settings at end, so keep settings, count, follow state, camera and window resolution fixed throughout
@@ -243,6 +281,14 @@ a measurement. Keep the app focused: Bevy throttles unfocused updates to about 6
 `present immediate`. Warm up first, capture outside the window, check `uptime`, and repeat runs on
 an idle machine. Scripts do not seed or reset the simulation; GPU scatter and interactive frame deltas vary.
 The setting whitelist and ranges live together in `src/scenario.rs`; extend its typed settings for later stages.
+
+The instance stream stays 32 bytes: position plus packed speed/group in one Vec4, and rotation in
+another. The first Vec4's w is a normal finite f32 in [1,2): mantissa bits 0–15 encode normalized
+speed, bits 16–22 reserve a group id (0–127, currently always zero). Speed endpoints 0 and 1 are exact;
+maximum quantization error is half of 1/65535. No groups are implemented. CPU and GPU write the same
+encoding; render scale comes from the shared appearance uniform instead of w. No GPU readback is
+needed for Speed coloring.
+
 
 GPU tests and benchmarks are `#[ignore]`d. They need a real GPU, and device creation can fail inside
 sandboxes.

@@ -52,7 +52,8 @@ struct Boid {
 };
 
 struct Instance {
-    position_scale: vec4<f32>,
+    // xyz: position; w: speed/group payload (normal f32 mantissa), not physical size.
+    position_speed_group: vec4<f32>,
     rotation: vec4<f32>,
 };
 
@@ -421,5 +422,8 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         rotation = heading_rotation(direction);
     }
     boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0));
-    instances[index] = Instance(vec4<f32>(next, params.size), rotation);
+    // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.
+    let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
+    let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)); // group zero
+    instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation);
 }

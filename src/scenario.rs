@@ -12,6 +12,7 @@ use bevy::{
 use crate::{
     scene::{Appearance, HeadingPalette, SceneStyle},
     target::{Target, TargetSelection},
+    vehicle_appearance::{ColorMode, VehicleShape},
     GlobalState, SimulationMode,
 };
 
@@ -70,6 +71,12 @@ enum Setting {
     FollowSamples(u32),
     OctreeSize(usize),
     Number(NumberSetting, f32),
+    Shape(VehicleShape),
+    VisualSize(f32),
+    Length(f32),
+    Width(f32),
+    ColorMode(ColorMode),
+    SolidColor([u8; 3]),
 }
 
 // Each numeric setting keeps its name, range and destination together for later stages.
@@ -147,12 +154,57 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("palette", "ocean") => Setting::Palette(HeadingPalette::Ocean),
         ("palette", "dusk") => Setting::Palette(HeadingPalette::Dusk),
         ("palette", "aurora") => Setting::Palette(HeadingPalette::Aurora),
+        ("shape", "dart") => Setting::Shape(VehicleShape::Dart),
+        ("shape", "chevron" | "arrow") => Setting::Shape(VehicleShape::Chevron),
+        ("shape", "fish") => Setting::Shape(VehicleShape::Fish),
+        ("shape", "bird" | "glider") => Setting::Shape(VehicleShape::Bird),
+        ("visual_size", _) => Setting::VisualSize(number(value, 0.1, 5.0)?),
+        ("length", _) => Setting::Length(number(value, 0.25, 3.0)?),
+        ("width", _) => Setting::Width(number(value, 0.25, 3.0)?),
+        ("color_mode", "heading") => Setting::ColorMode(ColorMode::Heading),
+        ("color_mode", "altitude") => Setting::ColorMode(ColorMode::Altitude),
+        ("color_mode", "speed") => Setting::ColorMode(ColorMode::Speed),
+        ("color_mode", "solid") => Setting::ColorMode(ColorMode::Solid),
+        ("solid_color", _) => Setting::SolidColor(hex_color(value)?),
         ("auto_frame", _) => Setting::AutoFrame(switch(value)?),
         ("gpu_max_neighbors", _) => Setting::FollowSamples(integer(value, 0, 512)? as u32),
         ("octree_size", _) => Setting::OctreeSize(integer(value, 2, 500)?),
-        ("mode" | "style" | "palette", _) => return Err(format!("invalid {name} '{value}'")),
+        ("mode" | "style" | "palette" | "shape" | "color_mode", _) => {
+            return Err(format!("invalid {name} '{value}'"))
+        }
         _ => NumberSetting::parse(name, value)?,
     })
+}
+
+fn hex_color(value: &str) -> Result<[u8; 3], String> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid solid_color '{value}'; expected RRGGBB or three sRGB numbers in 0..=1"
+        ));
+    }
+    Ok(std::array::from_fn(|i| {
+        u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap()
+    }))
+}
+
+// Preserve ordinary # comments while allowing a single #RRGGBB color argument.
+fn script_line(line: &str) -> &str {
+    let mut start = 0;
+    if let Some(hash) = line.find('#') {
+        let prefix: Vec<_> = line[..hash].split_whitespace().collect();
+        let tail = &line[hash + 1..];
+        if prefix.len() == 3
+            && prefix[1..] == ["set", "solid_color"]
+            && tail.len() >= 6
+            && tail.as_bytes()[..6].iter().all(u8::is_ascii_hexdigit)
+            && tail.as_bytes().get(6).is_none_or(u8::is_ascii_whitespace)
+        {
+            start = hash + 7;
+        }
+    }
+    let end = line[start..].find('#').map_or(line.len(), |i| start + i);
+    line[..end].trim()
 }
 
 fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
@@ -161,7 +213,7 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
     let mut measuring = false;
     let mut mode = GlobalState::default().mode;
     for (index, line) in script.lines().enumerate() {
-        let line = line.split('#').next().unwrap().trim();
+        let line = script_line(line);
         if line.is_empty() {
             continue;
         }
@@ -174,6 +226,16 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 return Err("timestamps must be finite, nonnegative and nondecreasing".into());
             }
             let command = match &words[1..] {
+                ["set", "solid_color", r, g, b] => {
+                    let values = [
+                        number(r, 0.0, 1.0)?,
+                        number(g, 0.0, 1.0)?,
+                        number(b, 0.0, 1.0)?,
+                    ];
+                    Command::Set(Setting::SolidColor(
+                        values.map(|v| (v * 255.0).round() as u8),
+                    ))
+                }
                 ["set", name, value] => {
                     let value = setting(name, value, mode)?;
                     if let Setting::Mode(next) = value {
@@ -336,6 +398,16 @@ fn apply_setting(world: &mut World, setting: Setting) {
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
+        Setting::Shape(value) => world.resource_mut::<Appearance>().vehicles.shape = value,
+        Setting::VisualSize(value) => {
+            world.resource_mut::<Appearance>().vehicles.visual_size = value
+        }
+        Setting::Length(value) => world.resource_mut::<Appearance>().vehicles.length = value,
+        Setting::Width(value) => world.resource_mut::<Appearance>().vehicles.width = value,
+        Setting::ColorMode(value) => world.resource_mut::<Appearance>().vehicles.color_mode = value,
+        Setting::SolidColor(value) => {
+            world.resource_mut::<Appearance>().vehicles.solid_color = value
+        }
         setting => {
             let mut state = world.resource_mut::<GlobalState>();
             match setting {
@@ -371,9 +443,9 @@ fn report(world: &mut World, mut measurement: Measurement) {
             .copied()
             .unwrap_or(0.0)
     };
-    info!("AC3D_MEASURE label={} frames={} mean_ms={:.3} p50_ms={:.3} p95_ms={:.3} fps={:.2} resolution={}x{} count={} mode={:?} style={} palette={}",
+    info!("AC3D_MEASURE label={} frames={} mean_ms={:.3} p50_ms={:.3} p95_ms={:.3} fps={:.2} resolution={}x{} count={} mode={:?} style={} palette={} shape={} color_mode={} visual_size={} length={} width={}",
         measurement.label, frames, mean, percentile(0.5), percentile(0.95), if mean > 0.0 { 1000.0 / mean } else { 0.0 },
-        resolution.0, resolution.1, state.vehicle_count, state.mode, appearance.style.name(), appearance.palette.name());
+        resolution.0, resolution.1, state.vehicle_count, state.mode, appearance.style.name(), appearance.palette.name(), appearance.vehicles.shape.name(), appearance.vehicles.color_mode.name(), appearance.vehicles.visual_size, appearance.vehicles.length, appearance.vehicles.width);
 }
 
 #[cfg(test)]
@@ -435,6 +507,38 @@ mod tests {
         assert!(parse("0 measure begin sample").is_err());
         assert!(parse("0 measure begin a\n1 measure begin b\n2 measure end").is_err());
         assert!(parse("0 measure begin a\n1 exit\n2 measure end").is_err());
+    }
+
+    #[test]
+    fn appearance_commands_validate_values_and_allow_hex_colors_and_comments() {
+        let script = "0 set shape arrow\n0 set shape glider\n0 set visual_size 0.5\n0 set length 3\n0 set width 0.25\n0 set color_mode altitude\n0 set color_mode speed\n0 set color_mode solid\n0 set solid_color #aBcD12 # comment\n0 set solid_color abcD12\n0 set solid_color 1 0.5 0 # comment";
+        let commands = parse(script).unwrap();
+        assert_eq!(
+            commands[8].command,
+            Command::Set(Setting::SolidColor([0xab, 0xcd, 0x12]))
+        );
+        assert_eq!(commands[9].command, commands[8].command);
+        assert_eq!(
+            commands[10].command,
+            Command::Set(Setting::SolidColor([255, 128, 0]))
+        );
+        assert_eq!(script_line("0 set count 200# comment"), "0 set count 200");
+        for bad in [
+            "shape sphere",
+            "color_mode random",
+            "visual_size 0",
+            "visual_size inf",
+            "length 4",
+            "width -1",
+            "solid_color #xyz123",
+            "solid_color 12345",
+            "solid_color 1 2 0",
+            "solid_color 0 NaN 0",
+        ] {
+            assert!(parse(&format!("# header\n0 set {bad}"))
+                .unwrap_err()
+                .starts_with("line 2:"));
+        }
     }
 
     #[test]

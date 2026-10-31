@@ -10,14 +10,16 @@ struct Appearance {
     material: vec4<f32>,
     shading: vec4<f32>,
     modes: vec4<u32>,
+    proportions: vec4<f32>,
+    solid_color: vec4<f32>,
 };
 @group(3) @binding(0) var<uniform> appearance: Appearance;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    // xyz: world position, w: uniform scale.
-    @location(8) i_position_scale: vec4<f32>,
+    // xyz: world position, w: packed normalized speed/reserved group.
+    @location(8) i_position_speed_group: vec4<f32>,
     // Rotation quaternion (x, y, z, w).
     @location(9) i_rotation: vec4<f32>,
 };
@@ -52,16 +54,36 @@ fn heading_color(heading: vec3<f32>) -> vec3<f32> {
     return pow(srgb, vec3<f32>(2.2));
 }
 
+// Scalar ramps use the six distinct stops without joining the last color back to the first.
+fn palette_ramp(t: f32) -> vec3<f32> {
+    let value = clamp(t, 0.0, 1.0);
+    if appearance.modes.x == 0u {
+        return pow(hsv_to_rgb(value * (5.0 / 6.0), 0.65, 1.0), vec3<f32>(2.2));
+    }
+    let ramp = value * 5.0;
+    let index = u32(ramp);
+    return mix(appearance.colors[index].rgb, appearance.colors[index + 1u].rgb, fract(ramp));
+}
+
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     let q = vertex.i_rotation;
-    let world = rotate(q, vertex.position * vertex.i_position_scale.w * appearance.material.w) + vertex.i_position_scale.xyz;
+    let world = rotate(q, vertex.position * appearance.proportions.xyz * appearance.material.w) + vertex.i_position_speed_group.xyz;
     var out: VertexOutput;
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
-    out.world_normal = rotate(q, vertex.normal);
+    // Inverse-transpose of the non-uniform local scale, then rotation; fragment normalizes it.
+    out.world_normal = rotate(q, vertex.normal / appearance.proportions.xyz);
     // The cone's apex points along local +Y, so that is the heading.
-    out.color = heading_color(rotate(q, vec3<f32>(0.0, 1.0, 0.0)));
+    switch appearance.modes.y {
+        case 1u: { out.color = palette_ramp(0.5 + 0.5 * vertex.i_position_speed_group.y / appearance.proportions.w); }
+        case 2u: {
+            let speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+            out.color = palette_ramp(speed);
+        }
+        case 3u: { out.color = appearance.solid_color.rgb; }
+        default: { out.color = heading_color(rotate(q, vec3<f32>(0.0, 1.0, 0.0))); }
+    }
     return out;
 }
 

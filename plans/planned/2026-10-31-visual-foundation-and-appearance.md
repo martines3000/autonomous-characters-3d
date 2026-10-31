@@ -1,15 +1,16 @@
 # Visual foundation and vehicle appearance
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It implements stages 1–2 of
-[the umbrella plan](2026-10-31-visual-showcase-and-swarm-features.md). Only stage 1 is authorized for
+[the umbrella plan](2026-10-31-visual-showcase-and-swarm-features.md). Stage 1 was accepted in `e635c6d`; Stage 2 is now authorized for
 this implementation worker. The orchestrator owns review, commits, STATUS and the umbrella plan.
 
 ## Purpose
 
 Stage 1 gives the existing instanced darts a readable studio scene, independent heading palettes,
 and usable framing at every supported count. A developer scenario script exercises the desktop
-without pointer injection and records frame times and screenshots. Stage 2 will add render-only
-size, shapes and color modes; it remains planned and is not implemented here.
+without pointer injection and records frame times and screenshots. Stage 2 adds render-only
+size/proportions, shared procedural shapes and heading/altitude/speed/solid coloring without
+changing the simulation.
 
 ## Progress
 
@@ -18,9 +19,15 @@ size, shapes and color modes; it remains planned and is not implemented here.
 - [x] (2026-10-31 09:56Z) Stage 1: scenario harness and seven new regression tests.
 - [x] (2026-10-31 10:02Z) Stage 1: release checks, nine inspected desktop captures, repeated frame measurements and diff check passed; all scenario launches exited cleanly.
 - [x] (2026-10-31 10:24Z) Stage 1 round 2: gradient Studio sky, fogged solid floor/subtle grid, six-stop cyclic palettes, emission, eight captures and repeated focus-monitored timings.
-- [ ] Stage 2 (planned): render-only size, shared shapes and color modes; separate implementation authorization required.
+- [x] (2026-10-31 11:41Z) Stage 2: shared Dart/Chevron/Fish/Bird meshes, render-only size/proportions and four color modes.
+- [x] (2026-10-31 11:41Z) Stage 2: 32-byte CPU/GPU instance packing, scenario/UI integration and preservation tests.
+- [x] (2026-10-31 11:41Z) Stage 2: release checks, 15 inspected close-up captures, live GPU/Octree switches and four per-shape timings.
 
 ## Surprises & Discoveries
+
+- Stage 2: Bevy's exact Cone mesh deliberately uses a zero normal at the singular apex, with unit
+  side/base normals. Keep it unchanged for Classic; custom meshes use nonzero unit face normals.
+  Geometry tests allow that one documented apex exception and verify winding for every triangle.
 
 - Round 2: a dark blue ground base color still appeared gray under the existing lights because of
   neutral dielectric specular reflection. Set ground reflectance to zero; keep roughness 1 and
@@ -42,6 +49,26 @@ size, shapes and color modes; it remains planned and is not implemented here.
   without adding a second camera controller.
 
 ## Decision Log
+
+- Decision (stage 2): keep Dart and neutral size/proportions as appearance defaults. Scene style
+  changes never reset vehicle shape or coloring; Classic reproduction requires Dart, all multipliers
+  1, Heading and Classic palette. Mesh handles are cached once and swapped on the single flock entity.
+  Rationale: independent appearance controls must preserve both CPU and GPU state.
+  Date: 2026-10-31.
+- Decision (stage 2): use low-poly closed prisms for flat silhouettes and faceted bipyramids for
+  bodies; all meshes have length 2.5 along local +Y. Inverse-transpose normal scaling handles proportions.
+  Rationale: thin volume remains visible edge-on and avoids double-sided rendering.
+  Date: 2026-10-31.
+- Decision (stage 2): keep InstanceData at 32 bytes. Store normalized speed (16 bits) and a reserved
+  group field (7 bits, currently zero) in the mantissa of a normal f32 in [1,2). CPU and WGSL use
+  identical bit packing; physical size now comes from the uniform multiplied by render-only size.
+  Rationale: avoids stride growth, NaN/subnormal payloads and fractional speed 1 carrying into group.
+  Groups are not implemented; their transport capacity is documented for Stage 7.
+  Date: 2026-10-31.
+- Decision (stage 2): altitude and speed use the palette's non-wrapping first-to-sixth-stop ramp;
+  heading retains its full cyclic wheel. Classic non-heading modes use a red-to-violet HSV ramp.
+  Rationale: minimum and maximum should have different colors for scalar quantities.
+  Date: 2026-10-31.
 
 - Decision (round 2): use an unlit, vertex-colored UV sphere centered on the camera, front-face culled,
   with fog disabled, picking ignored and frustum culling disabled. Its radius exceeds every wall
@@ -89,6 +116,14 @@ size, shapes and color modes; it remains planned and is not implemented here.
 
 ## Outcomes & Retrospective
 
+Stage 2 implementation: four cached shared shapes, render size/length/width, Heading/Altitude/Speed/
+Solid coloring and color picker, UI and scenario commands are complete. Release tests pass (48,
+five ignored); release build has zero compiler warnings, Clippy retains seven existing warnings.
+Geometry tests verify triangle counts, finite data, forward bounds, normals and winding. Actual
+appearance-system tests preserve every GlobalState field and encoded GPU input, CPU entity IDs,
+transforms, velocities and follow state across switches. Desktop and timing evidence is recorded
+in the Stage 2 artifact section below. No group behavior or model-loading feature is implemented.
+
 Round 2 implementation adds a true vertical vertex-colored sky, fogged ground/grid, faint corner
 brackets, saturated cyclic six-stop palettes with Aurora default, and 15% Studio emission. The
 appearance uniform is now 160 bytes (seven colors, material, shading and modes). Classic shader
@@ -118,7 +153,8 @@ scene constants, wall/grid drawing, fog and frame-world math. `src/instancing.rs
 appearance uniform and draw bind group; `assets/shaders/vehicle_instancing.wesl` consumes it.
 `src/target.rs` retains the existing pick mesh and selection behavior, makes its sphere opaque and
 adds a screen-sized, depth-independent gizmo locator. `src/scenario.rs` owns the
-optional script parser, timed commands and frame summaries. Simulation code and shader stay unchanged.
+optional script parser, timed commands and frame summaries. Force laws/defaults stay unchanged;
+Stage 2 changes only render-output metadata in the CPU/GPU simulation modules.
 
 ## Plan of Work
 
@@ -127,8 +163,10 @@ optional script parser, timed commands and frame summaries. Simulation code and 
 3. Group existing controls without changing their ranges; add appearance/framing controls.
 4. Add the opt-in scenario module, startup validation and parser tests. Document its full grammar.
 5. Run focused checks sequentially, then scripted desktop checks and repeated measurements.
-6. Stage 2 remains planned: expose render-only scale, add agreed shapes and coloring controls using
-   the uniform seam; do not change physical `vehicle_size` semantics.
+6. Stage 2: add `vehicle_appearance.rs` with shared mesh generation/cache, appearance settings, UI
+   and stream packing helpers. Extend the appearance uniform, CPU/GPU output encoding and shader.
+7. Add scenario commands and preservation/geometry/packing tests. Capture close views and live
+   switches in GPU/Octree; record one 20k default-framing case per shape. No Stage 3 model loading.
 
 ## Concrete Steps
 
@@ -285,11 +323,94 @@ an unintended gray sheen. Aurora was selected because teal/green/lime and magent
 against the navy sky in both the low-angle 20k and 200 views. Palette capture times differ, so
 those images are visual acceptance evidence rather than a deterministic simulation comparison.
 
+### Stage 2: vehicle appearance
+
+Artifacts root:
+`/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/stage2/`.
+
+Triangle counts: Dart 14, Chevron 12, Fish 16, Bird 24. All lengths are exactly 2.5 before scaling.
+Dart retains Bevy's exact mesh (including its intentional zero normal at the singular apex);
+custom shapes have unit flat face normals, explicit indices and thin closed volume. Cached mesh
+handles swap on the same flock entity; no per-vehicle mesh entities, regeneration or simulation reset.
+
+Default appearance remains Dart, size/length/width 1, Heading. Scene style never resets vehicle
+appearance. Scalar colors use non-wrapping ramps; Heading preserves the Stage 1 wheel exactly.
+Solid color uses 8-bit sRGB, converted to linear for lighting. Size/proportion changes are entirely
+render-only, with no control linking them to physical size/separation. UI ranges: size 0.1–5,
+length/width 0.25–3. The menu starts at 640 points high, still capped by the viewport and scrollable.
+
+Rejected: growing InstanceData, float integer/fraction packing (speed 1 would carry into group),
+new per-vehicle entities, double-sided flat planes, model assets, simulation retuning and automatic
+shape resets with style. The normal f32 mantissa stores 16-bit speed and reserved 7-bit group;
+current group is zero. CPU/WGSL round identically using floor(speed * 65535 + 0.5).
+
+Checks: `cargo fmt --all`, `cargo test --release --locked` (48 passed, five ignored, 0.11 s),
+`cargo build --release --locked` (zero warnings), `cargo clippy --release --locked --all-targets`
+(seven pre-existing warnings, none added), all sequential after process checks, CARGO_BUILD_JOBS=4.
+Final format/diff checks and desktop evidence passed. Ignored GPU tests/benchmarks
+remain with the orchestrator; only the requested running-app measurements are used here.
+
+Close-up scripts use 200 wandering vehicles, camera yaw 0°, pitch 17.28°, distance 200, auto-frame
+off, immediate presentation. Target is moved below the view with follow off. Captures at 1.2 s
+show individual shapes a few dozen pixels long. The following files cover the requested cases:
+
+- `shape-{dart,chevron,fish,bird}.png`: all shapes in Heading/Aurora.
+- `size-0.5.png`, `size-2.png`: Bird at the two render sizes, neutral proportions.
+- `long-thin.png`: Fish at length 2.5, width 0.3.
+- `color-altitude.png`, `color-speed.png`, `color-solid.png`: scalar and solid modes; Heading is
+  covered by the shape captures. Solid is #ffad3b, and the picker is visible.
+- `classic-dart.png`: Classic style/palette, Dart, Heading, neutral size/proportions.
+- `live-gpu-{before,after}.png`, `live-octree-{before,after}.png`: two captures in each single run,
+  at 1.0 and 2.2 s, with only a Dart-to-Bird shape command at 1.3 s. Count stays 200, follow stays
+  off, no respawn/reset command occurs. Simulation continues between the captures.
+
+Each script ends in exit; each launcher checks that no app remains. Per-case `.scenario` and `.log`
+files reproduce the shots. All 15 PNGs were visually inspected, desktop logs contain no errors or
+warnings, and the target/controls behavior remains intact. No commits by this worker.
+
+Per-shape measurements, one accepted focused case each as requested: native release, Ryzen 9 7900X,
+Radeon RX 7900 XT (RADV NAVI31), Vulkan/Mesa 26.2.5-arch1.1, Linux Omarchy 4.0.6/kernel
+7.2.8-9-omarchy. Physical resolution 1667×1390; 20,000 GPU vehicles wandering; Studio/Aurora,
+Heading, size/length/width all 1; default camera orientation and Frame world at 1 s. Five seconds
+warm-up, ten-second measurement, AutoNoVsync, no screenshots. Built-in PCG spawn at frame zero,
+no explicit seed override, real interactive deltas and nondeterministic GPU scatter. Each case
+starts a fresh app. External focus/window-size monitoring every 0.5 s found zero violations during
+each sample. Uptime and cargo/rustc/app process checks preceded every launch; no runs overlap.
+
+| Shape | Triangles | Vertices | Frames | Mean ms | p50 ms | p95 ms | FPS | Load (1/5/15 min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Dart | 14 | 17 | 8493 | 1.178 | 1.130 | 1.503 | 849.22 | 2.89 / 6.90 / 6.12 |
+| Chevron | 12 | 36 | 8877 | 1.126 | 1.039 | 1.442 | 887.72 | 3.66 / 6.88 / 6.13 |
+| Fish | 16 | 48 | 8051 | 1.242 | 1.256 | 1.556 | 805.08 | 3.89 / 6.77 / 6.10 |
+| Bird | 24 | 72 | 7346 | 1.361 | 1.403 | 1.604 | 734.58 | 4.41 / 6.73 / 6.10 |
+
+These single exploratory cases are rendered frame intervals including desktop/CPU/GPU overlap,
+not isolated GPU times or a statistically established shape ranking. Flat normals require more
+vertices than the smooth cone. Further rendering optimization and repeated controlled comparisons
+remain Stage 4 work; no tuning or extra passes were introduced here.
+
+`measure-{dart,chevron,fish,bird}.{scenario,log}`, `focus-*.json` and `measure-focused.py` reproduce
+and record timings. `fmt.log`, `tests.log`, `build.log`, `clippy.log` preserve focused checks.
+Source comparisons confirm unchanged GlobalState defaults, gpu_flock.rs, octree.rs, target.rs,
+Cargo manifests, STATUS, umbrella plan and historical review files. GPU WGSL differences are
+restricted to the instance field name/comment and final speed payload output; forces/boid writes
+are unchanged. No app remains after the final scenario. All Stage 2 acceptance items are complete
+for orchestrator review; no Stage 3 work started.
+
 ## Interfaces and Dependencies
+
+Stage 2: `vehicle_appearance.rs` owns `VehicleShape`, `ColorMode`, `VehicleAppearance`, cached
+`VehicleMeshes`, `update_shape`, mesh builders and packed speed/group helpers. `scene::Appearance`
+contains render-only vehicle settings. The instancing uniform grows from 160 to 192 bytes with
+proportions/altitude bounds and solid color; InstanceData remains 32 bytes. CPU sync reads velocities
+and packs w; GPU steer changes only its final instance output encoding, not boid state or forces.
+`GlobalState` gains Clone/Debug/PartialEq for whole-resource regression snapshots; defaults and
+fields are unchanged. No Cargo manifest or dependency changes.
 
 New `scene::Appearance`, `SceneStyle`, `HeadingPalette`, frame/fog helpers and `ScenePlugin`.
 New `scenario::ScenarioPlugin` and a typed, startup-validated command list.
-New instancing-owned appearance uniform/bind group (160 bytes after round 2). Studio uses two
+Stage 1 instancing seam: shared appearance uniform/bind group (160 bytes after round 2,
+192 bytes in Stage 2). Studio uses two
 constant mesh entities with StandardMaterial, no extra lights, textures or shader assets. No
 dependency or simulation-layout changes.
 
@@ -303,3 +424,7 @@ Revision notes:
 - 2026-10-31: Owner requested a Stage 1 art-direction revision. Mechanics and Stage 2 scope remain unchanged; round 2 validation pending.
 
 - 2026-10-31: Stage 1 round 2 implemented and validated; Studio art direction revised, Classic and mechanics preserved. Stage 2 remains planned.
+
+- 2026-10-31: Stage 1 accepted in e635c6d. Stage 2 authorized; implementation and evidence pending.
+
+- 2026-10-31 11:41Z: Stage 2 implemented and verified; Stage 1 remains accepted in e635c6d. No commits by worker.

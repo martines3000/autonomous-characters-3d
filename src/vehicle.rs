@@ -18,6 +18,7 @@ use crate::{
     instancing::VehicleInstances,
     octree::{Octree, Point},
     target::{Target, TargetSelection},
+    vehicle_appearance::{pack_speed_group, VehicleMeshes},
     GlobalState, SimulationMode,
 };
 use na::Vector3;
@@ -51,6 +52,7 @@ impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VehicleSpawner>()
             .add_systems(Startup, spawn_flock)
+            .add_systems(PostUpdate, crate::vehicle_appearance::update_shape)
             .add_systems(
                 Update,
                 (
@@ -74,24 +76,29 @@ impl VehicleAcceleration {
 
 // One entity draws every vehicle; see `instancing`.
 fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+    let shapes = VehicleMeshes::new(&mut meshes);
     commands.spawn((
         // A slim dart reads its heading better than the original round cone.
-        Mesh3d(meshes.add(Cone::new(0.7, 2.5).mesh().resolution(8))),
+        Mesh3d(shapes.get(crate::vehicle_appearance::VehicleShape::Dart)),
         VehicleInstances::default(),
         // The shader places the instances; the entity's own bounds mean nothing.
         NoFrustumCulling,
     ));
+    commands.insert_resource(shapes);
 }
 
 fn sync_instances(
-    vehicles: Query<&Transform, With<Vehicle>>,
+    vehicles: Query<(&Transform, &VehicleVelocity), With<Vehicle>>,
     mut flock: Single<&mut VehicleInstances>,
     state: Res<GlobalState>,
 ) {
     flock.0.clear();
-    flock.0.extend(vehicles.iter().map(|transform| {
+    flock.0.extend(vehicles.iter().map(|(transform, velocity)| {
         [
-            transform.translation.extend(state.vehicle_size),
+            transform.translation.extend(pack_speed_group(
+                velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
+                0,
+            )),
             Vec4::from(transform.rotation),
         ]
     }));
@@ -1779,6 +1786,64 @@ mod tests {
     }
 
     #[test]
+    fn shape_switch_keeps_cpu_entities_transforms_velocities_and_follow_state() {
+        use crate::{
+            scene::Appearance,
+            vehicle_appearance::{update_shape, VehicleShape},
+        };
+        let mut app = App::new();
+        app.insert_resource(cpu_state())
+            .init_resource::<VehicleSpawner>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Appearance>()
+            .add_systems(Startup, spawn_flock)
+            .add_systems(
+                Update,
+                (vehicle_spawner, vehicle_cleanup, sync_instances).chain(),
+            )
+            .add_systems(PostUpdate, update_shape);
+        let target = app
+            .world_mut()
+            .spawn((
+                Target,
+                TargetSelection(true),
+                Transform::from_xyz(3.0, 5.0, 7.0),
+            ))
+            .id();
+        app.update();
+        let flock = app
+            .world_mut()
+            .query_filtered::<Entity, With<VehicleInstances>>()
+            .single(app.world())
+            .unwrap();
+        let snapshot = |world: &mut World| {
+            world
+                .query_filtered::<(Entity, &Transform, &VehicleVelocity), With<Vehicle>>()
+                .iter(world)
+                .map(|(entity, transform, velocity)| (entity, *transform, velocity.0))
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot(app.world_mut());
+        let state = app.world().resource::<GlobalState>().clone();
+        for shape in VehicleShape::ALL.into_iter().chain([VehicleShape::Dart]) {
+            app.world_mut().resource_mut::<Appearance>().vehicles.shape = shape;
+            app.update();
+            assert_eq!(snapshot(app.world_mut()), before);
+            assert_eq!(app.world().resource::<GlobalState>(), &state);
+            assert!(app.world().get::<TargetSelection>(target).unwrap().0);
+            assert_eq!(
+                app.world().get::<Mesh3d>(flock).unwrap().0,
+                app.world().resource::<VehicleMeshes>().get(shape)
+            );
+            assert_eq!(
+                app.world().get::<VehicleInstances>(flock).unwrap().0.len(),
+                state.vehicle_count
+            );
+        }
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 4);
+    }
+
+    #[test]
     fn instances_follow_vehicle_transforms_and_count() {
         let mut app = App::new();
         app.insert_resource(cpu_state())
@@ -1799,14 +1864,17 @@ mod tests {
                 .resource_mut::<Time>()
                 .advance_by(Duration::from_secs_f32(1.0 / 60.0));
             app.update();
-            let size = app.world().resource::<GlobalState>().vehicle_size;
+            let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
             let expected: Vec<InstanceData> = app
                 .world_mut()
-                .query_filtered::<&Transform, With<Vehicle>>()
+                .query_filtered::<(&Transform, &VehicleVelocity), With<Vehicle>>()
                 .iter(app.world())
-                .map(|transform| {
+                .map(|(transform, velocity)| {
                     [
-                        transform.translation.extend(size),
+                        transform.translation.extend(pack_speed_group(
+                            velocity.0.magnitude() / max_speed.max(f32::EPSILON),
+                            0,
+                        )),
                         Vec4::from(transform.rotation),
                     ]
                 })
