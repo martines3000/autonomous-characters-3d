@@ -229,3 +229,32 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 
 ## Planning moved to plans/ — 2026-10-30
 - This log is now historical. New work is tracked with ExecPlans: see `AGENTS.md`, `PLANS.md` and `plans/STATUS.md` (which also records the current status of findings F01–F14).
+
+
+## Feature expansion roadmap — 2026-10-30
+- Owner explicitly authorized dated additions to this historical log/report and plans/STATUS.md only; existing historical content remains intact. New report section 12 reflects the post-GPU working tree, not the report's original e7a53d7 snapshot. Link: [Feature expansion & implementation roadmap](review-report.html#feature-expansion).
+
+### Decisions
+- First milestone is bounded Showcase: Original default/Ocean/Dusk heading palette, background, fog and light using the existing cone; no simulation changes from appearance. Frame-world, one auto-orbit, UI hide, correct pause (freeze GPU stepping/frame counter without resetting state), simulation speed. Estimated 3–4 focused sessions, Easy–Medium; review appearance and clock changes separately inside it. Defer tracking, bookmarks, transitions and telemetry.
+- Optional Phase 1–2 trails lite uses opaque backward-extended, head-anchored silhouettes from instance rotation, fixed length first; speed-dependent length needs speed in instance data. No IDs/history needed. Sampled historical ribbons remain Phase 3 and need stable IDs.
+- Groups/roles need metadata preserved through scatter/separation/integration, not stable identity. Introduce IDs only at the first history, formation-assignment or persistent-selection consumer; define uniqueness and lifecycle then.
+- Recommended sequence: Showcase → influence brush (repulsion first) → two-group metadata → primitive obstacles → stable IDs when consumed → historical trails / analytic formations / predator scene / LOD / animated theme → baked music / text-logo morphs / SDF terrain / live audio. This is not a strict dependency chain: obstacles can move earlier and simple predator roles do not require IDs.
+
+### Assumptions and limits
+- GPU-owned simulation and shared instanced rendering stay intact; CPU modes remain reference implementations at practical counts, not a million-entity target. Whether every new behavior must support CPU modes remains an owner decision.
+- Preserve force laws, defaults, mode-switch respawning and count lifecycle unless explicitly approved. Appearance scale is separate from physical vehicle_size; dense fields/formations need an explicit policy beyond the current follow-only cap.
+- Only cited performance measurements are those in plans/completed/2026-10-30-gpu-flocking.md. New effort/performance claims and buffer/triangle counts are labeled estimates/calculations. Current capacity-rounded buffers are about 5.75 MiB at 20k and 184 MiB at 1m; full 16-position histories at million capacity are 256 MiB, exceeding the documented default 128 MiB storage-binding size.
+- Bevy 0.20.1 local sources support the proposed APIs; Metal built-in render diagnostics report CPU time, not true GPU timestamps. WebGPU compatibility is conceptual; WebGL2 needs a CPU path and compute-plugin gating. WASM remains legacy/out of scope.
+- Asset/tool availability, licenses, new feature timings and browser compatibility were not verified. No new crates/tools/services installed or runtime features implemented.
+
+### Unresolved owner questions
+- Preferred count/hardware/frame budget and first visual theme/style; spacing versus target accuracy; soft avoidance versus hard non-penetration.
+- Must both CPU modes support every new behavior, or are selected GPU-only features with small reference fixtures acceptable? Which visual effects may be GPU-only?
+- Clock policy for target/animation/music/camera and edits while paused; bundled music versus microphone/system audio; whether existing follow-density/wall-drag decisions change milestone order.
+
+### Future implementation and approval gates
+- Roadmap approval is not implementation approval. Work on one approved milestone at a time: present precise scope, planned changes and acceptance criteria; wait for explicit approval; implement only that scope.
+- When approved, each milestone gets its own ExecPlan under plans/planned/ from plans/TEMPLATE.md, following PLANS.md. No plan files were created in this writing round.
+- Validate correctness, performance and existing functionality with headless CPU fixtures, separately authorized device tests, fixed-view screenshots and repeated scenario-matched benchmarks. One verification owner runs all builds/tests/apps sequentially with CARGO_BUILD_JOBS at most 4, per AGENTS.md.
+- Summarize results, limitations and remaining improvements; update documentation/progress/STATUS; stop and request approval before the next milestone. Do not hide behavior changes in presentation work.
+- Writing-round checks: HTMLParser stack/tag, navigation and historical-content preservation checks plus git diff --check; no Cargo, app, build/test, network or commit. This round is documentation only.

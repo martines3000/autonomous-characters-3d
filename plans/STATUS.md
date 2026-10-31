@@ -16,6 +16,8 @@ Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wan
 
 CI (finding F12) is not wanted by the owner.
 
+- **Feature expansion roadmap — 2026-10-30 (awaiting owner approval):** see [report section 12](../review-report.html#feature-expansion) for the bounded Showcase-first sequence; roadmap approval does not authorize implementation. Each milestone needs explicit approval and its own ExecPlan.
+
 ## Original review findings
 
 `review-report.html` audited commit `e7a53d7`. Status against the current branch (`codex/native-modernization`), verified against source on 2026-10-30:
