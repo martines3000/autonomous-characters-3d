@@ -23,8 +23,9 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 
 - [x] (2026-10-31 10:45Z) Branch created from `origin/master` at `57d2eed`; working tree clean.
 - [x] (2026-10-31 10:50Z) Umbrella plan drafted.
-- [ ] Stage 1: visual foundation.
-- [ ] Stage 2: vehicle appearance.
+- [x] (2026-10-31 12:00Z) Stage 1: visual foundation, commit `e635c6d`.
+- [x] (2026-10-31 12:50Z) Stage 2: vehicle appearance, commit `f2e3eb0`; ignored GPU regressions pass (3/3).
+- [ ] Review fixes for stages 1–2 (paused for owner decision on 2026-10-31; findings listed under Surprises & Discoveries).
 - [ ] Stage 3: custom static 3D models.
 - [ ] Stage 4: rendering optimization (measure first).
 - [ ] Stage 5: presentation controls.
@@ -45,6 +46,17 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 - Observation: GPU boids have no stable identity; `steer` writes them back in sorted order.
   Evidence: `assets/shaders/gpu_flock.wgsl` header comment and `steer`. Group and formation data must
   travel with the boid record.
+
+- Observation: review of stage 1 found two defects, not yet fixed.
+  Evidence: (1) `scene.rs::frame_world` resets `PanOrbitCamera::current_motion` when auto-framing
+  fires, so a right/middle drag that starts within 0.35 s of a count change stops until the button
+  is pressed again (`main.rs::camera_input` only restarts motion when its mode changes). Score 3 × 3.
+  (2) Sky radius, fog range and far plane use only the wall corners; a target moved far outside the
+  walls (no clamp in `target.rs::input_controls`) is hidden by the opaque Studio sky or culled.
+  Score 4 × 4.
+- Observation: `ui` writes `Appearance::count_editing` every frame, so `Appearance` is always
+  marked changed and `draw_world`/`update_appearance` reapply lights and the uniform each frame.
+  Evidence: `src/main.rs` (`appearance.count_editing = false`). Cost only; no visible defect.
 
 ## Decision Log
 
@@ -155,3 +167,4 @@ Listed per stage in the stage plans.
 Revision notes:
 
 - 2026-10-31: Initial umbrella plan.
+- 2026-10-31: Stages 1–2 committed and pushed; paused before review fixes and stage 3 at the owner's request.
