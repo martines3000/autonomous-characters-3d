@@ -23,6 +23,8 @@ changing the simulation.
 - [x] (2026-10-31 11:41Z) Stage 2: 32-byte CPU/GPU instance packing, scenario/UI integration and preservation tests.
 - [x] (2026-10-31 11:41Z) Stage 2: release checks, 15 inspected close-up captures, live GPU/Octree switches and four per-shape timings.
 
+- [x] (2026-10-31 12:29Z) Approved review fixes: held drags resume after framing; live target bounds extend sky/fog/far clipping. Release checks and requested desktop capture passed.
+
 ## Surprises & Discoveries
 
 - Stage 2: Bevy's exact Cone mesh deliberately uses a zero normal at the singular apex, with unit
@@ -397,6 +399,32 @@ restricted to the instance field name/comment and final speed payload output; fo
 are unchanged. No app remains after the final scenario. All Stage 2 acceptance items are complete
 for orchestrator review; no Stage 3 work started.
 
+### Approved review fixes (2026-10-31)
+
+After accepted stages 1–2 (HEAD 3fbdd58), changed only the two approved review findings.
+`camera_input` now restarts held input when framing resets controller motion, covering both
+settled automatic framing and the explicit button without changing framing timing or anchors.
+`held_camera_drag_resumes_after_automatic_and_explicit_framing` drives input, controller update
+and framing headlessly, holding right/middle buttons across the reset and verifying continued motion.
+
+Scene sky, fog and far clipping now include the live target's camera distance plus its scaled
+sphere radius; the radius constant is shared with target mesh creation. When that extent exceeds
+the farthest wall, fog starts beyond both target and walls. Otherwise existing Studio haze and
+Classic fog remain unchanged. Target movement remains unclamped. The extended
+`sky_faces_enclose_every_wall_and_stay_inside_far_plane` checks all sky triangle planes, target
+sphere clearance, walls and fog/far bounds at counts 0/200/20,000/1,000,000, three camera positions,
+six axial target directions and a diagonal. `far_target_extends_live_sky_bounds` verifies live
+system updates. Headless surface tests register the mesh visibility requirement normally supplied
+by VisibilityPlugin, so their surface assertions execute.
+
+Validation: `cargo fmt --all`, release tests (50 passed, 5 ignored), release build (no compiler
+warnings), Clippy (the same 7 existing warnings), and `git diff --check` passed. Every Cargo command
+used `CARGO_BUILD_JOBS=4` after checking cargo/rustc processes. One desktop scenario used Studio,
+200 GPU vehicles, auto-frame off, camera 0/0/1000 and target 0/0/-1000. Inspected the visible red target
+and locator in `/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/fix12/studio-far-target.png`.
+The adjacent `far-target.scenario` and `far-target.log` record commands and clean scripted exit;
+`pgrep -a autonomous` found no remaining app. No simulation or Cargo manifest changes.
+
 ## Interfaces and Dependencies
 
 Stage 2: `vehicle_appearance.rs` owns `VehicleShape`, `ColorMode`, `VehicleAppearance`, cached
@@ -428,3 +456,5 @@ Revision notes:
 - 2026-10-31: Stage 1 accepted in e635c6d. Stage 2 authorized; implementation and evidence pending.
 
 - 2026-10-31 11:41Z: Stage 2 implemented and verified; Stage 1 remains accepted in e635c6d. No commits by worker.
+
+- 2026-10-31 12:29Z: Applied only the two owner-approved review fixes; regressions, release gates and far-target capture verified. No commits by worker.

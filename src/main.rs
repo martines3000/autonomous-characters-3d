@@ -101,7 +101,8 @@ fn camera_input(
         0
     };
     for mut camera in &mut cameras {
-        if mode != *previous_mode {
+        // Framing resets the controller while a drag can still be held.
+        if mode != *previous_mode || (mode != 0 && !camera.current_motion.is_user_controlled()) {
             camera.end_move();
             match mode {
                 1 => camera.start_orbit(None),
@@ -436,6 +437,104 @@ mod tests {
         assert!(
             (transform.rotation * Vec3::NEG_Z).dot(-transform.translation.normalize()) > 0.99999
         );
+    }
+
+    #[test]
+    fn held_camera_drag_resumes_after_automatic_and_explicit_framing() {
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            for automatic in [true, false] {
+                let mut app = App::new();
+                app.init_resource::<GlobalState>()
+                    .init_resource::<scene::Appearance>()
+                    .init_resource::<ButtonInput<MouseButton>>()
+                    .init_resource::<AccumulatedMouseMotion>()
+                    .init_resource::<AccumulatedMouseScroll>()
+                    .init_resource::<EguiUserTextures>()
+                    .init_resource::<Time<Real>>()
+                    .add_message::<RequestRedraw>()
+                    .add_systems(
+                        Update,
+                        (
+                            camera_input,
+                            PanOrbitCamera::update_camera_positions,
+                            scene::frame_world,
+                        )
+                            .chain(),
+                    );
+                let eye = Vec3::new(0.0, 140.0, 450.0);
+                let projection = PerspectiveProjection {
+                    aspect_ratio: 1280.0 / 720.0,
+                    ..default()
+                };
+                let camera = app
+                    .world_mut()
+                    .spawn((
+                        Camera3d::default(),
+                        Camera {
+                            computed: ComputedCameraValues {
+                                clip_from_view: projection.get_clip_from_view(),
+                                target_info: Some(RenderTargetInfo {
+                                    physical_size: UVec2::new(1280, 720),
+                                    scale_factor: 1.0,
+                                }),
+                                ..default()
+                            },
+                            ..default()
+                        },
+                        Projection::Perspective(projection),
+                        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+                        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
+                    ))
+                    .id();
+                app.update();
+                app.world_mut().resource_mut::<GlobalState>().vehicle_count = 200;
+                app.world_mut()
+                    .resource_mut::<scene::Appearance>()
+                    .auto_frame = automatic;
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(button);
+                app.world_mut()
+                    .resource_mut::<AccumulatedMouseMotion>()
+                    .delta = Vec2::new(50.0, 25.0);
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(16));
+                app.update();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(400));
+                if !automatic {
+                    app.world_mut()
+                        .resource_mut::<scene::Appearance>()
+                        .frame_requested = true;
+                }
+                app.update();
+                assert!(!app
+                    .world()
+                    .get::<PanOrbitCamera>(camera)
+                    .unwrap()
+                    .current_motion
+                    .is_user_controlled());
+                let framed = *app.world().get::<Transform>(camera).unwrap();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(16));
+                app.update();
+                let moved = app.world().get::<Transform>(camera).unwrap();
+                if button == MouseButton::Right {
+                    assert!(
+                        moved.rotation.angle_between(framed.rotation) > 0.001,
+                        "held orbit stopped after framing (automatic={automatic})"
+                    );
+                } else {
+                    assert!(
+                        moved.translation.distance(framed.translation) > 0.001,
+                        "held pan stopped after framing (automatic={automatic})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

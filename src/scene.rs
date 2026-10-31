@@ -16,7 +16,10 @@ use bevy::{
     transform::TransformSystems,
 };
 
-use crate::{vehicle, FpsText, GlobalState};
+use crate::{
+    target::{Target, TARGET_RADIUS},
+    vehicle, FpsText, GlobalState,
+};
 
 const SKY_ZENITH: Color = Color::srgb(0.03, 0.05, 0.12);
 const SKY_HORIZON: Color = Color::srgb(0.10, 0.16, 0.26);
@@ -367,15 +370,27 @@ fn setup_studio(
 }
 
 /// Margin also covers the UV sphere's inscribed polygon faces (not only its vertices).
-fn sky_radius(eye: Vec3, walls: Vec3) -> f32 {
-    far_wall_distance(eye, walls) * 1.2
+fn sky_radius(eye: Vec3, walls: Vec3, target_far: f32) -> f32 {
+    far_wall_distance(eye, walls).max(target_far) * 1.2
 }
 
-fn scene_fog_range(style: SceneStyle, eye: Vec3, walls: Vec3) -> (f32, f32) {
+fn far_target_distance<'a>(eye: Vec3, targets: impl Iterator<Item = &'a Transform>) -> f32 {
+    targets
+        .map(|target| {
+            eye.distance(target.translation) + TARGET_RADIUS * target.scale.abs().max_element()
+        })
+        .fold(0.0, f32::max)
+}
+
+fn scene_fog_range(style: SceneStyle, eye: Vec3, walls: Vec3, target_far: f32) -> (f32, f32) {
+    let far = far_wall_distance(eye, walls);
+    if target_far > far {
+        // An outlying target and every wall must remain clear of fog.
+        return (target_far * 1.02, (walls.x * 5.0).max(target_far * 2.0));
+    }
     if style == SceneStyle::Classic {
         return fog_range(eye, walls);
     }
-    let far = far_wall_distance(eye, walls);
     // At the farthest wall this leaves at least 70% transmission; the world stays readable.
     (far * 0.6, (walls.x * 5.0).max(far * 2.0))
 }
@@ -385,11 +400,13 @@ fn update_studio(
     appearance: Res<Appearance>,
     cameras: Query<&Transform, (With<Camera3d>, Without<StudioSurface>)>,
     mut surfaces: Query<(&StudioSurface, &mut Transform, &mut Visibility)>,
+    targets: Query<&Transform, (With<Target>, Without<StudioSurface>)>,
 ) {
     let Ok(camera) = cameras.single() else {
         return;
     };
     let walls = vehicle::walls(state.vehicle_count);
+    let target_far = far_target_distance(camera.translation, targets.iter());
     for (surface, mut transform, mut visibility) in &mut surfaces {
         *visibility = if appearance.style == SceneStyle::Studio {
             Visibility::Inherited
@@ -399,7 +416,7 @@ fn update_studio(
         match surface {
             StudioSurface::Sky => {
                 transform.translation = camera.translation;
-                transform.scale = Vec3::splat(sky_radius(camera.translation, walls));
+                transform.scale = Vec3::splat(sky_radius(camera.translation, walls, target_far));
             }
             StudioSurface::Ground => {
                 transform.translation = Vec3::new(0.0, -walls.y, 0.0);
@@ -503,6 +520,7 @@ fn draw_world(
     mut ambient: ResMut<GlobalAmbientLight>,
     mut lights: Query<(&mut DirectionalLight, Has<KeyLight>, Has<FillLight>)>,
     mut cameras: Query<(&Transform, &mut DistanceFog, &mut Projection), With<Camera3d>>,
+    targets: Query<&Transform, With<Target>>,
 ) {
     let look = appearance.style.settings();
     if appearance.is_changed() {
@@ -543,12 +561,14 @@ fn draw_world(
         }
     }
     for (transform, mut fog, mut projection) in &mut cameras {
-        let (start, end) = scene_fog_range(appearance.style, transform.translation, walls);
+        let target_far = far_target_distance(transform.translation, targets.iter());
+        let (start, end) =
+            scene_fog_range(appearance.style, transform.translation, walls, target_far);
         fog.color = look.background;
         fog.falloff = FogFalloff::Linear { start, end };
         if let Projection::Perspective(projection) = &mut *projection {
             projection.far = end
-                .max(sky_radius(transform.translation, walls) * 1.1)
+                .max(sky_radius(transform.translation, walls, target_far) * 1.1)
                 .max(1000.0);
         }
     }
@@ -618,22 +638,89 @@ mod tests {
                 Vec3::new(0.0, 140.0, 450.0) * vehicle::world_scale(count),
                 walls * 20.0,
             ] {
-                let radius = sky_radius(eye, walls);
-                let (start, far) = scene_fog_range(SceneStyle::Studio, eye, walls);
-                assert!(far > radius);
-                assert!((far - far_wall_distance(eye, walls)) / (far - start) > 0.70);
-                for triangle in indices.as_chunks::<3>().0 {
-                    let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
-                        .map(|i| Vec3::from_array(positions[i]));
-                    let Some(normal) = (b - a).cross(c - a).try_normalize() else {
-                        continue;
-                    };
-                    for corner in corners(walls) {
-                        assert!(normal.dot((corner - eye) / radius) < normal.dot(a) + 1e-5);
+                for direction in [
+                    None,
+                    Some(Vec3::X),
+                    Some(Vec3::NEG_X),
+                    Some(Vec3::Y),
+                    Some(Vec3::NEG_Y),
+                    Some(Vec3::Z),
+                    Some(Vec3::NEG_Z),
+                    Some(Vec3::new(1.0, -1.0, -1.0).normalize()),
+                ] {
+                    let target = direction.map(|direction| {
+                        Transform::from_translation(direction * walls.length() * 100.0)
+                            .with_scale(Vec3::splat(vehicle::world_scale(count)))
+                    });
+                    let target_far = far_target_distance(eye, target.iter());
+                    let radius = sky_radius(eye, walls, target_far);
+                    let (start, far) = scene_fog_range(SceneStyle::Studio, eye, walls, target_far);
+                    assert!(far > radius);
+                    assert!((far - far_wall_distance(eye, walls)) / (far - start) > 0.70);
+                    if target.is_some() {
+                        for style in [SceneStyle::Studio, SceneStyle::Classic] {
+                            let (start, far) = scene_fog_range(style, eye, walls, target_far);
+                            assert!(start > target_far && start > far_wall_distance(eye, walls));
+                            assert!(far > radius && radius > target_far);
+                        }
+                    } else {
+                        assert_eq!(
+                            scene_fog_range(SceneStyle::Classic, eye, walls, 0.0),
+                            fog_range(eye, walls)
+                        );
+                    }
+                    for triangle in indices.as_chunks::<3>().0 {
+                        let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
+                            .map(|i| Vec3::from_array(positions[i]));
+                        let Some(normal) = (b - a).cross(c - a).try_normalize() else {
+                            continue;
+                        };
+                        for corner in corners(walls) {
+                            assert!(normal.dot((corner - eye) / radius) < normal.dot(a) + 1e-5);
+                        }
+                        if let Some(target) = target {
+                            let target_radius = TARGET_RADIUS * target.scale.max_element();
+                            assert!(
+                                normal.dot((target.translation - eye) / radius)
+                                    + target_radius / radius
+                                    < normal.dot(a) + 1e-5
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn far_target_extends_live_sky_bounds() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<Appearance>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Startup, setup_studio)
+            .add_systems(Update, update_studio);
+        // Match VisibilityPlugin's mesh requirements without a renderer.
+        app.world_mut()
+            .register_required_components::<Mesh3d, Visibility>();
+        let eye = Vec3::new(0.0, 0.0, 1000.0);
+        app.world_mut()
+            .spawn((Camera3d::default(), Transform::from_translation(eye)));
+        app.update();
+        let target = Transform::from_xyz(0.0, 0.0, -10000.0).with_scale(Vec3::splat(3.0));
+        app.world_mut().spawn((crate::target::Target, target));
+        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 200;
+        app.update();
+        let mut surfaces = app.world_mut().query::<(&StudioSurface, &Transform)>();
+        let (_, sky) = surfaces
+            .iter(app.world())
+            .find(|(surface, _)| matches!(surface, StudioSurface::Sky))
+            .expect("Studio sky exists");
+        assert!(
+            sky.scale.x
+                > eye.distance(target.translation) + TARGET_RADIUS * target.scale.max_element()
+        );
     }
 
     #[test]
@@ -645,6 +732,9 @@ mod tests {
             .init_resource::<Assets<StandardMaterial>>()
             .add_systems(Startup, setup_studio)
             .add_systems(Update, update_studio);
+        // Match VisibilityPlugin's mesh requirements without a renderer.
+        app.world_mut()
+            .register_required_components::<Mesh3d, Visibility>();
         let camera = app
             .world_mut()
             .spawn((Camera3d::default(), Transform::default()))
@@ -680,7 +770,7 @@ mod tests {
                 match surface {
                     StudioSurface::Sky => {
                         assert_eq!(transform.translation, eye);
-                        assert_eq!(transform.scale, Vec3::splat(sky_radius(eye, walls)));
+                        assert_eq!(transform.scale, Vec3::splat(sky_radius(eye, walls, 0.0)));
                         assert!(material.unlit && !material.fog_enabled);
                         assert_eq!(material.cull_mode, Some(Face::Front));
                         assert!(app.world().get::<NoFrustumCulling>(entity).is_some());

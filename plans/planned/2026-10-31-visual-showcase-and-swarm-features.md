@@ -25,7 +25,7 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 - [x] (2026-10-31 10:50Z) Umbrella plan drafted.
 - [x] (2026-10-31 12:00Z) Stage 1: visual foundation, commit `e635c6d`.
 - [x] (2026-10-31 12:50Z) Stage 2: vehicle appearance, commit `f2e3eb0`; ignored GPU regressions pass (3/3).
-- [ ] Review fixes for stages 1–2 (paused for owner decision on 2026-10-31; findings listed under Surprises & Discoveries).
+- [x] (2026-10-31 13:40Z) Review fixes for stages 1–2: owner approved findings 1 (held drag stops after auto-framing) and 2 (far target hidden by sky/culled); both fixed with regression tests. Finding 3 (per-frame `Appearance` change marking) deferred by the owner: cost only.
 - [ ] Stage 3: custom static 3D models.
 - [ ] Stage 4: rendering optimization (measure first).
 - [ ] Stage 5: presentation controls.
@@ -56,7 +56,7 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
   Score 4 × 4.
 - Observation: `ui` writes `Appearance::count_editing` every frame, so `Appearance` is always
   marked changed and `draw_world`/`update_appearance` reapply lights and the uniform each frame.
-  Evidence: `src/main.rs` (`appearance.count_editing = false`). Cost only; no visible defect.
+  Evidence: `src/main.rs` (`appearance.count_editing = false`). Cost only; no visible defect. Deferred.
 
 ## Decision Log
 
@@ -168,3 +168,4 @@ Revision notes:
 
 - 2026-10-31: Initial umbrella plan.
 - 2026-10-31: Stages 1–2 committed and pushed; paused before review fixes and stage 3 at the owner's request.
+- 2026-10-31: Review findings 1 and 2 fixed; paused before stage 3.

@@ -81,6 +81,7 @@ fn draw_target_marker(
 const IDLE_COLOR: Color = Color::srgb(1.0, 0.18, 0.12);
 const FOLLOW_COLOR: Color = Color::srgb(0.15, 1.0, 0.32);
 const TARGET_SPEED: f32 = 120.0;
+pub(crate) const TARGET_RADIUS: f32 = 2.0;
 
 fn spawn_target(
     mut commands: Commands,
@@ -88,7 +89,7 @@ fn spawn_target(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(2.0).mesh().ico(3).unwrap())),
+        Mesh3d(meshes.add(Sphere::new(TARGET_RADIUS).mesh().ico(3).unwrap())),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: IDLE_COLOR,
             emissive: IDLE_COLOR.to_linear() * 0.4,
