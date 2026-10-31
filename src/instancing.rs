@@ -33,6 +33,8 @@ use bevy::{
     },
 };
 
+use crate::gpu_flock::GpuParams;
+
 const SHADER_ASSET_PATH: &str = "shaders/vehicle_instancing.wesl";
 
 /// Per-vehicle data: `[position.xyz, scale]` and the rotation quaternion `[x, y, z, w]`.
@@ -65,6 +67,7 @@ impl Plugin for InstancingPlugin {
             .add_render_command::<Transparent3d, DrawInstanced>()
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
             .insert_resource(InstanceBuffer(RawBufferVec::new(BufferUsages::VERTEX)))
+            .init_resource::<FlockInstances>()
             .add_systems(RenderStartup, init_pipeline.after(MeshPipelineSystems))
             .add_systems(
                 Render,
@@ -76,6 +79,14 @@ impl Plugin for InstancingPlugin {
     }
 }
 
+/// The instance buffer and count the flock is drawn with. CPU modes fill it from
+/// `VehicleInstances`; GPU mode points it at the buffer its compute pass writes.
+#[derive(Resource, Default)]
+pub(crate) struct FlockInstances {
+    pub buffer: Option<Buffer>,
+    pub count: u32,
+}
+
 // Reused across frames; it grows only when the flock outgrows it.
 #[derive(Resource)]
 struct InstanceBuffer(RawBufferVec<InstanceData>);
@@ -83,14 +94,23 @@ struct InstanceBuffer(RawBufferVec<InstanceData>);
 fn prepare_instance_buffer(
     flocks: Query<&VehicleInstances>,
     mut buffer: ResMut<InstanceBuffer>,
+    mut draw: ResMut<FlockInstances>,
+    gpu: Res<GpuParams>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
+    if gpu.count > 0 {
+        return;
+    }
     buffer.0.clear();
     for flock in &flocks {
         buffer.0.extend(flock.0.iter().copied());
     }
     buffer.0.write_buffer(&device, &queue);
+    *draw = FlockInstances {
+        buffer: buffer.0.buffer().cloned(),
+        count: buffer.0.len() as u32,
+    };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -215,7 +235,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
         SRes<RenderAssets<RenderMesh>>,
         SRes<RenderMeshInstances>,
         SRes<MeshAllocator>,
-        SRes<InstanceBuffer>,
+        SRes<FlockInstances>,
     );
     type ViewQuery = ();
     type ItemQuery = ();
@@ -241,8 +261,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
         let Some(gpu_mesh) = meshes.into_inner().get(mesh_instance.mesh_asset_id()) else {
             return RenderCommandResult::Skip;
         };
-        let (Some(instance_buffer), count) = (instances.0.buffer(), instances.0.len() as u32)
-        else {
+        let (Some(instance_buffer), count) = (&instances.buffer, instances.count) else {
             return RenderCommandResult::Skip;
         };
         if count == 0 {

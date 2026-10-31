@@ -1,12 +1,17 @@
 use bevy::{light::NotShadowCaster, picking::pointer::PointerButton, prelude::*};
 use bevy_egui::EguiContexts;
 
+use crate::{vehicle, GlobalState};
+
 pub struct TargetPlugin;
 
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_target)
-            .add_systems(Update, (input_controls, update_target_color))
+            .add_systems(
+                Update,
+                (input_controls, update_target_color, update_target_scale),
+            )
             .add_observer(select_target);
     }
 }
@@ -55,6 +60,15 @@ fn update_target_color(
             } else {
                 IDLE_COLOR
             };
+        }
+    }
+}
+
+fn update_target_scale(state: Res<GlobalState>, mut targets: Query<&mut Transform, With<Target>>) {
+    let scale = Vec3::splat(vehicle::world_scale(state.vehicle_count));
+    for mut transform in &mut targets {
+        if transform.scale != scale {
+            transform.scale = scale;
         }
     }
 }
@@ -130,13 +144,49 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn target_visual_and_pick_mesh_scale_with_live_vehicle_count() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Startup, spawn_target)
+            .add_systems(Update, update_target_scale);
+        app.update();
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<Target>>()
+            .single(app.world())
+            .unwrap();
+        let position = Vec3::new(123.0, -45.0, 67.0);
+        let rotation = Quat::from_rotation_y(0.5);
+        {
+            let mut transform = app.world_mut().get_mut::<Transform>(entity).unwrap();
+            transform.translation = position;
+            transform.rotation = rotation;
+        }
+        let mesh = app.world().get::<Mesh3d>(entity).unwrap().0.clone();
+        assert!(app.world().get::<Pickable>(entity).is_some());
+        for count in [20_000, 1_000_000, 200, 0, 20_000] {
+            app.world_mut().resource_mut::<GlobalState>().vehicle_count = count;
+            app.update();
+            let transform = app.world().get::<Transform>(entity).unwrap();
+            assert_eq!(transform.scale, Vec3::splat(vehicle::world_scale(count)));
+            assert_eq!(transform.translation, position);
+            assert_eq!(transform.rotation, rotation);
+            assert_eq!(app.world().get::<Mesh3d>(entity).unwrap().0, mesh);
+        }
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 1);
+    }
+
+    #[test]
     fn held_key_movement_is_frame_rate_independent() {
         for steps in [30_u64, 60, 120, 144] {
             let mut app = App::new();
             app.init_resource::<EguiUserTextures>()
                 .init_resource::<ButtonInput<KeyCode>>()
                 .init_resource::<Time>()
-                .add_systems(Update, input_controls);
+                .init_resource::<GlobalState>()
+                .add_systems(Update, (input_controls, update_target_scale));
             let target = app
                 .world_mut()
                 .spawn((Target, TargetSelection(true), Transform::default()))
@@ -147,6 +197,9 @@ mod tests {
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .press(KeyCode::KeyW);
             for step in 1..=steps {
+                // Scale changes during movement must not change its world-space speed.
+                app.world_mut().resource_mut::<GlobalState>().vehicle_count =
+                    if step % 2 == 0 { 1_000_000 } else { 200 };
                 app.world_mut()
                     .resource_mut::<Time>()
                     .advance_to(Duration::from_nanos(step * 1_000_000_000 / steps));

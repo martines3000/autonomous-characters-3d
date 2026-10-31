@@ -8,10 +8,11 @@ None. Pick the next item below.
 
 No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting.
 
-1. **Follow-mode cost at large counts.** Followers no longer collapse, but they gather into a ball about 20 units across, inside the 30-unit alignment radius, so at 5,000 vehicles every vehicle still visits almost every other one (about 30 ms per simulation step, about 31 FPS in the app). Options: limit each vehicle to its nearest k neighbors (topological interaction, as in real starling flocks), or a smaller alignment radius in follow mode. Either changes query behavior or defaults and needs its own plan.
-2. **Flocking on the GPU, if much larger flocks matter.** A compute shader with a uniform grid feeding the instance buffer directly, added as a third mode next to naive and octree. At 30,000 vehicles the CPU simulation (flocking about 9 ms) is now the main cost.
+1. **Follow-mode density at 100,000+ vehicles.** With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
+2. **Rendering cost in close-up views.** On the M3 Pro, 100,000 wandering vehicles viewed close up reach about 59 FPS, while 300,000 viewed from far away reach about 92 FPS. Investigate fewer triangles per dart or distance impostors, MSAA cost and a depth pre-pass; measure each before changing visuals.
+3. **Wall avoidance acts as drag inside the walls.** Both CPU and GPU apply the wall-avoidance term every step, even in bounds, steering toward zero velocity. Wander speed settles near 29 units/s rather than the configured 40. The owner should decide the intended behavior before changing both implementations together.
 
-Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye (wander mode settles near 25 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS); look at the app at startup and confirm the camera frames the flock.
+Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye after the wall-drag decision (wander currently settles near 29 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS).
 
 CI (finding F12) is not wanted by the owner.
 
@@ -30,14 +31,15 @@ CI (finding F12) is not wanted by the owner.
 | F07 | No explicit system order | Resolved in `262dc33` (chained spawn, cleanup, steering, integration) |
 | F08 | Mass slider affects only new vehicles | Resolved: per-vehicle `VehicleMass` removed; steering reads `GlobalState::vehicle_mass` (test `mass_slider_applies_to_existing_vehicles`) |
 | F09 | Benchmark disabled; visibility toggle affects only new vehicles | Resolved: benchmark plan (headless `flocking_benchmark`; checkbox removed) |
-| F10 | Naive default mode is quadratic up to the 50,000 slider | Resolved up to 30,000 vehicles in wander mode: octree default, count-scaled world, 9 compute threads, instanced rendering (app at about 220 FPS with 10,000 and 80 FPS with 30,000); follow mode at large counts is quadratic (future task 1); above 30,000 unmeasured |
+| F10 | Naive default mode is quadratic up to the 50,000 slider | Resolved: GPU default at 20,000, slider up to one million, complete separation with follow cap 16; M3 Pro headless steps 0.67 ms wander / 1.4 ms follow at 20k, 7.4 / 13.2 ms at 300k. Naive/Octree remain CPU references (sliders up to 50k); extreme follow density and close-up rendering cost are future tasks 1–2 |
 | F11 | Historical dependencies do not build on current toolchains | Resolved in `21769fd` and `262dc33` (Bevy 0.20.1, Rust 1.99.1) |
-| F12 | No automated tests or CI | Partly resolved: 24 regression tests; CI not wanted by the owner |
+| F12 | No automated tests or CI | Partly resolved: 33 non-ignored regression tests, 3 ignored GPU regression tests, and separate ignored CPU/GPU benchmarks; GPU runs need a real device outside restricted sandboxes; CI not wanted by the owner |
 | F13 | Unused direct dependencies | Resolved in `262dc33` |
 | F14 | Advisory matches in the lockfile | Resolved in `262dc33`: `cargo deny check advisories` passes for the native target |
 
 ## Completed
 
+- [Flock on the GPU](completed/2026-10-30-gpu-flocking.md) (2026-10-30): GPU default at 20,000 / follow cap 16; M3 Pro headless wander/follow steps 0.67/1.4 ms at 20k, 7.4/13.2 ms at 300k, 26.1/44.9 ms at one million; default app about 107–120 FPS wandering, scaled target and camera; CPU parity and complete separation tested on the GPU. Large follow density, rendering cost and wall drag remain above.
 - [Keep vehicles apart when they follow the target](completed/2026-10-30-follow-mode-separation.md) (2026-10-30): separation pushes add up and grow with closeness; followers at 1,000 and 5,000 go from 100% overlapping to none; wander flocks keep their look with no overlapping pairs; follow-mode cost at large counts deferred.
 - [Instanced vehicle rendering and a visual pass](completed/2026-10-30-instanced-rendering-and-visuals.md) (2026-10-30): one instanced draw for the flock; 30,000 vehicles 53 → about 80 FPS, 10,000 about 138 → 220 FPS; heading colors, directional light, fog, wall box and floor grid; separation retune investigated, follow-mode collapse deferred to future task 1.
 - [What limits frame time at 30,000 vehicles](completed/2026-10-30-high-count-frame-limit.md) (2026-10-30): CPU critical path, not GPU; 30,000 vehicles at about 53 FPS and 10,000 at about 138 FPS at low machine load; no code change; GPU time unmeasurable with available tools.

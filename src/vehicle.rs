@@ -10,7 +10,7 @@ const REFERENCE_COUNT: f32 = 200.0;
 const REFERENCE_HZ: f32 = 60.0;
 // Largest push from one neighbor, in units of separation factor × max speed; reached
 // at a quarter of the separation distance so near-coincident vehicles stay bounded.
-const MAX_SEPERATION_PUSH: f32 = 3.0;
+const MAX_SEPARATION_PUSH: f32 = 3.0;
 
 use std::{f32::consts::PI, ops::Mul};
 
@@ -18,7 +18,7 @@ use crate::{
     instancing::VehicleInstances,
     octree::{Octree, Point},
     target::{Target, TargetSelection},
-    GlobalState,
+    GlobalState, SimulationMode,
 };
 use na::Vector3;
 
@@ -102,12 +102,11 @@ fn vehicle_spawner(
     mut vehicle_spawner: ResMut<VehicleSpawner>,
     state: Res<GlobalState>,
 ) {
-    while state.vehicle_count > vehicle_spawner.vehicle_count {
+    while cpu_vehicle_count(&state) > vehicle_spawner.vehicle_count {
         commands
             .spawn(Transform::from_translation(
                 (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
-                    * SPAWN_SIZE
-                    * world_scale(state.vehicle_count),
+                    * spawn_size(state.vehicle_count),
             ))
             .insert(Vehicle)
             .insert(VehicleVelocity(
@@ -267,8 +266,22 @@ pub(crate) fn walls(count: usize) -> Vec3 {
     WORLD_SIZE * world_scale(count)
 }
 
+// Edge of the cube around the origin where new vehicles appear.
+pub(crate) fn spawn_size(count: usize) -> f32 {
+    SPAWN_SIZE * world_scale(count)
+}
+
+// Vehicles simulated as entities; GPU mode keeps its vehicles on the GPU instead.
+fn cpu_vehicle_count(state: &GlobalState) -> usize {
+    if state.mode == SimulationMode::Gpu {
+        0
+    } else {
+        state.vehicle_count
+    }
+}
+
 // Keeps density constant above REFERENCE_COUNT; smaller counts use the reference world.
-fn world_scale(count: usize) -> f32 {
+pub(crate) fn world_scale(count: usize) -> f32 {
     (count as f32 / REFERENCE_COUNT).cbrt().max(1.0)
 }
 
@@ -282,14 +295,15 @@ fn vehicle_cleanup(
     state: Res<GlobalState>,
     mut query: Query<Entity, With<Vehicle>>,
 ) {
-    if state.vehicle_count >= vehicle_spawner.vehicle_count {
+    let count = cpu_vehicle_count(&state);
+    if count >= vehicle_spawner.vehicle_count {
         return;
     }
 
     for entity in &mut query {
         commands.entity(entity).despawn();
         vehicle_spawner.vehicle_count -= 1;
-        if state.vehicle_count >= vehicle_spawner.vehicle_count {
+        if count >= vehicle_spawner.vehicle_count {
             break;
         }
     }
@@ -354,7 +368,7 @@ struct OctreeData {
 }
 
 fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
-    if state.use_octree {
+    if state.mode == SimulationMode::Octree {
         let Some((_, _, _, first_transform, _)) = vehicle_query.iter().next() else {
             return;
         };
@@ -391,7 +405,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
             },
         );
         let radius = state
-            .vehicle_seperation_distance
+            .vehicle_separation_distance
             .max(state.vehicle_alignment_distance)
             .max(state.vehicle_cohesion_distance)
             * state.vehicle_size;
@@ -472,11 +486,11 @@ fn flocking_force(
     neighbors: impl FnOnce(&mut dyn FnMut(Vector3<f32>, Vector3<f32>)),
     state: &GlobalState,
 ) -> Vector3<f32> {
-    let seperate_radius = state.vehicle_size * state.vehicle_seperation_distance;
-    let dist_seperate = seperate_radius.powi(2);
+    let separate_radius = state.vehicle_size * state.vehicle_separation_distance;
+    let dist_separate = separate_radius.powi(2);
     let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
     let dist_cohesion = (state.vehicle_size * state.vehicle_cohesion_distance).powi(2);
-    let mut seperate_sum = Vector3::zeros();
+    let mut separate_sum = Vector3::zeros();
     let mut align_sum = Vector3::zeros();
     let mut cohesion_sum = Vector3::zeros();
     let mut align_count = 0;
@@ -486,12 +500,12 @@ fn flocking_force(
         let diff = position - other_position;
         let distance_squared = diff.magnitude_squared();
 
-        if distance_squared > 0.0 && distance_squared < dist_seperate {
+        if distance_squared > 0.0 && distance_squared < dist_separate {
             // Pushes grow as neighbors get closer and add up, so a crowd pushes back
             // harder than seek and cohesion can pull it together.
             let distance = distance_squared.sqrt();
-            seperate_sum +=
-                diff / distance * (seperate_radius / distance - 1.0).min(MAX_SEPERATION_PUSH);
+            separate_sum +=
+                diff / distance * (separate_radius / distance - 1.0).min(MAX_SEPARATION_PUSH);
         }
         if distance_squared < dist_align {
             align_sum += other_velocity;
@@ -503,7 +517,7 @@ fn flocking_force(
         }
     });
 
-    seperate_sum *= state.vehicle_max_speed * state.vehicle_seperation_factor;
+    separate_sum *= state.vehicle_max_speed * state.vehicle_separation_factor;
     if align_count > 0 {
         align_sum /= align_count as f32;
         align_sum = normalize_or_zero(align_sum) * state.vehicle_max_speed - velocity;
@@ -524,7 +538,7 @@ fn flocking_force(
         );
     }
 
-    seperate_sum + align_sum + cohesion_sum
+    separate_sum + align_sum + cohesion_sum
 }
 
 #[cfg(test)]
@@ -560,13 +574,11 @@ mod tests {
 
             for use_octree in [false, true] {
                 let mut app = App::new();
-                app.init_resource::<GlobalState>()
-                    .init_resource::<Time>()
-                    .add_systems(Startup, crate::configure_global_state);
+                app.insert_resource(cpu_state()).init_resource::<Time>();
                 app.update();
                 let (max_speed, octree_size) = {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
-                    state.use_octree = use_octree;
+                    state.mode = mode_for(use_octree);
                     state.vehicle_count = count;
                     (state.vehicle_max_speed, state.octree_size)
                 };
@@ -751,14 +763,31 @@ mod tests {
         assert!(transform.rotation.is_finite());
     }
 
+    fn cpu_state() -> GlobalState {
+        GlobalState {
+            mode: SimulationMode::Octree,
+            vehicle_count: 200,
+            ..default()
+        }
+    }
+
+    fn mode_for(use_octree: bool) -> SimulationMode {
+        if use_octree {
+            SimulationMode::Octree
+        } else {
+            SimulationMode::Naive
+        }
+    }
+
     fn flocking_state() -> GlobalState {
         GlobalState {
+            vehicle_count: 200,
             vehicle_size: 1.0,
             vehicle_max_speed: 80.0,
-            vehicle_seperation_factor: 1.5,
+            vehicle_separation_factor: 1.5,
             vehicle_alignment_factor: 3.0,
             vehicle_cohesion_factor: 4.0,
-            vehicle_seperation_distance: 4.0,
+            vehicle_separation_distance: 4.0,
             vehicle_alignment_distance: 30.0,
             vehicle_cohesion_distance: 20.0,
             vehicle_mass: 1.0,
@@ -769,7 +798,7 @@ mod tests {
     fn flock_once(vehicles: &[(Vec3, Vector3<f32>)], use_octree: bool) -> Vec<Vector3<f32>> {
         let mut app = App::new();
         app.insert_resource(GlobalState {
-            use_octree,
+            mode: mode_for(use_octree),
             octree_size: 4,
             vehicle_size: 1.25,
             ..flocking_state()
@@ -913,7 +942,7 @@ mod tests {
     #[test]
     fn cohesion_arrives_at_half_speed_five_units_away() {
         let state = GlobalState {
-            vehicle_seperation_distance: 1.0,
+            vehicle_separation_distance: 1.0,
             vehicle_alignment_distance: 1.0,
             vehicle_cohesion_factor: 10.0,
             ..flocking_state()
@@ -946,7 +975,7 @@ mod tests {
                 &state,
             )
         };
-        let unit = state.vehicle_max_speed * state.vehicle_seperation_factor;
+        let unit = state.vehicle_max_speed * state.vehicle_separation_factor;
         assert_eq!(separation(2.0, 1), -Vector3::x() * unit);
         assert_eq!(separation(1.0, 1), -Vector3::x() * unit * 3.0);
         // Capped closer in than a quarter of the separation distance.
@@ -958,9 +987,7 @@ mod tests {
     #[test]
     fn followers_keep_apart_around_the_target() {
         let mut app = App::new();
-        app.init_resource::<GlobalState>()
-            .init_resource::<Time>()
-            .add_systems(Startup, crate::configure_global_state);
+        app.insert_resource(cpu_state()).init_resource::<Time>();
         app.update();
         let count = 300;
         let max_speed = {
@@ -1020,6 +1047,627 @@ mod tests {
         );
     }
 
+    fn gpu_device() -> (
+        bevy::render::renderer::RenderDevice,
+        bevy::render::renderer::RenderQueue,
+    ) {
+        use bevy::render::settings::{Backends, RenderResources, WgpuSettings};
+        let RenderResources(device, queue, ..) =
+            bevy::tasks::block_on(bevy::render::renderer::initialize_renderer(
+                Backends::PRIMARY,
+                None,
+                &WgpuSettings::default(),
+            ));
+        (device, queue)
+    }
+
+    fn gpu_step(
+        flock: &mut crate::gpu_flock::GpuFlock,
+        device: &bevy::render::renderer::RenderDevice,
+        queue: &bevy::render::renderer::RenderQueue,
+        params: &crate::gpu_flock::GpuParams,
+    ) {
+        let mut encoder = device.create_command_encoder(&default());
+        flock.encode(device, queue, &mut encoder, params);
+        queue.submit([encoder.finish()]);
+    }
+
+    fn gpu_bench_values(name: &str, value: &str, min: u32, max: u32) -> Vec<u32> {
+        value
+            .split(',')
+            .map(|item| {
+                let parsed: u32 = item
+                    .trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid {name}: {value}"));
+                assert!(
+                    (min..=max).contains(&parsed),
+                    "{name} must be in {min}..={max}: {value}"
+                );
+                parsed
+            })
+            .collect()
+    }
+
+    fn gpu_bench_modes(value: &str) -> Vec<bool> {
+        value
+            .split(',')
+            .map(|item| match item.trim() {
+                "wander" => false,
+                "follow" => true,
+                _ => panic!("GPU_BENCH_MODES must contain wander or follow: {value}"),
+            })
+            .collect()
+    }
+
+    // Nearest-rank percentiles, with the usual midpoint median for even sample counts.
+    fn gpu_bench_percentile(sorted: &[f64], percentile: usize) -> f64 {
+        if sorted.is_empty() {
+            return f64::NAN;
+        }
+        if percentile == 50 {
+            return (sorted[(sorted.len() - 1) / 2] + sorted[sorted.len() / 2]) / 2.0;
+        }
+        sorted[(percentile * sorted.len()).div_ceil(100).max(1) - 1]
+    }
+
+    struct GpuBenchStats {
+        sample_count: usize,
+        nn_p1: f64,
+        nn_p10: f64,
+        nn_median: f64,
+        close_percent: f64,
+        mean_speed: f64,
+        mean_target_distance: f64,
+    }
+
+    fn gpu_bench_stats(boids: &[crate::gpu_flock::BoidData], target: Vec3) -> GpuBenchStats {
+        assert!(boids.len() >= 2);
+        assert!(
+            boids.iter().flatten().all(|v| v.is_finite()),
+            "nonfinite GPU benchmark state"
+        );
+        let positions: Vec<_> = boids.iter().map(|boid| boid[0].truncate()).collect();
+        let sample_count = boids.len().min(1000);
+        // Fixed, evenly spaced indices cover the whole sorted buffer without replacement.
+        // Each sampled boid is compared with every other boid, excluding itself.
+        let mut nearest: Vec<_> = (0..sample_count)
+            .map(|sample| {
+                let index = sample * boids.len() / sample_count;
+                positions
+                    .iter()
+                    .enumerate()
+                    .filter(|&(other, _)| other != index)
+                    .map(|(_, position)| positions[index].distance_squared(*position))
+                    .fold(f32::INFINITY, f32::min)
+                    .sqrt() as f64
+            })
+            .collect();
+        nearest.sort_by(f64::total_cmp);
+        GpuBenchStats {
+            sample_count,
+            nn_p1: gpu_bench_percentile(&nearest, 1),
+            nn_p10: gpu_bench_percentile(&nearest, 10),
+            nn_median: gpu_bench_percentile(&nearest, 50),
+            close_percent: nearest.iter().filter(|&&distance| distance < 1.4).count() as f64
+                / sample_count as f64
+                * 100.0,
+            mean_speed: boids
+                .iter()
+                .map(|boid| boid[1].truncate().length() as f64)
+                .sum::<f64>()
+                / boids.len() as f64,
+            mean_target_distance: positions
+                .iter()
+                .map(|position| position.distance(target) as f64)
+                .sum::<f64>()
+                / boids.len() as f64,
+        }
+    }
+
+    #[test]
+    fn gpu_benchmark_parsing_and_statistics() {
+        use crate::gpu_flock::BoidData;
+        assert_eq!(
+            gpu_bench_values("counts", "2, 30000,1000000", 2, 1_000_000),
+            [2, 30_000, 1_000_000]
+        );
+        assert_eq!(
+            gpu_bench_values("caps", "0,32,64,128", 0, u32::MAX),
+            [0, 32, 64, 128]
+        );
+        assert_eq!(gpu_bench_modes("wander, follow"), [false, true]);
+        for value in ["", "0", "-1", "2,", "x", "1000001"] {
+            assert!(
+                std::panic::catch_unwind(|| gpu_bench_values("counts", value, 2, 1_000_000))
+                    .is_err()
+            );
+        }
+        assert!(std::panic::catch_unwind(|| gpu_bench_modes("invalid")).is_err());
+        assert!(gpu_bench_percentile(&[], 95).is_nan());
+        assert_eq!(gpu_bench_percentile(&[1.0, 2.0, 3.0, 4.0], 50), 2.5);
+        assert_eq!(gpu_bench_percentile(&[1.0, 2.0, 3.0, 4.0], 95), 4.0);
+        let boids: Vec<BoidData> = [0.0, 1.0, 3.0, 11.0]
+            .into_iter()
+            .zip([3.0, 4.0, 5.0, 0.0])
+            .map(|(x, speed)| {
+                [
+                    Vec3::new(x, 0.0, 0.0).extend(0.0),
+                    Vec3::new(speed, 0.0, 0.0).extend(0.0),
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+            })
+            .collect();
+        let stats = gpu_bench_stats(&boids, Vec3::ZERO);
+        assert_eq!(stats.sample_count, 4);
+        assert_eq!(stats.nn_p1, 1.0);
+        assert_eq!(stats.nn_p10, 1.0);
+        assert_eq!(stats.nn_median, 1.5);
+        assert_eq!(stats.close_percent, 50.0);
+        assert_eq!(stats.mean_speed, 3.0);
+        assert_eq!(stats.mean_target_distance, 3.75);
+        let mut boids: Vec<BoidData> = (0..1001)
+            .map(|i| {
+                [
+                    Vec3::new(i as f32 * 10.0, 0.0, 0.0).extend(0.0),
+                    Vec4::ZERO,
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+            })
+            .collect();
+        // Index 1000 is not sampled, but must still be considered as index 0's neighbor.
+        boids[1000][0].x = 0.25;
+        let stats = gpu_bench_stats(&boids, Vec3::ZERO);
+        assert_eq!(stats.sample_count, 1000);
+        assert_eq!(stats.close_percent, 0.1);
+    }
+
+    #[test]
+    #[ignore = "headless GPU measurement; run in release with --nocapture --test-threads=1"]
+    fn gpu_flocking_benchmark() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        use bevy::render::render_resource::PollType;
+        const WARMUP: usize = 600;
+        const STEPS: usize = 60;
+        const DT: f32 = 1.0 / 60.0;
+        let counts = gpu_bench_values(
+            "GPU_BENCH_COUNTS",
+            &std::env::var("GPU_BENCH_COUNTS")
+                .unwrap_or_else(|_| "10000,30000,100000,300000,1000000".into()),
+            2,
+            SimulationMode::Gpu.max_vehicles() as u32,
+        );
+        let caps = gpu_bench_values(
+            "GPU_BENCH_CAPS",
+            &std::env::var("GPU_BENCH_CAPS").unwrap_or_else(|_| "0,32,64,128".into()),
+            0,
+            u32::MAX,
+        );
+        let modes = gpu_bench_modes(
+            &std::env::var("GPU_BENCH_MODES").unwrap_or_else(|_| "wander,follow".into()),
+        );
+        let (device, queue) = gpu_device();
+        for count in counts {
+            for &following in &modes {
+                for &cap in &caps {
+                    // Fresh state starts the shader's PCG spawn at frame 0 for every case.
+                    let mut flock = GpuFlock::new(&device);
+                    let state = GlobalState {
+                        mode: SimulationMode::Gpu,
+                        vehicle_count: count as usize,
+                        gpu_max_neighbors: cap,
+                        ..default()
+                    };
+                    let params = gpu_params(&state, Vec3::ZERO, following, DT);
+                    let mut timings = Vec::with_capacity(STEPS);
+                    let mut warmup_steps = 0;
+                    let mut status = String::from("complete");
+                    for step in 0..WARMUP + STEPS {
+                        let start = Instant::now();
+                        gpu_step(&mut flock, &device, &queue, &params);
+                        device.poll(PollType::wait_indefinitely()).unwrap();
+                        let elapsed = start.elapsed();
+                        if step < WARMUP {
+                            warmup_steps += 1;
+                        } else {
+                            timings.push(elapsed.as_secs_f64() * 1000.0);
+                        }
+                        if elapsed > Duration::from_millis(250) {
+                            let phase = if step < WARMUP { "warmup" } else { "timed" };
+                            status = format!(
+                                "skipped_remaining phase={phase} slow_step_ms={:.3}",
+                                elapsed.as_secs_f64() * 1000.0
+                            );
+                            break;
+                        }
+                    }
+                    timings.sort_by(f64::total_cmp);
+                    let stats = gpu_bench_stats(&flock.read_boids(&device, &queue), Vec3::ZERO);
+                    let mode = if following { "follow" } else { "wander" };
+                    let target_distance = if following {
+                        format!("{:.3}", stats.mean_target_distance)
+                    } else {
+                        "NA".into()
+                    };
+                    println!(
+                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{WARMUP} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
+                        params.max_neighbors, timings.len(), gpu_bench_percentile(&timings, 50), gpu_bench_percentile(&timings, 95),
+                        stats.sample_count, stats.nn_p1, stats.nn_p10, stats.nn_median, stats.close_percent, stats.mean_speed,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_steering_matches_cpu_reference() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let count = 3000;
+        let dt = 1.0 / 60.0;
+        let target = Vec3::new(20.0, 30.0, -10.0);
+        let mut rng = StdRng::seed_from_u64(0x6F0C);
+        // A sparse region with negative coordinates and a dense cluster, so cells are both
+        // empty and crowded.
+        let vehicles: Vec<(Vec3, Vector3<f32>)> = (0..count)
+            .map(|i| {
+                let (center, edge) = if i % 2 == 0 {
+                    (Vec3::new(-100.0, 50.0, -30.0), 300.0)
+                } else {
+                    (Vec3::new(60.0, -20.0, 10.0), 40.0)
+                };
+                let position = center
+                    + (Vec3::new(rng.random(), rng.random(), rng.random()) - Vec3::splat(0.5))
+                        * edge;
+                let velocity = Vector3::new(
+                    rng.random_range(-45.0..45.0),
+                    rng.random_range(-45.0..45.0),
+                    rng.random_range(-45.0..45.0),
+                );
+                (position, velocity)
+            })
+            .collect();
+
+        let (device, queue) = gpu_device();
+        for following in [true, false] {
+            let mut state = GlobalState {
+                mode: SimulationMode::Naive,
+                vehicle_count: count,
+                // A zero radius makes wander deterministic without changing its force code.
+                vehicle_wander_radius: 0.0,
+                gpu_max_neighbors: 0,
+                ..default()
+            };
+            let mut app = App::new();
+            app.insert_resource(GlobalState { ..state })
+                .init_resource::<Time>()
+                .add_systems(Update, (movement, update).chain());
+            app.world_mut().spawn((
+                Target,
+                TargetSelection(following),
+                Transform::from_translation(target),
+            ));
+            let mut boids = Vec::new();
+            let entities: Vec<_> = vehicles
+                .iter()
+                .enumerate()
+                .map(|(id, &(mut position, velocity))| {
+                    // Exercise both signs of every wall, as well as the inside-wall drag.
+                    if id < 6 {
+                        let axis = id / 2;
+                        position[axis] = walls(count)[axis] * if id % 2 == 0 { -1.1 } else { 1.1 };
+                    } else if id < 8 {
+                        position = Vec3::new(120.0, 0.0, 0.0);
+                    } else if id < 10 {
+                        // Exactly the alignment radius: strict distance tests must exclude it.
+                        position = Vec3::new(300.0 + (id - 8) as f32 * 30.0, 0.0, 0.0);
+                    }
+                    boids.push([
+                        position.extend(id as f32),
+                        Vec3::from(velocity).extend(0.0),
+                        Vec4::from(Quat::IDENTITY),
+                        Vec4::ZERO,
+                    ]);
+                    app.world_mut()
+                        .spawn((
+                            Vehicle,
+                            VehicleVelocity(velocity),
+                            VehicleAcceleration::default(),
+                            VehicleWanderRotation {
+                                theta: id as f32,
+                                phi: 0.0,
+                            },
+                            Transform::from_translation(position),
+                        ))
+                        .id()
+                })
+                .collect();
+            let mut flock = GpuFlock::new(&device);
+            flock.upload(&device, &queue, &boids);
+            state.mode = SimulationMode::Gpu;
+            for step in 0..3 {
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_by(Duration::from_secs_f32(dt));
+                app.update();
+                let expected: Vec<_> = entities
+                    .iter()
+                    .map(|&entity| {
+                        let transform = app.world().get::<Transform>(entity).unwrap();
+                        let velocity = app.world().get::<VehicleVelocity>(entity).unwrap();
+                        (
+                            transform.translation,
+                            Vec3::from(velocity.0),
+                            transform.rotation,
+                        )
+                    })
+                    .collect();
+                gpu_step(
+                    &mut flock,
+                    &device,
+                    &queue,
+                    &gpu_params(&state, target, following, dt),
+                );
+                let actual = flock.read_boids(&device, &queue);
+                assert_eq!(actual.len(), count);
+                let mut seen = vec![false; count];
+                let mut worst = (0.0_f32, 0.0_f32);
+                for boid in &actual {
+                    assert!(boid.iter().all(|v| v.is_finite()), "{boid:?}");
+                    let id = if following {
+                        // Seek leaves theta alone, so it carries identity through the sort.
+                        boid[0].w as usize
+                    } else {
+                        // Wander changes both angles; match its uniquely positioned outputs.
+                        expected
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, a), (_, b)| {
+                                boid[0]
+                                    .truncate()
+                                    .distance_squared(a.0)
+                                    .total_cmp(&boid[0].truncate().distance_squared(b.0))
+                            })
+                            .unwrap()
+                            .0
+                    };
+                    assert!(!seen[id], "boid {id} appears twice");
+                    seen[id] = true;
+                    let (position, velocity, rotation) = expected[id];
+                    worst.0 = worst.0.max(boid[0].truncate().distance(position));
+                    worst.1 = worst.1.max(boid[1].truncate().distance(velocity));
+                    let actual_rotation = Quat::from_vec4(boid[2]);
+                    assert!(actual_rotation.dot(rotation).abs() > 1.0 - 1e-5);
+                }
+                println!("following={following}, step={step}: gpu/cpu worst position error {}, velocity error {}", worst.0, worst.1);
+                assert!(worst.0 < 1e-3 && worst.1 < 1e-2, "{worst:?}");
+            }
+        }
+
+        // A stationary boid keeps its previous orientation across repeated sorting/updates.
+        let rotation = Vec4::from(Quat::from_rotation_x(0.5));
+        let mut flock = GpuFlock::new(&device);
+        flock.upload(
+            &device,
+            &queue,
+            &[[Vec4::ZERO, Vec4::ZERO, rotation, Vec4::ZERO]],
+        );
+        let state = GlobalState {
+            mode: SimulationMode::Gpu,
+            vehicle_count: 1,
+            ..default()
+        };
+        for _ in 0..2 {
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, dt),
+            );
+            assert_eq!(flock.read_boids(&device, &queue)[0][2], rotation);
+        }
+        for direction in [Vec3::Y, Vec3::NEG_Y, Vec3::new(0.001, 1.0, 0.0).normalize()] {
+            flock.upload(
+                &device,
+                &queue,
+                &[[Vec4::ZERO, direction.extend(0.0), rotation, Vec4::ZERO]],
+            );
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 0.0),
+            );
+            let actual = Quat::from_vec4(flock.read_boids(&device, &queue)[0][2]);
+            let expected = Quat::from_rotation_arc(Vec3::Y, direction);
+            assert!(actual.dot(expected).abs() > 1.0 - 1e-6);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_neighbor_cap_preserves_complete_separation() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let state = GlobalState {
+            mode: SimulationMode::Gpu,
+            vehicle_count: 96,
+            gpu_max_neighbors: 1,
+            vehicle_mass: 10_000.0,
+            vehicle_alignment_factor: 0.0,
+            vehicle_cohesion_factor: 0.0,
+            vehicle_seek_factor: 0.0,
+            ..default()
+        };
+        // Many neighbors in one coarse cell, spanning negative/positive fine-cell boundaries.
+        let positions: Vec<_> = (0..state.vehicle_count)
+            .map(|i| {
+                Vec3::new((i % 4) as f32, (i / 4 % 4) as f32, (i / 16) as f32) * 0.6
+                    - Vec3::splat(1.1)
+            })
+            .collect();
+        let boids: Vec<_> = positions
+            .iter()
+            .enumerate()
+            .map(|(i, position)| [position.extend(i as f32), Vec4::ZERO, Vec4::W, Vec4::ZERO])
+            .collect();
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        flock.upload(&device, &queue, &boids);
+        let dt = 1.0 / 60.0;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, dt),
+        );
+        let actual = flock.read_boids(&device, &queue);
+        let mut seen = vec![false; positions.len()];
+        for boid in actual {
+            let id = boid[0].w as usize;
+            assert!(!seen[id]);
+            seen[id] = true;
+            let position = positions[id];
+            let force = flocking_force(
+                position.into(),
+                Vector3::zeros(),
+                |visit| {
+                    for (other, point) in positions.iter().enumerate() {
+                        if id != other {
+                            visit((*point).into(), Vector3::zeros());
+                        }
+                    }
+                },
+                &state,
+            );
+            let mut velocity = force / state.vehicle_mass * (dt * REFERENCE_HZ);
+            limit(&mut velocity, state.vehicle_max_speed);
+            assert!(boid[1].truncate().distance(Vec3::from(velocity)) < 1e-3);
+            assert!(
+                boid[0]
+                    .truncate()
+                    .distance(position + Vec3::from(velocity) * dt)
+                    < 1e-4
+            );
+        }
+        assert!(seen.into_iter().all(|seen| seen));
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_flock_spawns_grows_and_stays_bounded() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState::default();
+        for (count, steps) in [(1000, 120), (5000, 60), (2000, 60)] {
+            state.vehicle_count = count;
+            let params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            for _ in 0..steps {
+                gpu_step(&mut flock, &device, &queue, &params);
+            }
+            let boids = flock.read_boids(&device, &queue);
+            assert_eq!(boids.len(), count);
+            let walls = walls(count);
+            for boid in &boids {
+                assert!(boid.iter().all(|v| v.is_finite()), "{boid:?}");
+                assert!((boid[2].length_squared() - 1.0).abs() < 1e-5);
+                assert!(boid[1].truncate().length() <= state.vehicle_max_speed + 1e-3);
+                // Wall avoidance turns vehicles back within a few units.
+                assert!(
+                    (boid[0].truncate().abs() - walls).max_element() < 50.0,
+                    "{boid:?} outside {walls}"
+                );
+            }
+        }
+
+        // Growth across 65,536 boids needs more than 256 scan blocks, exercising the
+        // multi-block-per-thread path in scan_block_sums as well as buffer preservation.
+        let boids: Vec<_> = (0..65_536)
+            .map(|id| {
+                [
+                    Vec3::new(id as f32 * 64.0, -40.0, 10.0).extend((id + 1) as f32),
+                    Vec4::ZERO,
+                    Vec4::from(Quat::from_rotation_x(0.5)),
+                    Vec4::ZERO,
+                ]
+            })
+            .collect();
+        flock.upload(&device, &queue, &boids);
+        state.vehicle_count = boids.len() + 1;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let actual = flock.read_boids(&device, &queue);
+        assert_eq!(actual.len(), state.vehicle_count);
+        let mut seen = vec![false; actual.len()];
+        for boid in actual {
+            let id = boid[0].w as usize;
+            assert!(!seen[id], "boid {id} appears twice after growth");
+            seen[id] = true;
+            if id == 0 {
+                assert!(
+                    boid[0].truncate().abs().max_element() <= spawn_size(state.vehicle_count) / 2.0
+                );
+            } else {
+                assert_eq!(boid, boids[id - 1]);
+            }
+        }
+        state.vehicle_count = 0;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        assert!(flock.read_boids(&device, &queue).is_empty());
+        state.vehicle_count = 17;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let fresh = flock.read_boids(&device, &queue);
+        assert_eq!(fresh.len(), 17);
+        assert!(fresh.iter().all(|boid| boid[0].w == 0.0));
+    }
+
+    #[test]
+    fn gpu_mode_removes_cpu_entities_and_cpu_mode_respawns_them() {
+        let mut app = App::new();
+        app.insert_resource(cpu_state())
+            .init_resource::<VehicleSpawner>()
+            .add_systems(Update, (vehicle_spawner, vehicle_cleanup).chain());
+        for (mode, count, expected) in [
+            (SimulationMode::Naive, 23, 23),
+            (SimulationMode::Gpu, 23, 0),
+            (SimulationMode::Octree, 23, 23),
+            (SimulationMode::Gpu, 0, 0),
+            (SimulationMode::Naive, 7, 7),
+        ] {
+            let mut state = app.world_mut().resource_mut::<GlobalState>();
+            state.mode = mode;
+            state.vehicle_count = count;
+            app.update();
+            assert_eq!(
+                app.world().resource::<VehicleSpawner>().vehicle_count,
+                expected
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query::<&Vehicle>()
+                    .iter(app.world())
+                    .count(),
+                expected
+            );
+        }
+    }
+
     #[test]
     fn diagonal_velocity_is_limited_by_magnitude() {
         let mut velocity = Vector3::repeat(80.0);
@@ -1055,13 +1703,11 @@ mod tests {
         for use_octree in [false, true] {
             for following in [true, false] {
                 let mut app = App::new();
-                app.init_resource::<GlobalState>()
-                    .init_resource::<Time>()
-                    .add_systems(Startup, crate::configure_global_state);
+                app.insert_resource(cpu_state()).init_resource::<Time>();
                 app.update();
                 {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
-                    state.use_octree = use_octree;
+                    state.mode = mode_for(use_octree);
                     state.octree_size = 2;
                     state.vehicle_mass = 1.0;
                 }
@@ -1112,9 +1758,8 @@ mod tests {
     #[test]
     fn vehicles_spawn_in_the_spawn_cube_with_varied_headings() {
         let mut app = App::new();
-        app.init_resource::<GlobalState>()
+        app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
-            .add_systems(Startup, crate::configure_global_state)
             .add_systems(Update, vehicle_spawner);
         app.update();
         let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
@@ -1136,10 +1781,9 @@ mod tests {
     #[test]
     fn instances_follow_vehicle_transforms_and_count() {
         let mut app = App::new();
-        app.init_resource::<GlobalState>()
+        app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
             .init_resource::<Time>()
-            .add_systems(Startup, crate::configure_global_state)
             .add_systems(
                 Update,
                 (vehicle_spawner, vehicle_cleanup, update, sync_instances).chain(),

@@ -1,3 +1,4 @@
+mod gpu_flock;
 mod instancing;
 mod octree;
 mod target;
@@ -17,7 +18,6 @@ use bevy::{
     text::FontSize,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
-use octree::*;
 use std::f32::consts::FRAC_PI_2;
 
 fn main() {
@@ -61,10 +61,11 @@ fn main() {
             EguiPlugin::default(),
             FrameTimeDiagnosticsPlugin::default(),
             instancing::InstancingPlugin,
+            gpu_flock::GpuFlockPlugin,
             vehicle::VehiclePlugin,
             target::TargetPlugin,
         ))
-        .add_systems(Startup, (setup_scene, configure_global_state))
+        .add_systems(Startup, setup_scene)
         .add_systems(
             PreUpdate,
             camera_input
@@ -124,75 +125,13 @@ fn camera_input(
     *previous_mode = mode;
 }
 
-pub fn test_octree_visualization(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let mut octree: Octree<i32> = Octree::new(100);
-    octree.create_root(
-        Point {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        Point {
-            x: -50.0,
-            y: -50.0,
-            z: -50.0,
-        },
-        Point {
-            x: 50.0,
-            y: 50.0,
-            z: 50.0,
-        },
-    );
-
-    // Insert points
-    for i in 0..50000 {
-        let point = Point {
-            x: -50.0 + rand::random::<f32>() * 100.0,
-            y: -50.0 + rand::random::<f32>() * 100.0,
-            z: -50.0 + rand::random::<f32>() * 100.0,
-        };
-
-        octree.insert(point, i);
-    }
-
-    // Print nodes and their points
-    for node in &octree.nodes {
-        println!("Bounds: {:?}", node.bounds);
-
-        for point_index in node.points.iter() {
-            let point = octree.points.get(*point_index).unwrap();
-            println!("Point: {:?}", point.point);
-        }
-    }
-
-    // Draw nodes
-    for node in &octree.nodes {
-        if node.children.len() > 0 {
-            continue;
-        }
-        let (center, min, max) = &node.bounds;
-
-        let mesh = meshes.add(Cuboid::from_length(8.0 * (max.x - min.x) / 10.0));
-
-        commands.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(materials.add(Color::srgb(0.0, 0.0, 1.0))),
-            Transform::from_translation(Vec3::new(center.x, center.y, center.z)),
-        ));
-    }
-}
-
 const BACKGROUND: Color = Color::srgb(0.035, 0.045, 0.07);
 const WALL_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.3);
 const GRID_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.12);
 // Fog visibility as a multiple of the wall half-width, so it scales with the world.
 const FOG_VISIBILITY: f32 = 5.0;
 
-fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>, state: Res<GlobalState>) {
     commands.insert_resource(GlobalAmbientLight {
         brightness: 400.0,
         ..default()
@@ -227,10 +166,15 @@ fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextColor(Color::srgb(1.0, 0.84, 0.0)),
             FpsText,
         ));
-    // Frames the spawn cube around the target.
-    let eye = Vec3::new(0.0, 60.0, 170.0);
+    // Far enough back to see the whole default world: flocks spread to the walls within seconds.
+    let scale = vehicle::world_scale(state.vehicle_count);
+    let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
     commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            far: PerspectiveProjection::default().far * scale,
+            ..default()
+        }),
         Msaa::Sample4,
         // The instanced flock draws directly, not through indirect draw buffers.
         NoIndirectDrawing,
@@ -263,7 +207,27 @@ fn draw_world(mut gizmos: Gizmos, state: Res<GlobalState>, mut fogs: Query<&mut 
     }
 }
 
-#[derive(Default, Resource)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SimulationMode {
+    /// Every vehicle checks every other one on the CPU.
+    Naive,
+    /// CPU neighbor search through an octree.
+    Octree,
+    /// Compute shaders; vehicles exist only on the GPU (see `gpu_flock`).
+    Gpu,
+}
+
+impl SimulationMode {
+    // The CPU modes stall beyond this; the GPU mode is limited by GPU memory and time.
+    fn max_vehicles(self) -> usize {
+        match self {
+            SimulationMode::Naive | SimulationMode::Octree => 50_000,
+            SimulationMode::Gpu => 1_000_000,
+        }
+    }
+}
+
+#[derive(Resource)]
 struct GlobalState {
     // Basic info
     vehicle_count: usize,
@@ -275,7 +239,7 @@ struct GlobalState {
     vehicle_max_speed: f32,
 
     // Factors
-    vehicle_seperation_factor: f32,
+    vehicle_separation_factor: f32,
     vehicle_alignment_factor: f32,
     vehicle_cohesion_factor: f32,
     vehicle_wander_factor: f32,
@@ -283,41 +247,42 @@ struct GlobalState {
     vehicle_seek_factor: f32,
 
     // Distances
-    vehicle_seperation_distance: f32,
+    vehicle_separation_distance: f32,
     vehicle_alignment_distance: f32,
     vehicle_cohesion_distance: f32,
     vehicle_wander_distance: f32,
     vehicle_wander_radius: f32,
 
-    // Toggle mode
-    use_octree: bool,
+    mode: SimulationMode,
+    // GPU follow-mode alignment/cohesion samples; separation stays complete. Zero is unlimited.
+    gpu_max_neighbors: u32,
     octree_size: usize,
 }
 
-fn configure_global_state(mut state: ResMut<GlobalState>) {
-    state.vehicle_count = 200;
-    state.vehicle_size = 1.0;
-    state.vehicle_mass = 60.0;
-    state.vehicle_wander_speed = 40.0;
-
-    state.vehicle_max_speed = 80.0;
-
-    state.vehicle_seperation_factor = 1.5;
-    state.vehicle_alignment_factor = 3.0;
-    state.vehicle_cohesion_factor = 4.0;
-    state.vehicle_wander_factor = 1.0;
-    state.vehicle_wall_avoid_factor = 1.5;
-    state.vehicle_seek_factor = 7.0;
-
-    state.vehicle_seperation_distance = 4.0;
-    state.vehicle_alignment_distance = 30.0;
-    state.vehicle_cohesion_distance = 20.0;
-
-    state.vehicle_wander_distance = 4.0;
-    state.vehicle_wander_radius = 1.5;
-
-    state.use_octree = true;
-    state.octree_size = 100;
+impl Default for GlobalState {
+    fn default() -> Self {
+        Self {
+            vehicle_count: 20_000,
+            vehicle_size: 1.0,
+            vehicle_mass: 60.0,
+            vehicle_wander_speed: 40.0,
+            vehicle_max_speed: 80.0,
+            vehicle_separation_factor: 1.5,
+            vehicle_alignment_factor: 3.0,
+            vehicle_cohesion_factor: 4.0,
+            vehicle_wander_factor: 1.0,
+            vehicle_wall_avoid_factor: 1.5,
+            vehicle_seek_factor: 7.0,
+            vehicle_separation_distance: 4.0,
+            vehicle_alignment_distance: 30.0,
+            vehicle_cohesion_distance: 20.0,
+            vehicle_wander_distance: 4.0,
+            vehicle_wander_radius: 1.5,
+            mode: SimulationMode::Gpu,
+            gpu_max_neighbors: 16,
+            octree_size: 100,
+        }
+    }
 }
 
 fn ui(
@@ -329,8 +294,31 @@ fn ui(
     egui::Window::new("Menu")
         .default_size([300.0, 100.0])
         .show(ctx, |ui| {
+            ui.label("Simulation");
+            ui.horizontal(|ui| {
+                for (mode, label) in [
+                    (SimulationMode::Gpu, "GPU"),
+                    (SimulationMode::Octree, "Octree"),
+                    (SimulationMode::Naive, "Naive"),
+                ] {
+                    ui.radio_value(&mut state.mode, mode, label);
+                }
+            });
+            let max_vehicles = state.mode.max_vehicles();
+            state.vehicle_count = state.vehicle_count.min(max_vehicles);
             ui.label("Vehicle count");
-            ui.add(egui::Slider::new(&mut state.vehicle_count, 0..=50000).text("count"));
+            ui.add(
+                egui::Slider::new(&mut state.vehicle_count, 0..=max_vehicles)
+                    .logarithmic(true)
+                    .text("count"),
+            );
+            if state.mode == SimulationMode::Gpu {
+                ui.add(
+                    egui::Slider::new(&mut state.gpu_max_neighbors, 0..=512)
+                        .text("follow neighbor samples (0 = all)"),
+                )
+                .on_hover_text("Limits alignment and cohesion while following. Wander uses the full query; separation always checks every nearby vehicle.");
+            }
             ui.label("Vehicle mass");
             ui.add(egui::Slider::new(&mut state.vehicle_mass, 1.0..=1000.0).text("mass"));
             ui.label("Vehicle max speed");
@@ -340,9 +328,9 @@ fn ui(
                 egui::Slider::new(&mut state.vehicle_wander_speed, 0.1..=100.0)
                     .text("wander speed"),
             );
-            ui.label("Vehicle seperation factor");
+            ui.label("Vehicle separation factor");
             ui.add(
-                egui::Slider::new(&mut state.vehicle_seperation_factor, 0.1..=10.0)
+                egui::Slider::new(&mut state.vehicle_separation_factor, 0.1..=10.0)
                     .text("separation")
                     .step_by(0.1),
             );
@@ -371,9 +359,9 @@ fn ui(
                     .step_by(0.1),
             );
 
-            ui.label("Vehicle seperation distance");
+            ui.label("Vehicle separation distance");
             ui.add(
-                egui::Slider::new(&mut state.vehicle_seperation_distance, 1.0..=100.0)
+                egui::Slider::new(&mut state.vehicle_separation_distance, 1.0..=100.0)
                     .text("separation")
                     .step_by(1.0),
             );
@@ -402,13 +390,14 @@ fn ui(
                     .step_by(1.0),
             );
 
-            ui.separator();
-            ui.checkbox(&mut state.use_octree, "Use octree");
-            ui.add(
-                egui::Slider::new(&mut state.octree_size, 2..=500)
-                    .text("octree size")
-                    .step_by(1.0),
-            );
+            if state.mode == SimulationMode::Octree {
+                ui.separator();
+                ui.add(
+                    egui::Slider::new(&mut state.octree_size, 2..=500)
+                        .text("octree size")
+                        .step_by(1.0),
+                );
+            }
         });
     let following = targets.iter().any(|selection| selection.0);
     egui::Window::new("Controls")
@@ -471,6 +460,39 @@ mod tests {
     };
     use bevy_egui::EguiUserTextures;
     use std::time::Duration;
+
+    #[test]
+    fn startup_camera_frames_the_default_world_without_culling_the_target() {
+        // Only assets and scene setup: no renderer, window plugin or native app runner.
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+            .init_asset::<bevy::text::Font>()
+            .init_asset_loader::<bevy::text::FontLoader>()
+            .init_resource::<GlobalState>()
+            .add_systems(Startup, setup_scene);
+        app.update();
+        let state = app.world().resource::<GlobalState>();
+        assert_eq!(state.mode, SimulationMode::Gpu);
+        assert_eq!(state.vehicle_count, 20_000);
+        assert_eq!(state.gpu_max_neighbors, 16);
+        let count = state.vehicle_count;
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<(&Transform, &Projection), With<Camera3d>>();
+        let (transform, projection) = cameras.single(app.world()).unwrap();
+        assert_eq!(
+            transform.translation,
+            Vec3::new(0.0, 140.0, 450.0) * vehicle::world_scale(count)
+        );
+        let Projection::Perspective(projection) = projection else {
+            panic!("expected perspective camera");
+        };
+        // The target and the far side of the world must stay within the culling distance.
+        assert!(projection.far > transform.translation.length() + vehicle::walls(count).length());
+        assert!(
+            (transform.rotation * Vec3::NEG_Z).dot(-transform.translation.normalize()) > 0.99999
+        );
+    }
 
     #[test]
     fn camera_mouse_adapter_applies_orbit_and_scroll() {
