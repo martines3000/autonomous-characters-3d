@@ -1,5 +1,7 @@
 # Repository review progress
 
+The original WASM web build was removed on 2026-10-31 (commit 7f8ef75); web-related findings and logs were removed from this record. See the git history for the original text.
+
 Review date: 2026-10-30 (Europe/Ljubljana).
 Repository: /Users/martines/Desktop/git_repos/personal/autonomous-characters-3d
 Scope: analysis-only review of current implementation, validation, dependencies and modernization; create self-contained review-report.html. Do not change existing application files or Cargo.lock.
@@ -22,7 +24,7 @@ Scope: analysis-only review of current implementation, validation, dependencies 
 
 ## Phase 1 completed: inventory and static source review
 - Branch: feat/post-ai-version; commit e7a53d70c75020e399b4a2d5c1b1153ffbb9075f (2023-03-18). Initial working tree clean. No applicable AGENTS.md found in repository/ancestor paths checked.
-- Read all four Rust modules, manifests, toolchain/Cargo config, Docker/Trunk/nginx/HTML/CSS, README and Slovene analysis; viewed meritve.png. No tests/CI found among tracked files.
+- Read all four Rust modules, manifests, toolchain/Cargo config, README and Slovene analysis; viewed meritve.png. No tests/CI found among tracked files.
 - Environment: macOS 26.7.1 ARM64, 18 GiB RAM, 11 logical CPUs; existing stable Rust 1.95.0. Repository toolchain selects Rust 1.67.1. First rustup probe automatically downloaded pinned toolchain; initial concurrent cargo check failed with Missing manifest while installation was in progress. Rustup probe later succeeded (1.67.1). This is an environment bootstrap artifact, not a code failure.
 - Native formatting with installed stable: `RUSTUP_TOOLCHAIN=stable cargo fmt --all -- --check` PASS.
 - Current-stable locked cargo check running; exact logs under /tmp/ac3d-review-e7a53d7/. Preserve lock SHA256 297057ff03baa34b0413676a4d0d95c5be2ed3d5dd7c880f5c4d8cdc6d069b0a.
@@ -47,8 +49,7 @@ Finish pinned/stable checks; run isolated harness against unmodified octree and 
 ## Phase 2: validation and reproductions
 - Current Rust 1.95 `cargo check --locked`: FAIL in dependency coreaudio-sys 0.2.11/bindgen/proc-macro2 1.0.51, invalid generated Ident for unnamed enum from macOS 26.5 SDK. Application not typechecked to completion. Log cargo-check-stable.log.
 - Pinned Cargo 1.67.1 check: online git-index fetch stopped after ~1 minute to avoid lengthy legacy index bootstrap. Offline check cannot find bevy in legacy git registry cache; sparse registry probe confirms it requires unstable sparse support. This is a registry/cache limitation; pinned compiler viability remains unverified.
-- Modern Rust WASM `cargo check --locked --target wasm32-unknown-unknown`: FAIL because wasm-bindgen 0.2.84 rejects current Rust (requires >=0.2.88). Installed WASM target existed already. No dependencies upgraded.
-- Native cargo test and Clippy on Rust 1.95 attempted; compiling prerequisites. Trunk absent; Docker daemon available (29.9.2), but image build not attempted due old tool installers/network/system package setup scope.
+- Native cargo test and Clippy on Rust 1.95 attempted; compiling prerequisites.
 - Isolated release harness in /tmp/ac3d-review-e7a53d7/harness imports the repository's unchanged octree.rs and exact nalgebra 0.31.4 + generational-arena 0.2.8 + bevy_ecs 0.9.1. Uses copy of project lock, pruned only inside temporary harness. Initial harness compile had an ambiguous float type; corrected in temporary harness only.
 - Harness PASS: neighboring points (-0.01,1,1) / (+0.01,1,1), capacity 1, distance 0.02: querying first point returns only itself. Zero.try_normalize(f32::MIN) -> [NaN,NaN,NaN]; opposing velocities normalize to NaN. Component clamp max80 allows magnitude138.564.
 - Cluster reproduction (capacity2, all points1,1,1): n100 ->785 nodes /220us; n1000 ->7985 /15583us; n5000 ->39985 /960588us. Single isolated timings, not simulation benchmark. Confirms linear-depth growth and worsening insertion cost.
@@ -56,11 +57,11 @@ Finish pinned/stable checks; run isolated harness against unmodified octree and 
 
 ## Phase 3: current versions/security (verified 2026-10-30)
 - Primary crates.io API summaries saved in /tmp/ac3d-review-e7a53d7/dependency-summary.json with full per-crate JSON.
-- Latest non-prerelease/non-yanked: Bevy0.20.1 (MSRV1.97.1), inspector0.38.0, rand0.10.3, bevy_egui0.43.1, nalgebra0.35.0, smooth-bevy-cameras0.14.0, rayon1.12.0, picking0.20.1, rustc-hash2.1.3, generational-arena0.2.9, trunk0.22.1 (MSRV1.96.1), wasm-bindgen-cli0.2.130.
-- Official Rust stable channel manifest:1.99.1; Binaryen latest release version_133; nginx official stable1.30.6 (mainline1.31.8).
+- Latest non-prerelease/non-yanked: Bevy0.20.1 (MSRV1.97.1), inspector0.38.0, rand0.10.3, bevy_egui0.43.1, nalgebra0.35.0, smooth-bevy-cameras0.14.0, rayon1.12.0, picking0.20.1, rustc-hash2.1.3, generational-arena0.2.9.
+- Official Rust stable channel manifest:1.99.1.
 - Confirmed picking archived 2025-03-04 after upstreaming into Bevy0.15. Generational-arena unmaintained RustSec RUSTSEC-2024-0014; alternative slotmap or plain Vec indices since tree rebuilt/no deletions.
 - Selected RustSec checked: rand0.8.5 covered by RUSTSEC-2026-0097 (custom logger reentrancy conditions not observed here); webbrowser0.8.7 by RUSTSEC-2026-0257 (Unix BROWSER attacker-controlled URL path not demonstrated); idna0.3.0 by RUSTSEC-2024-0421 (privilege-check scenario absent). Crossbeam-channel0.5.6 is UNAFFECTED by RUSTSEC-2025-0024 (<=0.5.11 unaffected), avoid false positive.
-- OSV batch of entire lock in progress; not a reachability proof or deployed-container scan.
+- OSV batch of entire lock in progress; not a reachability proof.
 
 ## Exact next steps
 1. Collect pending test/Clippy/OSV results and plugin compatibility.
@@ -68,9 +69,9 @@ Finish pinned/stable checks; run isolated harness against unmodified octree and 
 3. Verify HTML visually and all internal links; check git diff and Cargo.lock SHA unchanged; finalize log.
 
 ## Phase 3 completed: dependency/security verification
-- OSV querybatch covered all 398 registry lock entries. 17 matched packages, deduplicating advisory aliases: 8 unmaintained, 2 unsoundness, 7 other security advisories. Full summary and individual records in /tmp/ac3d-review-e7a53d7/. Report embeds full package triage and primary links. Reachability not established.
+- OSV querybatch covered all 398 registry lock entries. 16 retained native-related package matches, deduplicating advisory aliases: 7 unmaintained, 2 unsoundness, 7 other security advisories. Full summary and individual records in /tmp/ac3d-review-e7a53d7/. Report embeds full package triage and primary links. Reachability not established.
 - Latest published smooth-bevy-cameras0.14.0 targets Bevy0.16; upstream main is unpublished0.15 for Bevy0.17. Latest egui0.43.1 / inspector0.38 target Bevy0.20. A latest-everything upgrade is incompatible without camera/picking work.
-- Native test and Clippy finished with dependency build failure (same CoreAudio identifier panic), not a test assertion/lint finding. Modern WASM check failed on locked wasm-bindgen0.2.84.
+- Native test and Clippy finished with dependency build failure (same CoreAudio identifier panic), not a test assertion/lint finding.
 
 ## Phase 4: report generated; final verification in progress
 - Created self-contained review-report.html (about 300 KB, including embedded historical benchmark image and essential logs/harness source).
@@ -99,10 +100,10 @@ All requested review phases and both deliverables are complete. No implementatio
 - F08 Medium / Confirmed: mass slider applies only to newly spawned agents (main.rs:265–266; vehicle.rs:100,58–61).
 - F09 Medium / Confirmed: benchmark disabled, visibility not propagated, dormant sweep switch count incorrect (vehicle.rs:54,84–86,312–346).
 - F10 High / Confirmed: default naive mode scales quadratically up to 50k slider (main.rs:226,263–264; vehicle.rs:500–547).
-- F11 Medium / Confirmed on tested modern setup: historical native/WASM dependency blockers; pinned historical build unverified (see logs).
+- F11 Medium / Confirmed on tested modern setup: historical native dependency blockers; pinned historical build unverified (see logs).
 - F12 Medium / Confirmed: no automated behavior/spatial tests or CI/setup baseline.
 - F13 Low / Confirmed: 3 unused direct dependencies, duplicate GUI graph (Cargo.toml:13–20).
-- F14 Medium / Confirmed package-level matches: 17 maintenance/security advisory packages; application exploitability unverified.
+- F14 Medium / Confirmed package-level matches: 16 retained native-related maintenance/security advisory packages; application exploitability unverified.
 
 ### Final verification
 - Self-contained report includes all required sections, 14 findings, current version/compatibility tables, 398-package advisory screening, historical benchmark image, roadmap and top five actions; essential temporary evidence/reproduction source embedded.
@@ -116,12 +117,12 @@ All requested review phases and both deliverables are complete. No implementatio
 - /Users/martines/Desktop/git_repos/personal/autonomous-characters-3d/review-progress.md
 
 ### Remaining limits / future work (not required to complete this review)
-No full native/browser app smoke test, historical SDK reconstruction, Docker image build/scan, GPU profiling, equal-semantics simulation benchmark or exhaustive advisory reachability analysis was completed. The report explains these limits. For implementation follow-up, use the final top-five roadmap. If resuming after interruption, first verify commit and lock SHA; the review itself needs no remaining work.
+No full native app smoke test, historical SDK reconstruction, GPU profiling, equal-semantics simulation benchmark or exhaustive advisory reachability analysis was completed. The report explains these limits. For implementation follow-up, use the final top-five roadmap. If resuming after interruption, first verify commit and lock SHA; the review itself needs no remaining work.
 
 ## Extension requested — tooling and progress measurement (2026-10-30)
 - User asked to extend the report with researched tools/crates that improve the software or measure progress, including EmbarkStudios.
 - Scope remains analysis/report only. No tools installed, crates added or application files changed.
-- In progress: primary-source Embark research in background agent per Research skill; main agent researching Bevy-native tracing, benchmark frameworks, CPU/memory/GPU/browser profilers, property testing and performance tracking.
+- In progress: primary-source Embark research in background agent per Research skill; main agent researching Bevy-native tracing, benchmark frameworks, CPU/memory/GPU profilers, property testing and performance tracking.
 - Planned deliverable: new report section with prioritized recommendations, current versions/MSRV/compatibility caveats, practical adoption plan and explicit measurable acceptance criteria. Persist supporting sources in review-tools-research.md.
 - Existing commit unchanged e7a53d70c75020e399b4a2d5c1b1153ffbb9075f. Starting tree has only existing untracked review files.
 
@@ -151,7 +152,7 @@ No full native/browser app smoke test, historical SDK reconstruction, Docker ima
 None required for the report extension. Future implementation must first address the existing build/correctness gates; historical-version builds, profiler protocol compatibility, actual speedups and CI noise thresholds remain explicitly unverified.
 
 ## Native development baseline — 2026-10-30
-User changed scope from analysis-only to native local development: first build/run release; explicitly selected “Minimal native compatibility first.” HTML/WASM work is out of scope for this phase. The existing HTML report remains a historical assessment of e7a53d7 and was not updated.
+User changed scope from analysis-only to native local development: first build/run release; explicitly selected “Minimal native compatibility first.” The existing HTML report remains a historical assessment of e7a53d7 and was not updated.
 
 ### Branch and minimal changes
 - Created branch codex/native-baseline from e7a53d70c75020e399b4a2d5c1b1153ffbb9075f. Changes remain uncommitted.
@@ -185,7 +186,7 @@ User changed scope from analysis-only to native local development: first build/r
 1. Inspect native app with cargo run --release --locked; use current baseline before broader changes.
 2. Record a controlled native CPU/frame baseline using installed samply (source-line info needs release debug metadata); fix correctness invariants/tests before equivalent-work benchmarking claims.
 3. Triage cargo-deny debt; coordinate Bevy/egui/camera/picking migration rather than blindly updating every version.
-4. Add optional Puffin scopes/viewer once profiling questions and version integration are chosen; keep HTML/WASM out of scope until user requests them.
+4. Add optional Puffin scopes/viewer once profiling questions and version integration are chosen.
 
 No benchmark/performance guarantee, numerical fix, full interaction suite, Clippy clean result or upgrade-all completion is claimed. Native baseline and starter CLI installation are complete.
 
@@ -198,7 +199,7 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 - Local artifacts in target/native-baseline/: native-21769fd.json.gz, native-21769fd.json.syms.json, metadata.json, capture.log, thread-cpu-summary.json and leaf-cpu-summary.json. Files stay local/ignored; no profile upload or service connection.
 - Scenario: default100 agents,naive mode,capacity100,1280x720 requested window,VSync/default presentation; random seed uncontrolled, startup included. This is a diagnostic reference, not a deterministic benchmark or comparable FPS result.
 - Sampled thread CPU totals: main thread2917.77ms; five compute workers344.81–365.38ms each. These are CPU deltas across a capture, not frame times or GPU measurements. Symbolized leaf attribution is approximate and includes startup.
-- Next: continue coordinated native modernization on a separate branch; baseline branch retained for rollback. Keep HTML/WASM work excluded. Research agent checking exact Bevy0.20.1 APIs against primary sources.
+- Next: continue coordinated native modernization on a separate branch; baseline branch retained for rollback. Research agent checking exact Bevy0.20.1 APIs against primary sources.
 
 ## Native modernization — 2026-10-30
 - Continued from pushed baseline80c2ded on separate codex/native-modernization branch; baseline branch remains available for rollback and its local CPU profile remains under target/native-baseline/.
@@ -213,7 +214,7 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 - Final native startup smoke PASS:10s, no panic/error/asset load failure, with no legacy resize guard. cargo fmt and git diff --check PASS. Clippy completed with17 warnings (style/type complexity/dead code); no warning-clean claim.
 - Native visual inspection: menu, red transparent target, visible vehicle meshes and unobscured FPS overlay render on this Mac. Temporary app bundle under /tmp/ac3d-native-migration/ used for CUA inspection; closed afterward. CUA coordinate actions did not reliably reach egui, so full interactive camera/menu/picking checks remain unverified; automated ECS tests exercise camera transforms and target selection/movement. FPS rendering verified in the default100-agent scene; this is not a controlled benchmark or a speedup claim.
 - cargo deny --locked --format json --target aarch64-apple-darwin check advisories PASS: zero errors/zero advisory warnings, no suppressions. Baseline had13 errors/3 yanked warnings. Raw output /tmp/ac3d-native-migration/advisories-final.jsonl. Only native target is assessed.
-- No HTML/WASM changes, Puffin integration, hosted services, deterministic performance comparison or flocking correctness fixes in this phase.
+- No Puffin integration, hosted services, deterministic performance comparison or flocking correctness fixes in this phase.
 
 ### Modernization checkpoint
 - Native package/API modernization is complete and validated as above. No remaining dependency advisory exceptions are required for the native target.
@@ -244,8 +245,8 @@ No benchmark/performance guarantee, numerical fix, full interaction suite, Clipp
 - GPU-owned simulation and shared instanced rendering stay intact; CPU modes remain reference implementations at practical counts, not a million-entity target. Whether every new behavior must support CPU modes remains an owner decision.
 - Preserve force laws, defaults, mode-switch respawning and count lifecycle unless explicitly approved. Appearance scale is separate from physical vehicle_size; dense fields/formations need an explicit policy beyond the current follow-only cap.
 - Only cited performance measurements are those in plans/completed/2026-10-30-gpu-flocking.md. New effort/performance claims and buffer/triangle counts are labeled estimates/calculations. Current capacity-rounded buffers are about 5.75 MiB at 20k and 184 MiB at 1m; full 16-position histories at million capacity are 256 MiB, exceeding the documented default 128 MiB storage-binding size.
-- Bevy 0.20.1 local sources support the proposed APIs; Metal built-in render diagnostics report CPU time, not true GPU timestamps. WebGPU compatibility is conceptual; WebGL2 needs a CPU path and compute-plugin gating. WASM remains legacy/out of scope.
-- Asset/tool availability, licenses, new feature timings and browser compatibility were not verified. No new crates/tools/services installed or runtime features implemented.
+- Bevy 0.20.1 local sources support the proposed APIs; Metal built-in render diagnostics report CPU time, not true GPU timestamps.
+- Asset/tool availability, licenses and new feature timings were not verified. No new crates/tools/services installed or runtime features implemented.
 
 ### Unresolved owner questions
 - Preferred count/hardware/frame budget and first visual theme/style; spacing versus target accuracy; soft avoidance versus hard non-penetration.
