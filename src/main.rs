@@ -1,6 +1,8 @@
 mod gpu_flock;
 mod instancing;
 mod octree;
+mod scenario;
+mod scene;
 mod target;
 mod vehicle;
 
@@ -9,20 +11,16 @@ use bevy::{
     camera_controller::pan_orbit_camera::prelude::*,
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
-    picking::{
-        mesh_picking::{MeshPickingCamera, MeshPickingSettings},
-        PickingSystems,
-    },
+    picking::{mesh_picking::MeshPickingSettings, PickingSystems},
     prelude::*,
-    render::view::NoIndirectDrawing,
-    text::FontSize,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
-use std::f32::consts::FRAC_PI_2;
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(BACKGROUND))
+        .insert_resource(ClearColor(
+            scene::SceneStyle::default().settings().background,
+        ))
         .init_resource::<GlobalState>()
         .insert_resource(MeshPickingSettings {
             require_markers: true,
@@ -64,15 +62,16 @@ fn main() {
             gpu_flock::GpuFlockPlugin,
             vehicle::VehiclePlugin,
             target::TargetPlugin,
+            scene::ScenePlugin,
+            scenario::ScenarioPlugin,
         ))
-        .add_systems(Startup, setup_scene)
         .add_systems(
             PreUpdate,
             camera_input
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
-        .add_systems(Update, (fps_update_system, draw_world))
+        .add_systems(Update, fps_update_system)
         .add_systems(EguiPrimaryContextPass, ui)
         .run();
 }
@@ -123,88 +122,6 @@ fn camera_input(
         }
     }
     *previous_mode = mode;
-}
-
-const BACKGROUND: Color = Color::srgb(0.035, 0.045, 0.07);
-const WALL_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.3);
-const GRID_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.12);
-// Fog visibility as a multiple of the wall half-width, so it scales with the world.
-const FOG_VISIBILITY: f32 = 5.0;
-
-fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>, state: Res<GlobalState>) {
-    commands.insert_resource(GlobalAmbientLight {
-        brightness: 400.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 6000.0,
-            ..default()
-        },
-        Transform::from_xyz(1.0, 2.0, 0.6).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    let font = TextFont {
-        font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
-        font_size: FontSize::Px(60.0),
-        ..default()
-    };
-    commands
-        .spawn((
-            Text::new("FPS: "),
-            font.clone(),
-            TextColor(Color::WHITE),
-            Node {
-                position_type: PositionType::Absolute,
-                top: px(5),
-                right: px(5),
-                ..default()
-            },
-        ))
-        .with_child((
-            TextSpan::new(""),
-            font,
-            TextColor(Color::srgb(1.0, 0.84, 0.0)),
-            FpsText,
-        ));
-    // Far enough back to see the whole default world: flocks spread to the walls within seconds.
-    let scale = vehicle::world_scale(state.vehicle_count);
-    let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
-    commands.spawn((
-        Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection {
-            far: PerspectiveProjection::default().far * scale,
-            ..default()
-        }),
-        Msaa::Sample4,
-        // The instanced flock draws directly, not through indirect draw buffers.
-        NoIndirectDrawing,
-        DistanceFog {
-            color: BACKGROUND,
-            ..default()
-        },
-        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
-        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
-        MeshPickingCamera,
-    ));
-}
-
-// Wall outline and a floor grid for orientation; fog follows the world size.
-fn draw_world(mut gizmos: Gizmos, state: Res<GlobalState>, mut fogs: Query<&mut DistanceFog>) {
-    let walls = vehicle::walls(state.vehicle_count);
-    gizmos.cube(Transform::from_scale(walls * 2.0), WALL_COLOR);
-    let cell = walls.z / 2.5;
-    gizmos.grid(
-        Isometry3d::new(
-            Vec3::new(0.0, -walls.y, 0.0),
-            Quat::from_rotation_x(FRAC_PI_2),
-        ),
-        UVec2::new((walls.x * 2.0 / cell) as u32, 5),
-        Vec2::splat(cell),
-        GRID_COLOR,
-    );
-    for mut fog in &mut fogs {
-        fog.falloff = FogFalloff::from_visibility(walls.x * FOG_VISIBILITY);
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -289,12 +206,16 @@ fn ui(
     mut egui_context: EguiContexts,
     mut state: ResMut<GlobalState>,
     targets: Query<&target::TargetSelection, With<target::Target>>,
+    mut appearance: ResMut<scene::Appearance>,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
+    appearance.count_editing = false;
     egui::Window::new("Menu")
-        .default_size([300.0, 100.0])
+        .default_size([340.0, 440.0])
+        .vscroll(true)
+        .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
-            ui.label("Simulation");
+            egui::CollapsingHeader::new("Simulation").default_open(true).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (mode, label) in [
                     (SimulationMode::Gpu, "GPU"),
@@ -307,11 +228,11 @@ fn ui(
             let max_vehicles = state.mode.max_vehicles();
             state.vehicle_count = state.vehicle_count.min(max_vehicles);
             ui.label("Vehicle count");
-            ui.add(
+            appearance.count_editing = ui.add(
                 egui::Slider::new(&mut state.vehicle_count, 0..=max_vehicles)
                     .logarithmic(true)
                     .text("count"),
-            );
+            ).dragged();
             if state.mode == SimulationMode::Gpu {
                 ui.add(
                     egui::Slider::new(&mut state.gpu_max_neighbors, 0..=512)
@@ -328,6 +249,16 @@ fn ui(
                 egui::Slider::new(&mut state.vehicle_wander_speed, 0.1..=100.0)
                     .text("wander speed"),
             );
+            if state.mode == SimulationMode::Octree {
+                ui.separator();
+                ui.add(
+                    egui::Slider::new(&mut state.octree_size, 2..=500)
+                        .text("octree size")
+                        .step_by(1.0),
+                );
+            }
+            });
+            egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");
             ui.add(
                 egui::Slider::new(&mut state.vehicle_separation_factor, 0.1..=10.0)
@@ -390,14 +321,25 @@ fn ui(
                     .step_by(1.0),
             );
 
-            if state.mode == SimulationMode::Octree {
-                ui.separator();
-                ui.add(
-                    egui::Slider::new(&mut state.octree_size, 2..=500)
-                        .text("octree size")
-                        .step_by(1.0),
-                );
-            }
+            });
+            egui::CollapsingHeader::new("Appearance / Scene").default_open(true).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Style");
+                    for style in scene::SceneStyle::ALL {
+                        ui.selectable_value(&mut appearance.style, style, style.name());
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Palette");
+                    for palette in scene::HeadingPalette::ALL {
+                        ui.selectable_value(&mut appearance.palette, palette, palette.name());
+                    }
+                });
+                ui.checkbox(&mut appearance.auto_frame, "Auto-frame on count change");
+                if ui.button("Frame world").clicked() {
+                    appearance.frame_requested = true;
+                }
+            });
         });
     let following = targets.iter().any(|selection| selection.0);
     egui::Window::new("Controls")
@@ -469,7 +411,8 @@ mod tests {
             .init_asset::<bevy::text::Font>()
             .init_asset_loader::<bevy::text::FontLoader>()
             .init_resource::<GlobalState>()
-            .add_systems(Startup, setup_scene);
+            .init_resource::<scene::Appearance>()
+            .add_systems(Startup, scene::setup_scene);
         app.update();
         let state = app.world().resource::<GlobalState>();
         assert_eq!(state.mode, SimulationMode::Gpu);
@@ -480,10 +423,7 @@ mod tests {
             .world_mut()
             .query_filtered::<(&Transform, &Projection), With<Camera3d>>();
         let (transform, projection) = cameras.single(app.world()).unwrap();
-        assert_eq!(
-            transform.translation,
-            Vec3::new(0.0, 140.0, 450.0) * vehicle::world_scale(count)
-        );
+        assert!(transform.translation.length() > vehicle::walls(count).length());
         let Projection::Perspective(projection) = projection else {
             panic!("expected perspective camera");
         };

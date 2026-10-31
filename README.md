@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 33 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 43 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -67,7 +67,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Input | Action |
 | --- | --- |
 | Right-drag / middle-drag / scroll | Orbit / pan / zoom the camera |
-| Left-click the red target | Vehicles follow it (target turns green) |
+| Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
 | W A S D, Space, left Shift | Move the selected target (relative to the camera) |
 
@@ -82,8 +82,32 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- Vehicles are colored by heading, so groups flying together share a color. The walls, floor grid
-  and fog grow with the vehicle count. Defaults live in `GlobalState::default` in `src/main.rs`.
+- The Menu groups controls under **Simulation**, **Steering**, and **Appearance / Scene**.
+- **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
+  lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
+  fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
+  walls, stays inside the far plane and ignores fog/picking. No bloom or per-vehicle lights are used.
+- **Classic** retains the original flat background, box/grid colors and layout, lighting, material
+  roughness and HSV heading palette. It hides the Studio sky and floor.
+- Heading palettes are independent of scene style. Six distinct stops plus a repeated first stop
+  make the new palettes continuous around the heading wheel:
+  **Ocean** (deep blue, cyan, seafoam, sand, coral, violet), **Dusk** (indigo, magenta, orange, gold,
+  rose, purple), and **Aurora** (teal, green, yellow-green, violet, magenta, blue).
+  **Aurora** is the default: its green/lime and magenta groups contrast well with the navy sky.
+  **Classic** keeps the original HSV function unchanged.
+  Changing style keeps the selected palette; choose Classic style **and** Classic palette for the
+  original presentation. Studio adds 15% base-color emission alongside its restrained rim term to
+  keep distant darts visible. Both styles retain the opaque red/green target and a screen marker
+  that remains visible inside dense flocks; click the sphere itself to select it.
+- **Auto-frame on count change** defaults on. It waits until the count slider stops changing for
+  0.35 seconds and is released, then changes orbit distance while preserving orientation and the
+  panned anchor. **Frame world** does the same immediately. Both fit every wall corner; they do not
+  track the flock centroid. Classic fog starts beyond the farthest wall. Studio uses gentle depth
+  haze colored exactly like its horizon, retaining at least 70% transmission at every wall. Fog
+  visibility and the far clipping plane follow the camera, even with auto-frame off. The floor and
+  grid scale with the world.
+- Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
+  `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
 
 ## How it works
 
@@ -93,7 +117,9 @@ src/
 ├── vehicle.rs       # CPU steering and integration, tests, benchmarks
 ├── octree.rs        # exact radius queries for the CPU octree mode
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
-├── instancing.rs    # one instanced draw for every vehicle
+├── instancing.rs    # one instanced draw and shared appearance uniform
+├── scene.rs         # styles, palettes, world grid, fog and framing
+├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
 ├── gpu_flock.wgsl             # GPU simulation
@@ -131,7 +157,8 @@ Details and caveats are in [the GPU plan](plans/completed/2026-10-30-gpu-flockin
 
 ## Development
 
-Run from the repository root, one Cargo command at a time, with no app running:
+Run from the repository root, one Cargo command at a time, with no app running. Before **every**
+Cargo command, run `pgrep -a cargo; pgrep -a rustc` and wait if either reports a process:
 
 ```sh
 CARGO_BUILD_JOBS=4 cargo fmt --all -- --check
@@ -145,6 +172,77 @@ The normal tests cover:
 - steering safety and CPU modes;
 - the camera and the target;
 - instance data and GPU parameter encoding.
+
+### Desktop scenario scripts
+
+Set `AC3D_SCRIPT` to a UTF-8 plain-text file to drive the running app without pointer injection.
+The full script is validated before the window opens; unknown commands, invalid ranges, unordered
+or nonfinite timestamps, and unpaired measurements fail with the file and line number.
+Without the variable, no scenario resource or system is installed.
+
+Each line is `<seconds-since-start> <command> [args]`. Blank lines and `#` comments are ignored;
+times are real elapsed seconds, nonnegative and nondecreasing. Equal-time commands retain file
+order. Names and enum values are lowercase; paths and labels are single whitespace-free tokens.
+Commands run on the first frame at or after their timestamp, so separate dependent screenshots
+from changes by several frames. Screenshot paths are relative to the launch directory unless absolute;
+parent directories are created and existing files can be replaced. Leave time for capture before `exit`.
+
+```text
+# /tmp/scene.txt
+0 set mode gpu
+0 set count 20000
+0 set style studio
+0 set palette ocean
+0 present immediate
+0 camera 0 17.28 3000
+1 frame
+5 measure begin studio-20k
+15 measure end
+16 screenshot /tmp/studio-20k.png
+18 set count 200
+20 screenshot /tmp/studio-200.png
+21 follow on
+21 target 0 0 0
+24 screenshot /tmp/follow-200.png
+26 exit
+```
+
+```sh
+AC3D_SCRIPT=/tmp/scene.txt CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d
+pgrep -a autonomous   # no process should remain after exit
+```
+
+| Command | Arguments / behavior |
+| --- | --- |
+| `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
+| `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
+| `set style` | `studio`, `classic` |
+| `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
+| `set auto_frame` | `on` / `off` (also `true` / `false`) |
+| `set gpu_max_neighbors` | Integer 0–512 |
+| `set octree_size` | Integer 2–500 |
+| `set vehicle_mass` | 1–1,000 |
+| `set vehicle_max_speed`, `set vehicle_wander_speed` | 0.1–100 |
+| `set vehicle_{separation,alignment,cohesion,wander,wall_avoid,seek}_factor` | 0.1–10; expand braces to a single field name |
+| `set vehicle_{separation,alignment,cohesion,wander}_distance`, `set vehicle_wander_radius` | 1–100 |
+| `follow` | `on` / `off`; uses the existing target selection |
+| `target` | `x y z`, finite world coordinates, each within ±10,000,000 |
+| `camera` | `yaw_deg pitch_deg distance`; yaw ±360°, pitch ±89.9°, distance 1–10,000,000; looks at origin, positive pitch above it |
+| `frame` | Request Frame world, preserving orientation and anchor |
+| `present` | `vsync` / `immediate` (`AutoVsync` / `AutoNoVsync`, with platform fallback) |
+| `screenshot` | Output image path; Bevy Screenshot API, includes UI |
+| `measure begin`, `measure end` | Begin takes a label; end logs one `AC3D_MEASURE` line |
+| `exit` | Exit normally; end any measurement first |
+
+`AC3D_MEASURE` reports frames, arithmetic mean/p50/p95 frame milliseconds, FPS (`1000 / mean`),
+physical window resolution, count, mode, style and palette. Samples use `Time<Real>` and include
+presentation, CPU/GPU overlap and desktop scheduling; these are rendered frame intervals, not GPU
+timestamps. Begin excludes the preceding interval; end includes the final interval. Metadata reflects
+settings at end, so keep settings, count, follow state, camera and window resolution fixed throughout
+a measurement. Keep the app focused: Bevy throttles unfocused updates to about 60 Hz even with
+`present immediate`. Warm up first, capture outside the window, check `uptime`, and repeat runs on
+an idle machine. Scripts do not seed or reset the simulation; GPU scatter and interactive frame deltas vary.
+The setting whitelist and ranges live together in `src/scenario.rs`; extend its typed settings for later stages.
 
 GPU tests and benchmarks are `#[ignore]`d. They need a real GPU, and device creation can fail inside
 sandboxes.

@@ -5,6 +5,14 @@ import bevy_pbr::render::{
     pbr_functions::{apply_pbr_lighting, calculate_view, main_pass_post_lighting_processing},
 };
 
+struct Appearance {
+    colors: array<vec4<f32>, 7>,
+    material: vec4<f32>,
+    shading: vec4<f32>,
+    modes: vec4<u32>,
+};
+@group(3) @binding(0) var<uniform> appearance: Appearance;
+
 struct Vertex {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -33,6 +41,12 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> vec3<f32> {
 // Hue follows the horizontal heading; climbing vehicles are lighter, diving ones darker.
 fn heading_color(heading: vec3<f32>) -> vec3<f32> {
     let hue = atan2(heading.z, heading.x) / 6.2831853 + 0.5;
+    if appearance.modes.x != 0u {
+        let wheel = fract(hue) * 6.0;
+        let index = u32(wheel);
+        let color = mix(appearance.colors[index].rgb, appearance.colors[index + 1u].rgb, fract(wheel));
+        return color * (0.78 + 0.22 * heading.y);
+    }
     let value = 0.8 + 0.2 * heading.y;
     let srgb = hsv_to_rgb(hue, 0.65, value);
     return pow(srgb, vec3<f32>(2.2));
@@ -41,7 +55,7 @@ fn heading_color(heading: vec3<f32>) -> vec3<f32> {
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     let q = vertex.i_rotation;
-    let world = rotate(q, vertex.position * vertex.i_position_scale.w) + vertex.i_position_scale.xyz;
+    let world = rotate(q, vertex.position * vertex.i_position_scale.w * appearance.material.w) + vertex.i_position_scale.xyz;
     var out: VertexOutput;
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
@@ -55,13 +69,16 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var pbr_input = pbr_input_new();
     pbr_input.material.base_color = vec4<f32>(in.color, 1.0);
-    pbr_input.material.perceptual_roughness = 0.6;
+    pbr_input.material.perceptual_roughness = appearance.material.x;
+    pbr_input.material.metallic = appearance.material.y;
     pbr_input.material.flags |= STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT;
     pbr_input.frag_coord = in.clip_position;
     pbr_input.world_position = in.world_position;
     pbr_input.world_normal = normalize(in.world_normal);
     pbr_input.N = pbr_input.world_normal;
     pbr_input.V = calculate_view(in.world_position, false);
-    let lit = apply_pbr_lighting(pbr_input);
+    var lit = apply_pbr_lighting(pbr_input);
+    let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
+    lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
     return main_pass_post_lighting_processing(pbr_input, lit);
 }

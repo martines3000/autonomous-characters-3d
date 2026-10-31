@@ -7,10 +7,19 @@ pub struct TargetPlugin;
 
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
+        app.init_gizmo_group::<TargetMarker>();
+        let mut store = app.world_mut().resource_mut::<GizmoConfigStore>();
+        let (config, _) = store.config_mut::<TargetMarker>();
+        config.depth_bias = -1.0;
+        config.line.width = 1.5;
         app.add_systems(Startup, spawn_target)
             .add_systems(
                 Update,
                 (input_controls, update_target_color, update_target_scale),
+            )
+            .add_systems(
+                PostUpdate,
+                draw_target_marker.after(crate::scene::frame_world),
             )
             .add_observer(select_target);
     }
@@ -22,8 +31,55 @@ pub struct Target;
 #[derive(Component, Default)]
 pub struct TargetSelection(pub bool);
 
-const IDLE_COLOR: Color = Color::srgba(1.0, 0.0, 0.0, 0.1);
-const FOLLOW_COLOR: Color = Color::srgba(0.1, 1.0, 0.2, 0.35);
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct TargetMarker;
+
+// A screen-readable locator remains visible in a dense following flock. The sphere alone is pickable.
+fn draw_target_marker(
+    mut gizmos: Gizmos<TargetMarker>,
+    targets: Query<(&Transform, &TargetSelection), With<Target>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let (Ok((camera, projection)), Ok(window)) = (cameras.single(), windows.single()) else {
+        return;
+    };
+    let Projection::Perspective(projection) = projection else {
+        return;
+    };
+    for (target, selection) in &targets {
+        let depth = -(camera.rotation.inverse() * (target.translation - camera.translation)).z;
+        if depth <= 0.0 {
+            continue;
+        }
+        let radius = (depth * (projection.fov * 0.5).tan() * 24.0
+            / window.physical_height().max(1) as f32)
+            .max(target.scale.x * 3.0);
+        let color = if selection.0 {
+            FOLLOW_COLOR
+        } else {
+            IDLE_COLOR
+        };
+        gizmos
+            .circle(
+                Isometry3d::new(target.translation, camera.rotation),
+                radius,
+                color,
+            )
+            .resolution(32);
+        for direction in [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y] {
+            let axis = camera.rotation * direction * radius;
+            gizmos.line(
+                target.translation + axis * 1.25,
+                target.translation + axis * 1.6,
+                color,
+            );
+        }
+    }
+}
+
+const IDLE_COLOR: Color = Color::srgb(1.0, 0.18, 0.12);
+const FOLLOW_COLOR: Color = Color::srgb(0.15, 1.0, 0.32);
 const TARGET_SPEED: f32 = 120.0;
 
 fn spawn_target(
@@ -35,7 +91,8 @@ fn spawn_target(
         Mesh3d(meshes.add(Sphere::new(2.0).mesh().ico(3).unwrap())),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: IDLE_COLOR,
-            alpha_mode: AlphaMode::Blend,
+            emissive: IDLE_COLOR.to_linear() * 0.4,
+            perceptual_roughness: 0.35,
             ..default()
         })),
         Transform::default(),
@@ -60,6 +117,7 @@ fn update_target_color(
             } else {
                 IDLE_COLOR
             };
+            material.emissive = material.base_color.to_linear() * 0.4;
         }
     }
 }

@@ -2,7 +2,7 @@
 
 ## Current work
 
-None. Pick the next item below.
+- [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
 
 ## Prioritized future tasks
 
@@ -16,7 +16,7 @@ Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wan
 
 CI (finding F12) is not wanted by the owner.
 
-- **Feature expansion roadmap — 2026-10-30 (awaiting owner approval):** see [report section 12](../review-report.html#feature-expansion) for the bounded Showcase-first sequence; roadmap approval does not authorize implementation. Each milestone needs explicit approval and its own ExecPlan.
+- **Feature expansion roadmap — 2026-10-30:** see [report section 12](../review-report.html#feature-expansion). On 2026-10-31 the owner authorized seven stages (visuals, appearance, custom models, rendering optimization, presentation, animated models, swarm mechanics); see Current work.
 
 ## Original review findings
 

@@ -18,6 +18,7 @@ use bevy::{
     prelude::*,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{allocator::MeshAllocator, RenderMesh, RenderMeshBufferInfo},
         render_asset::RenderAssets,
         render_phase::{
@@ -33,7 +34,10 @@ use bevy::{
     },
 };
 
-use crate::gpu_flock::GpuParams;
+use crate::{
+    gpu_flock::GpuParams,
+    scene::{Appearance, HeadingPalette},
+};
 
 const SHADER_ASSET_PATH: &str = "shaders/vehicle_instancing.wesl";
 
@@ -62,7 +66,13 @@ pub struct InstancingPlugin;
 
 impl Plugin for InstancingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(ExtractComponentPlugin::<VehicleInstances>::default());
+        app.init_resource::<AppearanceUniform>()
+            .add_plugins((
+                ExtractComponentPlugin::<VehicleInstances>::default(),
+                ExtractResourcePlugin::<AppearanceUniform>::default(),
+            ))
+            .add_systems(PostUpdate, update_appearance);
+
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawInstanced>()
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
@@ -74,9 +84,77 @@ impl Plugin for InstancingPlugin {
                 (
                     queue_instanced.in_set(RenderSystems::QueueMeshes),
                     prepare_instance_buffer.in_set(RenderSystems::PrepareResources),
+                    prepare_appearance.in_set(RenderSystems::PrepareBindGroups),
                 ),
             );
     }
+}
+
+/// Shared render-only parameters. Neutral scale/color-mode slots are reserved for stage 2.
+#[derive(Resource, ExtractResource, ShaderType, Clone, Default, PartialEq, Debug)]
+#[extract_app(RenderApp)]
+struct AppearanceUniform {
+    colors: [Vec4; 7],
+    // roughness, metallic, rim strength, render-only scale.
+    material: Vec4,
+    // emission strength, reserved for later shading parameters.
+    shading: Vec4,
+    // palette (0 = original HSV), color mode (0 = heading), reserved, reserved.
+    modes: UVec4,
+}
+
+impl From<&Appearance> for AppearanceUniform {
+    fn from(appearance: &Appearance) -> Self {
+        let look = appearance.style.settings();
+        Self {
+            colors: appearance.palette.colors(),
+            material: Vec4::new(look.roughness, look.metallic, look.rim, 1.0),
+            shading: Vec4::new(look.emission, 0.0, 0.0, 0.0),
+            modes: UVec4::new(
+                u32::from(appearance.palette != HeadingPalette::Classic),
+                0,
+                0,
+                0,
+            ),
+        }
+    }
+}
+
+fn update_appearance(appearance: Res<Appearance>, mut uniform: ResMut<AppearanceUniform>) {
+    if appearance.is_changed() {
+        uniform.set_if_neq(AppearanceUniform::from(&*appearance));
+    }
+}
+
+#[derive(Resource)]
+struct AppearanceBinding {
+    _buffer: UniformBuffer<AppearanceUniform>,
+    bind_group: BindGroup,
+}
+
+fn prepare_appearance(
+    mut commands: Commands,
+    uniform: Res<AppearanceUniform>,
+    existing: Option<Res<AppearanceBinding>>,
+    pipeline: Res<InstancingPipeline>,
+    cache: Res<PipelineCache>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    if existing.is_some() && !uniform.is_changed() {
+        return;
+    }
+    let mut buffer = UniformBuffer::from(uniform.clone());
+    buffer.write_buffer(&device, &queue);
+    let bind_group = device.create_bind_group(
+        "vehicle_appearance",
+        &cache.get_bind_group_layout(&pipeline.appearance_layout),
+        &BindGroupEntries::single(buffer.binding().unwrap()),
+    );
+    commands.insert_resource(AppearanceBinding {
+        _buffer: buffer,
+        bind_group,
+    });
 }
 
 /// The instance buffer and count the flock is drawn with. CPU modes fill it from
@@ -175,6 +253,7 @@ fn queue_instanced(
 struct InstancingPipeline {
     shader: Handle<Shader>,
     mesh_pipeline: MeshPipeline,
+    appearance_layout: BindGroupLayoutDescriptor,
 }
 
 fn init_pipeline(
@@ -185,6 +264,13 @@ fn init_pipeline(
     commands.insert_resource(InstancingPipeline {
         shader: asset_server.load(SHADER_ASSET_PATH),
         mesh_pipeline: mesh_pipeline.clone(),
+        appearance_layout: BindGroupLayoutDescriptor::new(
+            "vehicle_appearance",
+            &BindGroupLayoutEntries::single(
+                ShaderStages::VERTEX_FRAGMENT,
+                binding_types::uniform_buffer::<AppearanceUniform>(false),
+            ),
+        ),
     });
 }
 
@@ -197,6 +283,7 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut descriptor = self.mesh_pipeline.specialize(key, layout)?;
+        descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
         descriptor.vertex.buffers.push(VertexBufferLayout {
             array_stride: size_of::<InstanceData>() as u64,
@@ -225,8 +312,26 @@ type DrawInstanced = (
     SetMeshViewBindGroup<0>,
     SetMeshViewBindingArrayBindGroup<1>,
     SetMeshBindGroup<2>,
+    SetAppearanceBindGroup,
     DrawMeshInstanced,
 );
+
+struct SetAppearanceBindGroup;
+impl<P: PhaseItem> RenderCommand<P> for SetAppearanceBindGroup {
+    type Param = SRes<AppearanceBinding>;
+    type ViewQuery = ();
+    type ItemQuery = ();
+    fn render<'w>(
+        _item: &P,
+        _view: (),
+        _entity: Option<()>,
+        binding: SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        pass.set_bind_group(3, &binding.into_inner().bind_group, &[]);
+        RenderCommandResult::Success
+    }
+}
 
 struct DrawMeshInstanced;
 
@@ -297,5 +402,42 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
             }
         }
         RenderCommandResult::Success
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn switching_style_and_palette_changes_only_render_parameters() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<Appearance>()
+            .init_resource::<AppearanceUniform>()
+            .add_systems(Update, update_appearance);
+        app.update();
+        let aurora = app.world().resource::<AppearanceUniform>().clone();
+        app.world_mut().resource_mut::<Appearance>().style = SceneStyle::Classic;
+        app.update();
+        let classic = app.world().resource::<AppearanceUniform>().clone();
+        assert_eq!(classic.colors, aurora.colors);
+        assert_eq!(classic.shading.x, 0.0);
+        assert_eq!(aurora.shading.x, 0.15);
+        assert_eq!(classic.material, Vec4::new(0.6, 0.0, 0.0, 1.0));
+        app.world_mut().resource_mut::<Appearance>().palette = HeadingPalette::Dusk;
+        app.update();
+        let dusk = app.world().resource::<AppearanceUniform>();
+        assert_eq!(dusk.material, classic.material);
+        assert_ne!(dusk.colors, classic.colors);
+        assert_eq!(app.world().resource::<GlobalState>().vehicle_size, 1.0);
+        assert_eq!(app.world().resource::<GlobalState>().vehicle_count, 20_000);
+        let appearance = Appearance {
+            palette: HeadingPalette::Classic,
+            ..default()
+        };
+        assert_eq!(AppearanceUniform::from(&appearance).modes.x, 0);
+        assert_eq!(AppearanceUniform::min_size().get(), 160);
     }
 }
