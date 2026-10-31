@@ -1,7 +1,7 @@
 # Add optional swarm mechanics with one CPU/GPU contract
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It designs all of Stage 7;
-Stage 7a is committed as `d657d5d`; the current worker implements **7b only**. The orchestrator owns review, commits and authorization of
+Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; the current worker implements **7c only**. The orchestrator owns review, commits and authorization of
 subsequent workers. Owner order: 7a attractor, 7b groups, 7c obstacles, 7d formations, 7e predators.
 
 ## Purpose
@@ -22,12 +22,22 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 - [x] (2026-10-31 20:12Z) Stage 7a: sequential release gates, GPU regressions, desktop proof and repeated 100k timings.
 - [x] (2026-10-31 20:33Z) Stage 7b implementation and tests written; 102 CPU tests pass. Device regressions and desktop checks remain below.
 - [x] (2026-10-31 20:46Z) Stage 7b: repeated before/after CPU/GPU benchmarks, rendered timings and desktop verification; 102 release tests and all seven device tests pass.
-- [ ] Stage 7c: bounded sphere obstacles (separate worker).
+- [x] (2026-10-31 22:17Z) Stage 7c: bounded sphere law, resource/arena lifecycle, UI/gizmos and scenarios.
+- [x] (2026-10-31 22:17Z) Stage 7c: 109 release tests and all nine ignored GPU tests pass, including new scene snapshot/parity/arena regressions.
+- [x] (2026-10-31 22:17Z) Stage 7c: repeated 7b/Off/eight-sphere benchmarks, rendered/desktop evidence and full gates pass. Awaiting owner review/commit.
 - [ ] Stage 7d: formation slots and arrival (separate worker).
 - [ ] Stage 7e: bounded predator objects and fleeing (separate worker).
 - [ ] Orchestrator review and commits.
 
 ## Surprises & Discoveries
+
+- Stage 7c: egui runs its primary pass in PostUpdate (`bevy_egui-0.43.1/src/lib.rs:1145`).
+  Extracting a new scene with Update-produced count/settings could mix snapshots during UI edits.
+  Derive obstacle uniforms in the render world from the same extracted scene used for uploads;
+  preserve the extracted boid count/world scale for the actual step. A regression checks current
+  counts, scaling, strength-zero and clear resetting stale enable fields. This moves scene settings
+  assembly only; the measured shader and headless step/fixture are unchanged.
+
 
 - Orchestrator review blocks the original 80-byte layout: optional groups must not impose the
   measured 24–32% Off wander penalty. The previous acceptance decision is superseded. Candidate
@@ -101,6 +111,29 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
   Rationale: preserve the existing seek law and avoid simultaneously running two navigation goals.
   Date: 2026-10-31.
 
+- Decision (7c, before implementation): `SwarmScene` owns up to eight static spheres, dimensionless
+  obstacle strength (default 4), default clearance (10 reference units) and visibility (true).
+  Each sphere stores world center, reference radius and reference clearance. A global clearance edit
+  updates all existing spheres and the default for new ones; individual sphere editors may override it.
+  Empty list is Off. Strength zero also bypasses force evaluation. Fixed look-ahead is one simulated
+  second; evaluate the closest point on p to p+v*1s, using current velocity without dt scaling.
+  Surface distance is distance(center, closest)-radius*S. Weight is smoothstep of
+  1-clamp(surface_distance/(clearance*S),0,1); normal is outward from center at closest point,
+  with +X at exact center. Sum weighted normals, clamp magnitude to one, then multiply by V*k.
+  Add after attractor and before mass division, with unchanged seek/wander/walls/integration.
+  Rationale: direct shared law with bounded O(8N) work; soft avoidance cannot promise non-penetration.
+  Date: 2026-10-31.
+- Decision (7c): binding-8 tail starts at `5C/2` vec4 units and reserves 16 vec4s (256 bytes).
+  Each sphere uses bitcast-u32 center.xyz/reference-radius followed by reference-clearance/three
+  reserved float lanes. Append uniform offset/count and strength/look-ahead/world-scale settings.
+  Extract `SwarmScene` separately; cache only sphere records in `GpuFlock`. Upload records only
+  when that list changes or a new capacity relocates the tail, including while paused. Settings
+  and gizmo visibility changes do not upload records or write GlobalState. Retain eight storage
+  bindings, 64-byte Boids and 48-byte instances. Specialize Off/On obstacle steering alongside
+  the existing group specialization; measure Off against committed 7b before acceptance.
+  Rationale: preserve the accepted default path, metadata/order-map identity and later scene arena.
+  Date: 2026-10-31.
+
 ## Assumptions and Open Questions
 
 - The first groups implementation supports two groups (table capacity at most eight), one shared
@@ -118,7 +151,8 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Outcomes & Retrospective
 
-Design complete before implementation. Stage 7c–7e remain specifications, not delivered behavior. Stage 7b implementation and validation are recorded below.
+Design complete before implementation. Stages 7a–7c are implemented; 7d–7e remain specifications.
+Stage handoffs and validation evidence are recorded below.
 Stage 7a is implemented and ready for orchestrator review, without commits or dependency changes.
 Release suite: 97 passed, 7 ignored (eight new non-ignored tests and one new ignored GPU test).
 All five device tests pass, including existing baseline/animation/separation/lifecycle tests and
@@ -173,6 +207,30 @@ cursor field, and 1,500 Octree members split around their targets. All five scri
 8-group performance and exact population balancing remain unclaimed. Increasing group count can
 leave newly available groups empty until growth. CPU benchmarks retain their existing practical
 counts; 100k/1M measurements are GPU only. Later mechanics remain untouched.
+
+### Stage 7c handoff
+
+Stage 7b was reviewed/committed by the orchestrator as `fd9921a`; its accepted Off overhead and
+non-rebalancing group-count policy remain unchanged. Stage 7c now delivers only static sphere
+avoidance, scene persistence, change-only arena uploads, paused wireframes, UI and validated commands.
+The empty/zero-strength path compiles out. Compared with 7b, repeated 1M wander/follow Off medians
+change by -0.08%/-0.53%; short 100k timings vary and do not establish a speedup. Eight-sphere
+headless and whole-frame costs are recorded below. No density approximation, wall-drag retuning,
+dependency change, formation or predator behavior was added.
+
+Final gates: fmt check; 109 release tests passed (11 ignored, including benchmarks); release build
+without warnings; Clippy seven existing warnings, repeated for the test target; ten-second native
+startup smoke; diff check. The single final ignored GPU suite passed all nine tests. New mixed
+obstacle/group/attractor parity worst position error is 1.53e-5 world units and velocity error
+8.81e-6; arena tests verify exact records and upload counts through count/capacity/settings changes.
+Desktop scripts and all four final rendered timing apps reached `exit`; paused scene crop has zero
+pixel differences across two seconds. No Cargo/rustc/app remains. The worker has not committed,
+pushed, merged, reset or discarded repository changes; HEAD remains `fd9921a`.
+
+Soft avoidance allows penetration under competing forces. Only static spheres and a fixed one-second
+look-ahead are delivered. Other GPUs and worst-case multi-feature density remain unmeasured.
+7d/7e must extend the shared tail after the sphere reservation and preserve the same snapshot,
+change-detection and capacity-relocation rules.
 
 ## Context and Orientation
 
@@ -591,6 +649,113 @@ shrinks/grows from the nonidentity order map. This exercises the corrected ident
 without creating an extra GPU test. Previous approved 7b screenshots remain in the parent directory;
 this correction changes storage/dispatch plumbing, not interaction or appearance semantics.
 
+### Stage 7c evidence and lifecycle contract
+
+Scope is static spheres only. `SwarmScene` stores obstacle records plus strength/default-clearance/
+visibility settings; these controls live with their scene rather than adding writes to `GlobalState`.
+CPU uses the shared scene snapshot in each `CpuStep`; GPU extraction clones changed resources.
+Render-world scene uniforms use that same snapshot, including edits made in egui PostUpdate.
+The UI edits a local clone and assigns the resource only if values differ. Scenario setters also
+avoid unchanged writes. No per-frame record upload or GlobalState input writer was added.
+
+Compute Params grows 320→352 bytes: `obstacles` at byte 320 (absolute vec4 offset, count, reserved,
+reserved), `obstacle_settings` at byte 336 (strength, one-second look-ahead, world scale, reserved).
+The encase byte-offset test extends the Naga layout assertions. Shader Boid stays 64 bytes;
+metadata layout/order maps, animation phase, 48-byte instances, vehicle draw and eight storage
+bindings remain unchanged. Four `steer` pipeline specializations cover group/obstacle enable bits.
+Empty lists and strength zero select the obstacle-disabled pipeline and perform no obstacle arithmetic
+or arena reads in steering. CPU branches before adding any obstacle term, preserving disabled bits.
+
+For capacity C, sphere storage reserves `[5C/2,5C/2+16)` in binding-8 vec4 units (256 bytes).
+Each two-vec4 record is `(world center.xyz, reference radius)` and `(reference clearance,0,0,0)`,
+written as float bits into the raw-u32 arena. Only the occupied prefix is uploaded. Clearing sets
+count zero without erasing unreachable stale records. Later scene arrays begin after this reserved
+16-record region; 7d/7e must append their ranges and extend uniform offset/bounds tests. New capacity
+relocates/reuploads the sphere tail after copying retained state, metadata, order map and instances.
+Count edits within capacity need no record upload; radius/clearance scaling changes through uniforms.
+Paused edits upload once without stepping vehicles. Backend/count changes preserve the CPU scene.
+
+New tests: three CPU law tests (falloff/inside/center, segment/endpoints/sum cap, world scaling/Off),
+one exact inactive-force/additivity test, one pause/speed/seek test in both CPU modes, one render-scene
+uniform snapshot/reset test, and scenario
+validation including max-eight, clear/reset, finite/range rejection and unchanged setter writes.
+The existing metadata lifecycle fixture now also checks scene survival across CPU modes, growth,
+truncation and backend respawn. Two ignored device tests cover mixed groups/attractor/obstacle parity
+and exact arena records/upload counts across paused growth, shrink/regrowth, zero count, edits,
+settings-only changes, and one/two-sort paths. Existing seven GPU regressions remain unchanged in
+behavior and are part of the final nine-test device gate.
+
+Headless comparisons use exact committed `fd9921a` before edits, then this final 7c code, on the same
+Ryzen 9 7900X / Radeon RX 7900 XT (RADV NAVI31), Vulkan/Mesa 26.2.5-arch1.1, Linux 7.2.8-9-omarchy,
+pinned Rust and release profile. PCG spawn frame zero, dt=1/60 s, 600 warmup steps then 60 timed
+encode/submit/wait steps. Counts 100k/1M, configured cap 16, effective wander cap zero and follow
+cap 16, groups/attractor Off. Two complete runs per configuration, never concurrent with any build,
+test or native app; pgrep and uptime precede every launch. All cases completed every step.
+
+The eight-sphere benchmark uses `GPU_BENCH_OBSTACLES=8`: all combinations of world-scaled reference
+centers `(±20,±20,±10)`, reference radius 8, clearance 10, strength 4, look-ahead one simulated second.
+It changes trajectories/density as well as arithmetic, so On-minus-Off is not a pure kernel cost.
+Readback/statistics and initial one-time record upload are excluded by the warmup. Original and
+final timings, p95s, density statistics and uptime snapshots live under
+`/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/stage7c/`.
+
+| Case | 7b run 1 / 2 median (p95) ms | 7c Off run 1 / 2 median (p95) ms | Eight spheres run 1 / 2 median (p95) ms | Off mean-median change |
+| --- | --- | --- | --- | --- |
+| 100k wander | 0.715 (0.764) / 0.704 (0.755) | 0.650 (0.698) / 0.663 (0.704) | 0.778 (0.857) / 0.719 (0.838) | -7.47% |
+| 100k follow | 3.590 (4.836) / 3.231 (4.915) | 3.624 (4.506) / 2.909 (4.108) | 3.543 (4.593) / 3.920 (5.340) | -4.22% |
+| 1M wander | 4.682 (4.776) / 4.638 (4.776) | 4.662 (4.796) / 4.651 (4.761) | 5.299 (5.389) / 5.303 (5.425) | -0.08% |
+| 1M follow | 7.960 (8.818) / 7.844 (8.788) | 7.906 (8.756) / 7.814 (8.617) | 9.355 (10.929) / 9.643 (11.072) | -0.53% |
+
+No measurable Off regression: large-count wander differs by less than 0.1%, and 1M follow by about
+-0.5%. Short 100k runs and dense-follow trajectories vary; the negative changes are not claimed as
+speedups. Specialized Off retains the original force expression and neighbor work. No approximate
+avoidance/neighbors, density-policy change or wall retuning was introduced.
+
+Launch uptime snapshots (full values retained in matching `.load` files):
+
+- `before-1`: 22:54:08 up  4:34,  1 user,  load average: 0.69, 0.76, 0.50
+- `before-2`: 22:54:36 up  4:35,  1 user,  load average: 0.67, 0.74, 0.50
+- `after-off-1`: 23:00:59 up  4:41,  1 user,  load average: 0.49, 0.42, 0.41
+- `after-off-2`: 23:01:24 up  4:42,  1 user,  load average: 0.32, 0.38, 0.40
+- `after-on-1`: 23:02:00 up  4:42,  1 user,  load average: 0.18, 0.34, 0.38
+- `after-on-2`: 23:02:53 up  4:43,  1 user,  load average: 0.14, 0.30, 0.36
+
+Rendered 7c measurements use four fresh final-build apps at physical 1280×720, floating test
+window, immediate presentation, 100k GPU Dart, Studio/Aurora, heading color, neutral scales,
+4× MSAA, 1× simulation, camera yaw 0°/pitch 10°/distance 2,500, no global/group targets or attractor.
+On uses the same eight world-scaled sphere centers/radii/settings as the headless fixture, with
+wireframes visible. Each script warms up three seconds, samples four seconds, then reaches `exit`
+at eight seconds. These are whole-frame intervals, not GPU timestamps; no screenshots during timing.
+All scripts/logs/window-sizing transcripts and uptime snapshots are `timing-{off,on}-{1,2}.*` in
+the evidence root. Earlier measurements before the render-snapshot correction are retained under
+`pre-snapshot-fix/`, excluded from the final rendered table. No test window setting persists after exit.
+
+| Spheres | Run 1 mean / p50 / p95 ms (frames) | Run 2 mean / p50 / p95 ms (frames) |
+| --- | --- | --- |
+| Off | 1.347 / 1.347 / 1.909 (2,970) | 1.281 / 1.294 / 1.783 (3,123) |
+| Eight | 1.354 / 1.361 / 1.917 (2,954) | 1.311 / 1.308 / 1.908 (3,050) |
+
+Desktop evidence is `desktop.ac3d` / `desktop.log` (32 s), plus `octree-check.ac3d` / log (4 s)
+for a closer view before the Octree flock reaches the target. Every harness app reaches `exit`.
+Temporary floating/resize operations affect only the newly launched test window; no desktop
+configuration is changed. Original tiled captures cropped the target and are retained in
+`tiled-attempt/`; final captures are 1280×720:
+
+- `gpu-follow-before.png`, `gpu-follow-after.png`: 20k, follow at (500,0,0), spheres at
+  (120,0,0), (280,85,0), (340,-65,-20), reference radii 12/11/9, strength 6, clearance 10,
+  before resume and after about 4.5 simulated seconds at 1× with vsync (~60 Hz).
+- `gpu-wander.png`: following cleared with the same obstacles.
+- `gpu-groups-obstacles.png`: groups 0/1 seeking (-400,140,0)/(400,100,0), same spheres.
+- `gpu-paused-a.png`, `gpu-paused-b.png`: a fourth sphere added while paused, no simulation motion.
+  ImageMagick absolute differing-pixel count is zero in `450x350+420+100`, excluding UI/FPS.
+- `octree-obstacles.png`: 1,500 CPU Octree vehicles, two groups, selected target (160,0,0),
+  spheres at (-40,0,0)/(80,20,0), radius 10, strength 6; captured about 2.5 s after resume.
+
+No non-penetration promise: avoidance is a bounded additive force, not collision resolution.
+Look-ahead is fixed at one simulated second, and spheres are static in 7c. Dynamic paths, formations
+and predators remain 7d/7e work. Other GPUs, dense multi-feature combinations and worst-case CPU
+counts are unmeasured. No group rebalancing or neighbor/separation policy changed.
+
 ## Interfaces and Dependencies
 
 7a: new `src/swarm.rs` owns AttractorMode/settings, force kernel, cursor input, gizmo and UI.
@@ -606,6 +771,12 @@ kernel is `group_flocking_force`; existing single-group fixtures use the `flocki
 settings reuse startup validation. Compute and appearance uniform offsets are extended as recorded
 above; binding 8 holds metadata/order maps and reserves its tail for future scene records.
 No instance attribute is added.
+
+7c: `SwarmScene` / `Obstacle` / `obstacle_force` / `obstacles_ui` in `swarm.rs`; a changed-resource
+extract plus render-snapshot `GpuParams::with_scene`; two appended uniform fields, four steering
+specializations and a 256-byte sphere tail in binding 8. CPU `group_flocking_force` takes the same
+scene snapshot. Scenario adds validated obstacle add/clear and strength/clearance/visibility setters.
+No new crate, storage binding, vehicle instance attribute or physics/collider integration.
 
 ---
 
@@ -624,3 +795,7 @@ Revision notes:
 - 2026-10-31: Orchestrator rejected the Off-path regression; reopened layout/performance acceptance without changing group semantics.
 
 - 2026-10-31: Resolved the orchestrator performance blocker with 64-byte state, persistent metadata and packed sort indices; retained all rejected candidate measurements and portable binding-budget proof.
+
+- 2026-10-31: Stage 7b committed by orchestrator as fd9921a; authorized 7c only and finalized sphere law, arena stride and upload lifecycle before code.
+
+- 2026-10-31: Stage 7c implemented with a shared sphere law, 256-byte arena tail, coherent render-scene snapshot, change-only uploads, UI/scenarios and repeated headless/rendered/desktop evidence; 109 release tests and the single final nine-test GPU gate pass.

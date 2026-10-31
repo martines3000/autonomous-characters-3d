@@ -222,6 +222,7 @@ fn ui(
     mut appearance: ResMut<scene::Appearance>,
     mut models: ResMut<vehicle_model::VehicleModels>,
     mut presentation: ResMut<presentation::Presentation>,
+    mut swarm_scene: ResMut<swarm::SwarmScene>,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
@@ -285,6 +286,10 @@ fn ui(
                 let mut groups = state.groups;
                 swarm::groups_ui(ui, &mut groups);
                 if groups != state.groups { state.groups = groups; }
+                ui.separator();
+                let mut scene = swarm_scene.clone();
+                swarm::obstacles_ui(ui, &mut scene);
+                if scene != *swarm_scene { *swarm_scene = scene; }
             });
             egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");

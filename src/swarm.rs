@@ -1,5 +1,10 @@
 //! Optional swarm forces share the same arithmetic with gpu_flock.wgsl.
-use bevy::{camera_controller::pan_orbit_camera::prelude::*, prelude::*, window::PrimaryWindow};
+use bevy::{
+    camera_controller::pan_orbit_camera::prelude::*,
+    prelude::*,
+    render::{extract_resource::ExtractResource, RenderApp},
+    window::PrimaryWindow,
+};
 use bevy_egui::{egui, EguiContexts};
 use nalgebra::Vector3;
 
@@ -200,10 +205,163 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
     ui.small("Selected global target overrides group targets. Use Vehicles → Color → Group.");
 }
 
+pub const MAX_OBSTACLES: usize = 8;
+pub const OBSTACLE_LOOK_AHEAD: f32 = 1.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Obstacle {
+    pub center: Vec3,
+    // Reference units; centers remain world coordinates when count changes.
+    pub radius: f32,
+    pub clearance: f32,
+}
+
+#[derive(Resource, ExtractResource, Clone, Debug, PartialEq)]
+#[extract_app(RenderApp)]
+pub struct SwarmScene {
+    pub obstacles: Vec<Obstacle>,
+    pub obstacle_strength: f32,
+    pub obstacle_clearance: f32,
+    pub show_obstacles: bool,
+}
+
+impl Default for SwarmScene {
+    fn default() -> Self {
+        Self {
+            obstacles: Vec::new(),
+            obstacle_strength: 4.0,
+            obstacle_clearance: 10.0,
+            show_obstacles: true,
+        }
+    }
+}
+
+impl SwarmScene {
+    pub fn add_obstacle(&mut self, center: Vec3, radius: f32) {
+        if self.obstacles.len() < MAX_OBSTACLES {
+            self.obstacles.push(Obstacle {
+                center,
+                radius,
+                clearance: self.obstacle_clearance,
+            });
+        }
+    }
+
+    pub fn set_clearance(&mut self, clearance: f32) {
+        self.obstacle_clearance = clearance;
+        for obstacle in &mut self.obstacles {
+            obstacle.clearance = clearance;
+        }
+    }
+
+    pub fn obstacle_force(
+        &self,
+        position: Vector3<f32>,
+        velocity: Vector3<f32>,
+        count: usize,
+        max_speed: f32,
+    ) -> Vector3<f32> {
+        let scale = vehicle::world_scale(count);
+        let segment = velocity * OBSTACLE_LOOK_AHEAD;
+        let length_squared = segment.magnitude_squared();
+        let mut sum = Vector3::zeros();
+        for obstacle in &self.obstacles {
+            let center = Vector3::from(obstacle.center);
+            let t = if length_squared > 0.0 {
+                ((center - position).dot(&segment) / length_squared).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let offset = position + segment * t - center;
+            let distance = offset.magnitude();
+            let normal = if distance > 0.0 {
+                offset / distance
+            } else {
+                Vector3::x()
+            };
+            let surface = distance - obstacle.radius * scale;
+            let weight = 1.0 - (surface / (obstacle.clearance * scale)).clamp(0.0, 1.0);
+            sum += normal * (weight * weight * (3.0 - 2.0 * weight));
+        }
+        let magnitude = sum.magnitude();
+        if magnitude > 1.0 {
+            sum /= magnitude;
+        }
+        sum * (max_speed * self.obstacle_strength)
+    }
+
+    pub(crate) fn obstacle_records(&self) -> Vec<Vec4> {
+        self.obstacles
+            .iter()
+            .flat_map(|sphere| {
+                [
+                    sphere.center.extend(sphere.radius),
+                    Vec4::new(sphere.clearance, 0.0, 0.0, 0.0),
+                ]
+            })
+            .collect()
+    }
+}
+
+pub fn obstacles_ui(ui: &mut egui::Ui, scene: &mut SwarmScene) {
+    ui.label("Sphere obstacles (soft avoidance)");
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                scene.obstacles.len() < MAX_OBSTACLES,
+                egui::Button::new("Add at origin"),
+            )
+            .clicked()
+        {
+            scene.add_obstacle(Vec3::ZERO, 12.0);
+        }
+        if ui.button("Clear / Off").clicked() {
+            scene.obstacles.clear();
+        }
+        ui.checkbox(&mut scene.show_obstacles, "Show");
+    });
+    ui.add(egui::Slider::new(&mut scene.obstacle_strength, 0.0..=20.0).text("obstacle strength"));
+    let mut clearance = scene.obstacle_clearance;
+    if ui
+        .add(egui::Slider::new(&mut clearance, 0.1..=200.0).text("all clearances × world scale"))
+        .changed()
+    {
+        scene.set_clearance(clearance);
+    }
+    let mut remove = None;
+    for (index, obstacle) in scene.obstacles.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("Sphere {index}"));
+            if ui.button("Remove").clicked() {
+                remove = Some(index);
+            }
+        });
+        ui.horizontal(|ui| {
+            for (axis, value) in ["x", "y", "z"].into_iter().zip(obstacle.center.as_mut()) {
+                ui.add(
+                    egui::DragValue::new(value)
+                        .speed(1.0)
+                        .range(-1e7..=1e7)
+                        .prefix(format!("{axis}: ")),
+                );
+            }
+        });
+        ui.add(egui::Slider::new(&mut obstacle.radius, 0.1..=200.0).text("radius × world scale"));
+        ui.add(
+            egui::Slider::new(&mut obstacle.clearance, 0.1..=200.0).text("clearance × world scale"),
+        );
+    }
+    if let Some(index) = remove {
+        scene.obstacles.remove(index);
+    }
+    ui.small("Empty list is Off. One simulated second of look-ahead; penetration is possible.");
+}
+
 pub struct SwarmPlugin;
 impl Plugin for SwarmPlugin {
     fn build(&self, app: &mut App) {
-        app.init_gizmo_group::<SwarmMarker>();
+        app.init_resource::<SwarmScene>()
+            .init_gizmo_group::<SwarmMarker>();
         let mut store = app.world_mut().resource_mut::<GizmoConfigStore>();
         let (config, _) = store.config_mut::<SwarmMarker>();
         config.depth_bias = -1.0;
@@ -215,7 +373,10 @@ impl Plugin for SwarmPlugin {
                 .before(vehicle::step_cpu)
                 .before(crate::gpu_flock::update_gpu_params),
         )
-        .add_systems(PostUpdate, draw_attractor.after(crate::scene::frame_world));
+        .add_systems(
+            PostUpdate,
+            (draw_attractor, draw_obstacles).after(crate::scene::frame_world),
+        );
     }
 }
 
@@ -306,6 +467,29 @@ fn draw_attractor(
     }
 }
 
+fn draw_obstacles(
+    state: Res<GlobalState>,
+    scene: Res<SwarmScene>,
+    mut gizmos: Gizmos<SwarmMarker>,
+) {
+    if !scene.show_obstacles {
+        return;
+    }
+    let scale = vehicle::world_scale(state.vehicle_count);
+    for sphere in &scene.obstacles {
+        gizmos.sphere(
+            Isometry3d::from_translation(sphere.center),
+            sphere.radius * scale,
+            Color::srgb(1.0, 0.55, 0.18),
+        );
+        gizmos.sphere(
+            Isometry3d::from_translation(sphere.center),
+            (sphere.radius + sphere.clearance) * scale,
+            Color::srgba(1.0, 0.7, 0.3, 0.18),
+        );
+    }
+}
+
 pub fn ui(ui: &mut egui::Ui, attractor: &mut Attractor) {
     ui.horizontal(|ui| {
         ui.label("Cursor field");
@@ -331,6 +515,81 @@ pub fn ui(ui: &mut egui::Ui, attractor: &mut Attractor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obstacle_falloff_edges_inside_and_exact_center() {
+        let mut scene = SwarmScene {
+            obstacle_strength: 2.0,
+            ..default()
+        };
+        scene.add_obstacle(Vec3::ZERO, 10.0);
+        scene.set_clearance(4.0);
+        let force = |x| scene.obstacle_force(Vector3::x() * x, Vector3::zeros(), 200, 80.0);
+        for x in [14.0, 14.001, 100.0] {
+            assert_eq!(force(x), Vector3::zeros());
+        }
+        assert_eq!(force(12.0), Vector3::x() * 80.0);
+        for x in [0.0, 1.0, 9.9, 10.0] {
+            assert_eq!(force(x), Vector3::x() * 160.0);
+        }
+        assert_eq!(force(-5.0), -Vector3::x() * 160.0);
+        assert!(force(13.999).magnitude() < force(13.99).magnitude() * 0.02);
+    }
+
+    #[test]
+    fn obstacle_segment_projection_endpoints_and_summed_clamp() {
+        let mut scene = SwarmScene {
+            obstacle_strength: 2.0,
+            ..default()
+        };
+        scene.add_obstacle(Vec3::ZERO, 10.0);
+        let position = Vector3::new(-20.0, 3.0, 0.0);
+        let velocity = Vector3::x() * 40.0;
+        assert_eq!(
+            scene.obstacle_force(position, velocity, 200, 80.0),
+            Vector3::y() * 160.0
+        );
+        assert_eq!(
+            scene.obstacle_force(Vector3::x() * -40.0, Vector3::x() * 2.0, 200, 80.0),
+            Vector3::zeros()
+        );
+        scene.obstacles = vec![scene.obstacles[0]; MAX_OBSTACLES];
+        assert_eq!(
+            scene.obstacle_force(Vector3::x(), Vector3::zeros(), 200, 80.0),
+            Vector3::x() * 160.0
+        );
+        // A closest point exactly at center uses +X, even when the segment crosses the center.
+        assert_eq!(
+            scene.obstacle_force(-Vector3::x() * 10.0, Vector3::x() * 20.0, 200, 80.0),
+            Vector3::x() * 160.0
+        );
+    }
+
+    #[test]
+    fn obstacle_shape_scales_and_empty_or_zero_strength_is_zero() {
+        let mut scene = SwarmScene::default();
+        let p = Vector3::x() * 15.0;
+        assert_eq!(
+            scene.obstacle_force(p, Vector3::zeros(), 200, 80.0),
+            Vector3::zeros()
+        );
+        scene.add_obstacle(Vec3::ZERO, 10.0);
+        let reference = scene.obstacle_force(p, Vector3::zeros(), 200, 80.0);
+        for count in [200, 20_000, 1_000_000] {
+            let force = scene.obstacle_force(
+                p * vehicle::world_scale(count),
+                Vector3::zeros(),
+                count,
+                80.0,
+            );
+            assert!((force - reference).magnitude() < 1e-4);
+        }
+        scene.obstacle_strength = 0.0;
+        assert_eq!(
+            scene.obstacle_force(p, Vector3::zeros(), 200, 80.0),
+            Vector3::zeros()
+        );
+    }
 
     #[test]
     fn held_f_requires_scene_cursor_and_defers_to_egui_hover_and_focus() {

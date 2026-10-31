@@ -17,6 +17,7 @@ use std::{f32::consts::PI, ops::Mul};
 use crate::{
     instancing::VehicleInstances,
     octree::{Octree, Point},
+    swarm::SwarmScene,
     target::{Target, TargetSelection},
     vehicle_appearance::{instance_phase, pack_speed_group, VehicleMeshes},
     GlobalState, SimulationMode,
@@ -77,6 +78,7 @@ struct VehicleSpawner {
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .add_systems(Startup, spawn_flock)
             .add_systems(CpuStep, (movement, update).chain())
             .add_systems(PostUpdate, crate::vehicle_appearance::update_shape)
@@ -188,6 +190,7 @@ fn movement(
     target_query: Query<(&Transform, &TargetSelection), (With<Target>, Without<Vehicle>)>,
     state: Res<GlobalState>,
     time: Res<Time>,
+    scene: Res<SwarmScene>,
 ) {
     let (target_transform, selection) = target_query.single().unwrap();
     let mut wander = true;
@@ -199,7 +202,7 @@ fn movement(
     if !wander {
         let limit_seek = state.vehicle_max_speed * state.vehicle_seek_factor;
 
-        flock(&mut vehicle_query, &state);
+        flock(&mut vehicle_query, &state, &scene);
 
         // Seek
         vehicle_query.par_iter_mut().for_each(
@@ -224,7 +227,7 @@ fn movement(
         let limit_wall_avoid = state.vehicle_max_speed * state.vehicle_wall_avoid_factor;
         let walls = walls(state.vehicle_count);
 
-        flock(&mut vehicle_query, &state);
+        flock(&mut vehicle_query, &state, &scene);
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_iter_mut().for_each(
@@ -451,7 +454,7 @@ struct OctreeData {
     pub group: u32,
 }
 
-fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
+fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>, scene: &SwarmScene) {
     if state.mode == SimulationMode::Octree {
         let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
             return;
@@ -538,6 +541,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                     },
                     state,
                     metadata.0.y,
+                    scene,
                 );
                 acceleration.apply_force(force, state.vehicle_mass);
             },
@@ -571,6 +575,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                 },
                 state,
                 metadata.0.y,
+                scene,
             );
             acceleration.apply_force(force, state.vehicle_mass);
         },
@@ -593,6 +598,7 @@ fn flocking_force(
         },
         state,
         0,
+        &SwarmScene::default(),
     )
 }
 
@@ -602,6 +608,7 @@ fn group_flocking_force(
     neighbors: impl FnOnce(&mut dyn FnMut(Vector3<f32>, Vector3<f32>, u32)),
     state: &GlobalState,
     group: u32,
+    scene: &SwarmScene,
 ) -> Vector3<f32> {
     let separate_radius = state.vehicle_size * state.vehicle_separation_distance;
     let dist_separate = separate_radius.powi(2);
@@ -666,6 +673,14 @@ fn group_flocking_force(
             .attractor
             .force(position, state.vehicle_count, state.vehicle_max_speed);
     }
+    if !scene.obstacles.is_empty() && scene.obstacle_strength != 0.0 {
+        force += scene.obstacle_force(
+            position,
+            velocity,
+            state.vehicle_count,
+            state.vehicle_max_speed,
+        );
+    }
     force
 }
 
@@ -702,7 +717,9 @@ mod tests {
 
             for use_octree in [false, true] {
                 let mut app = App::new();
-                app.insert_resource(cpu_state()).init_resource::<Time>();
+                app.insert_resource(cpu_state())
+                    .init_resource::<Time>()
+                    .init_resource::<SwarmScene>();
                 app.update();
                 let (max_speed, octree_size) = {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
@@ -765,6 +782,7 @@ mod tests {
             vehicle_count: 1,
             ..default()
         })
+        .init_resource::<SwarmScene>()
         .add_systems(CpuStep, (movement, update).chain())
         .add_systems(
             Update,
@@ -894,6 +912,7 @@ mod tests {
             let mut app = App::new();
             app.insert_resource(flocking_state())
                 .init_resource::<Time>()
+                .init_resource::<SwarmScene>()
                 .add_systems(Update, update);
             let entity = app
                 .world_mut()
@@ -934,6 +953,7 @@ mod tests {
             ..flocking_state()
         })
         .init_resource::<Time>()
+        .init_resource::<SwarmScene>()
         .add_systems(Update, movement);
         app.world_mut().spawn((
             Target,
@@ -993,6 +1013,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(flocking_state())
             .init_resource::<Time>()
+            .init_resource::<SwarmScene>()
             .add_systems(Update, update);
         let mut acceleration = VehicleAcceleration::default();
         acceleration.apply_force(Vector3::new(1e6, -2e6, 3e6), 1.0);
@@ -1061,7 +1082,9 @@ mod tests {
         })
         .add_systems(
             Update,
-            |mut query: SteeringQuery, state: Res<GlobalState>| flock(&mut query, &state),
+            |mut query: SteeringQuery, state: Res<GlobalState>| {
+                flock(&mut query, &state, &SwarmScene::default())
+            },
         );
         let entities: Vec<_> = vehicles
             .iter()
@@ -1166,6 +1189,7 @@ mod tests {
                 |visit| visit(Vector3::x() * distance, Vector3::y() * 5.0, group),
                 state,
                 0,
+                &SwarmScene::default(),
             )
         };
         // A foreign close neighbor still separates, but cannot align or cohere.
@@ -1186,6 +1210,85 @@ mod tests {
     }
 
     #[test]
+    fn obstacles_respect_pause_speed_and_add_to_seek_in_both_cpu_modes() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let mut reference: Option<Vec3> = None;
+            for speed in [0.5, 1.0, 2.0, 4.0] {
+                let (mut app, entity) = presentation_app(mode);
+                app.world_mut()
+                    .resource_mut::<SwarmScene>()
+                    .add_obstacle(Vec3::NEG_Y, 12.0);
+                app.world_mut()
+                    .resource_mut::<crate::presentation::Presentation>()
+                    .paused = true;
+                app.world_mut()
+                    .resource_mut::<crate::presentation::Presentation>()
+                    .speed = speed;
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(200));
+                app.update();
+                assert_eq!(
+                    app.world().get::<Transform>(entity).unwrap().translation,
+                    Vec3::ZERO
+                );
+                assert_eq!(
+                    app.world().get::<VehicleVelocity>(entity).unwrap().0,
+                    Vector3::zeros()
+                );
+                app.world_mut()
+                    .resource_mut::<crate::presentation::Presentation>()
+                    .paused = false;
+                for _ in 0..(60.0 / speed.ceil()) as usize {
+                    app.world_mut()
+                        .resource_mut::<Time<Real>>()
+                        .advance_by(Duration::from_secs_f32(speed.ceil() / (240.0 * speed)));
+                    app.update();
+                }
+                let position = app.world().get::<Transform>(entity).unwrap().translation;
+                assert!(
+                    position.x > 0.0 && position.y > 0.0,
+                    "seek and avoidance both apply: {position:?}"
+                );
+                if let Some(reference) = reference {
+                    assert!(position.distance(reference) < 1e-4);
+                } else {
+                    reference = Some(position);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_obstacles_keep_flocking_bits_and_active_force_is_additive() {
+        let state = flocking_state();
+        let p = Vector3::new(3.0, 4.0, -5.0);
+        let v = Vector3::new(-1.0, 2.0, 3.0);
+        let mut scene = SwarmScene::default();
+        let force = |scene: &SwarmScene| {
+            group_flocking_force(
+                p,
+                v,
+                |visit| visit(p + Vector3::x(), v * 2.0, 0),
+                &state,
+                0,
+                scene,
+            )
+        };
+        let baseline = force(&scene);
+        scene.obstacle_strength = 20.0;
+        assert_eq!(force(&scene).map(f32::to_bits), baseline.map(f32::to_bits));
+        scene.add_obstacle(Vec3::ZERO, 10.0);
+        scene.obstacle_strength = 0.0;
+        assert_eq!(force(&scene).map(f32::to_bits), baseline.map(f32::to_bits));
+        scene.obstacle_strength = 4.0;
+        assert_eq!(
+            force(&scene),
+            baseline + scene.obstacle_force(p, v, state.vehicle_count, state.vehicle_max_speed)
+        );
+    }
+
+    #[test]
     fn cpu_metadata_survives_membership_edits_modes_shrink_and_growth() {
         let mut app = App::new();
         app.insert_resource(GlobalState {
@@ -1194,10 +1297,14 @@ mod tests {
             ..default()
         })
         .init_resource::<VehicleSpawner>()
+        .init_resource::<SwarmScene>()
         .add_systems(
             Update,
             (vehicle_spawner, vehicle_cleanup, update_membership).chain(),
         );
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::new(40.0, -10.0, 2.0), 12.0);
+        app.insert_resource(scene.clone());
         app.update();
         let snapshot = |world: &mut World| {
             world
@@ -1232,6 +1339,7 @@ mod tests {
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Octree;
         app.update();
         assert_eq!(snapshot(app.world_mut()), retained);
+        assert_eq!(app.world().resource::<SwarmScene>(), &scene);
         app.world_mut().resource_mut::<GlobalState>().vehicle_count = 10;
         app.update();
         let survivors = snapshot(app.world_mut());
@@ -1259,8 +1367,10 @@ mod tests {
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Gpu;
         app.update();
         assert!(snapshot(app.world_mut()).is_empty());
+        assert_eq!(app.world().resource::<SwarmScene>(), &scene);
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Octree;
         app.update();
+        assert_eq!(app.world().resource::<SwarmScene>(), &scene);
         assert_eq!(
             snapshot(app.world_mut()).values().map(|v| v.0.x).min(),
             Some(0)
@@ -1281,6 +1391,7 @@ mod tests {
             state.groups.table[0].target = Some(Vec3::NEG_X * 100.0);
             state.groups.table[1].target = Some(Vec3::X * 100.0);
             app.insert_resource(state)
+                .init_resource::<SwarmScene>()
                 .add_systems(CpuStep, (movement, update).chain())
                 .add_systems(
                     Update,
@@ -1523,7 +1634,9 @@ mod tests {
     #[test]
     fn followers_keep_apart_around_the_target() {
         let mut app = App::new();
-        app.insert_resource(cpu_state()).init_resource::<Time>();
+        app.insert_resource(cpu_state())
+            .init_resource::<Time>()
+            .init_resource::<SwarmScene>();
         app.update();
         let count = 300;
         let max_speed = {
@@ -1795,8 +1908,14 @@ mod tests {
             groups == 0 || (2..=8).contains(&groups),
             "GPU_BENCH_GROUPS must be 0 or 2..=8"
         );
+        let obstacle_count = std::env::var("GPU_BENCH_OBSTACLES").map_or(0, |value| {
+            value
+                .parse::<usize>()
+                .expect("GPU_BENCH_OBSTACLES must be 0..=8")
+        });
+        assert!(obstacle_count <= crate::swarm::MAX_OBSTACLES);
         let (device, queue) = gpu_device();
-        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
+        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups} obstacles={obstacle_count}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
         for count in counts {
             for &following in &modes {
                 for &cap in &caps {
@@ -1809,7 +1928,17 @@ mod tests {
                         ..default()
                     };
                     state.groups.count = groups;
-                    let params = gpu_params(&state, Vec3::ZERO, following, DT);
+                    let mut scene = SwarmScene::default();
+                    for index in 0..obstacle_count {
+                        let center = Vec3::new(
+                            if index & 1 == 0 { -20.0 } else { 20.0 },
+                            if index & 2 == 0 { -20.0 } else { 20.0 },
+                            if index & 4 == 0 { -10.0 } else { 10.0 },
+                        ) * world_scale(state.vehicle_count);
+                        scene.add_obstacle(center, 8.0);
+                    }
+                    flock.set_scene(&scene);
+                    let params = gpu_params(&state, Vec3::ZERO, following, DT).with_scene(&scene);
                     let mut timings = Vec::with_capacity(STEPS);
                     let mut warmup_steps = 0;
                     let mut status = String::from("complete");
@@ -1865,7 +1994,7 @@ mod tests {
         groups.table[1].target = Some(Vec3::new(100.0, -20.0, -30.0));
         // The third group wanders; global follow must override both explicit targets.
         for cap in [0, 512] {
-            gpu_steering_parity(256, cap, default(), groups);
+            gpu_steering_parity(256, cap, default(), groups, default());
         }
 
         let (device, queue) = gpu_device();
@@ -2102,7 +2231,7 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn gpu_steering_matches_cpu_reference() {
-        gpu_steering_parity(3000, 0, default(), default());
+        gpu_steering_parity(3000, 0, default(), default(), default());
     }
 
     #[test]
@@ -2122,9 +2251,124 @@ mod tests {
                         ..default()
                     },
                     default(),
+                    default(),
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_obstacles_match_cpu_with_groups_and_attractor() {
+        use crate::swarm::{Attractor, AttractorMode, Groups};
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::new(60.0, -20.0, 10.0), 12.0);
+        scene.add_obstacle(Vec3::new(120.0, 0.0, 0.0), 8.0);
+        let mut groups = Groups {
+            count: 2,
+            ..default()
+        };
+        groups.table[0].target = Some(Vec3::new(-40.0, 5.0, 10.0));
+        for cap in [0, 512] {
+            gpu_steering_parity(
+                256,
+                cap,
+                Attractor {
+                    mode: AttractorMode::Attract,
+                    scripted_point: Some(Vec3::new(20.0, 10.0, -5.0)),
+                    ..default()
+                },
+                groups,
+                scene.clone(),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_obstacle_arena_tail_survives_capacity_growth_and_count_edits() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::new(12.0, -5.0, 3.0), 8.0);
+        scene.add_obstacle(Vec3::new(-18.0, 10.0, 2.0), 5.0);
+        let mut state = GlobalState {
+            vehicle_count: 70,
+            ..default()
+        };
+        state.groups.count = 2;
+        flock.set_scene(&scene);
+        let mut uploads = 0;
+        for count in [70, 70, 1025, 31, 800, 0, 2000] {
+            state.vehicle_count = count;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 0.0).with_scene(&scene),
+            );
+            if count == 0 {
+                continue;
+            }
+            if count == 70 && uploads == 0 || count == 1025 {
+                uploads += 1;
+            }
+            assert_eq!(
+                flock.read_obstacle_records(&device, &queue),
+                (scene.obstacle_records(), uploads)
+            );
+        }
+        // Editing while paused uploads once; settings/visibility and later sorts do not.
+        scene.obstacles[0].center.x += 4.0;
+        flock.set_scene(&scene);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0).with_scene(&scene),
+        );
+        uploads += 1;
+        assert_eq!(
+            flock.read_obstacle_records(&device, &queue),
+            (scene.obstacle_records(), uploads)
+        );
+        scene.obstacle_strength = 8.0;
+        scene.show_obstacles = false;
+        flock.set_scene(&scene);
+        for cap in [0, 16] {
+            state.gpu_max_neighbors = cap;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 1.0 / 60.0).with_scene(&scene),
+            );
+            assert_eq!(
+                flock.read_obstacle_records(&device, &queue),
+                (scene.obstacle_records(), uploads)
+            );
+        }
+        scene.obstacles.clear();
+        flock.set_scene(&scene);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0).with_scene(&scene),
+        );
+        scene.add_obstacle(Vec3::X * 50.0, 3.0);
+        flock.set_scene(&scene);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0).with_scene(&scene),
+        );
+        assert_eq!(
+            flock.read_obstacle_records(&device, &queue),
+            (scene.obstacle_records(), uploads + 1)
+        );
     }
 
     fn gpu_steering_parity(
@@ -2132,6 +2376,7 @@ mod tests {
         cap: u32,
         attractor: crate::swarm::Attractor,
         groups: crate::swarm::Groups,
+        scene: SwarmScene,
     ) {
         use crate::gpu_flock::{gpu_params, GpuFlock};
         let dt = 1.0 / 60.0;
@@ -2171,8 +2416,10 @@ mod tests {
                 ..default()
             };
             let mut app = App::new();
+            app.insert_resource(scene.clone());
             app.insert_resource(GlobalState { ..state })
                 .init_resource::<Time>()
+                .init_resource::<SwarmScene>()
                 .add_systems(Update, (movement, update).chain());
             app.world_mut().spawn((
                 Target,
@@ -2221,13 +2468,14 @@ mod tests {
                 })
                 .collect();
             let mut flock = GpuFlock::new(&device);
+            flock.set_scene(&scene);
             flock.upload(&device, &queue, &boids);
             state.mode = SimulationMode::Gpu;
             gpu_step(
                 &mut flock,
                 &device,
                 &queue,
-                &gpu_params(&state, target, following, 0.0),
+                &gpu_params(&state, target, following, 0.0).with_scene(&scene),
             );
             assert_eq!(flock.read_boids(&device, &queue), boids);
             for step in 0..3 {
@@ -2251,7 +2499,7 @@ mod tests {
                     &mut flock,
                     &device,
                     &queue,
-                    &gpu_params(&state, target, following, dt),
+                    &gpu_params(&state, target, following, dt).with_scene(&scene),
                 );
                 let actual = flock.read_boids(&device, &queue);
                 assert_eq!(actual.len(), count);
@@ -2477,6 +2725,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .add_systems(Update, (vehicle_spawner, vehicle_cleanup).chain());
         for (mode, count, expected) in [
             (SimulationMode::Naive, 23, 23),
@@ -2508,6 +2757,7 @@ mod tests {
         let mut app = crate::presentation::tests::clock_app();
         app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .add_systems(CpuStep, (movement, update).chain())
             .add_systems(
                 Update,
@@ -2578,6 +2828,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(flocking_state())
             .init_resource::<Time>()
+            .init_resource::<SwarmScene>()
             .add_systems(Update, update);
         let rotation = Quat::from_rotation_x(0.5);
         let entity = app
@@ -2601,7 +2852,9 @@ mod tests {
         for use_octree in [false, true] {
             for following in [true, false] {
                 let mut app = App::new();
-                app.insert_resource(cpu_state()).init_resource::<Time>();
+                app.insert_resource(cpu_state())
+                    .init_resource::<Time>()
+                    .init_resource::<SwarmScene>();
                 app.update();
                 {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
@@ -2658,6 +2911,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .add_systems(Update, vehicle_spawner);
         app.update();
         let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
@@ -2685,6 +2939,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Appearance>()
             .init_resource::<crate::vehicle_model::VehicleModels>()
@@ -2755,6 +3010,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(cpu_state())
             .init_resource::<VehicleSpawner>()
+            .init_resource::<SwarmScene>()
             .init_resource::<Time>()
             .add_systems(
                 Update,

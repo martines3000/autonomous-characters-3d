@@ -22,6 +22,7 @@ use bevy::{
 
 use crate::{
     instancing::FlockInstances,
+    swarm::{Obstacle, SwarmScene, MAX_OBSTACLES, OBSTACLE_LOOK_AHEAD},
     target::{Target, TargetSelection},
     vehicle, GlobalState, SimulationMode,
 };
@@ -112,9 +113,28 @@ pub(crate) struct GpuParams {
     // x: active group count (0 = off), y: next spawn ID, z: input order-map base, w: capacity.
     pub groups: UVec4,
     pub group_targets: [Vec4; crate::swarm::MAX_GROUPS],
+    // x: arena vec4 offset (set by encode), y: count; zw: reserved.
+    pub obstacles: UVec4,
+    // strength, look-ahead simulated seconds, world scale, reserved.
+    pub obstacle_settings: Vec4,
 }
 
 impl GpuParams {
+    pub(crate) fn with_scene(mut self, scene: &SwarmScene) -> Self {
+        self.obstacles = UVec4::ZERO;
+        self.obstacle_settings = Vec4::ZERO;
+        if !scene.obstacles.is_empty() && scene.obstacle_strength != 0.0 {
+            self.obstacles.y = scene.obstacles.len() as u32;
+            self.obstacle_settings = Vec4::new(
+                scene.obstacle_strength,
+                OBSTACLE_LOOK_AHEAD,
+                vehicle::world_scale(self.count as usize),
+                0.0,
+            );
+        }
+        self
+    }
+
     fn simulates(&self) -> bool {
         self.dt > 0.0
     }
@@ -124,8 +144,12 @@ pub struct GpuFlockPlugin;
 
 impl Plugin for GpuFlockPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GpuParams>()
-            .add_plugins(ExtractResourcePlugin::<GpuParams>::default())
+        app.init_resource::<SwarmScene>()
+            .init_resource::<GpuParams>()
+            .add_plugins((
+                ExtractResourcePlugin::<GpuParams>::default(),
+                ExtractResourcePlugin::<SwarmScene>::default(),
+            ))
             .add_systems(
                 Update,
                 update_gpu_params.after(crate::target::input_controls),
@@ -236,7 +260,11 @@ fn run_gpu_flock(
     frame: Res<crate::presentation::SimulationFrame>,
     queue: Res<RenderQueue>,
     mut draw: ResMut<FlockInstances>,
+    scene: Res<SwarmScene>,
 ) {
+    // egui edits in PostUpdate: derive count/settings from the same extracted scene as records.
+    let params = (*params).with_scene(&scene);
+    flock.set_scene(&scene);
     let device = context.render_device().clone();
     let diagnostics = context.diagnostic_recorder();
     let recorder = diagnostics.as_deref();
@@ -249,7 +277,11 @@ fn run_gpu_flock(
     };
     let span = recorder.time_span(context.command_encoder(), name);
     // A paused frame still permits spawn/truncate maintenance, never sorting or steering.
-    if frame.steps > 0 || params.count != flock.count || params.groups.x != flock.group_count {
+    if frame.steps > 0
+        || params.count != flock.count
+        || params.groups.x != flock.group_count
+        || flock.scene_dirty
+    {
         for _ in 0..frame.steps.max(1) {
             flock.encode(&device, &queue, context.command_encoder(), &params);
         }
@@ -281,8 +313,8 @@ pub(crate) struct GpuFlock {
     scatter: ComputePipeline,
     scatter_fine: ComputePipeline,
     separate: ComputePipeline,
-    steer: ComputePipeline,
-    steer_groups: ComputePipeline,
+    // Index bits: 0 groups, 1 obstacles. Disabled features compile out of steering.
+    steer: [ComputePipeline; 4],
     params: Buffer,
     buffers: Option<FlockBuffers>,
     // Boids alive on the GPU.
@@ -292,6 +324,10 @@ pub(crate) struct GpuFlock {
     group_count: u32,
     // Vec4 offset (0 or capacity/4) of the order map matching the current boids.
     order_base: u32,
+    obstacles: Vec<Obstacle>,
+    scene_dirty: bool,
+    #[cfg(test)]
+    scene_uploads: u32,
 }
 
 // The bind group keeps the grid buffers alive; state, instances and metadata are also used directly.
@@ -355,7 +391,7 @@ impl FlockBuffers {
         let arena = buffer(
             "gpu_flock_metadata_arena",
             // Two metadata tables and two packed u32 order maps; scene data shares this binding.
-            capacity as u64 * METADATA_SIZE * 5 / 2,
+            capacity as u64 * METADATA_SIZE * 5 / 2 + MAX_OBSTACLES as u64 * 2 * METADATA_SIZE,
             BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
         let bind_group = device.create_bind_group(
@@ -410,14 +446,14 @@ impl GpuFlock {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |entry_point, groups| {
+        let pipeline = |entry_point, groups, obstacles| {
             device.create_compute_pipeline(&RawComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some(entry_point),
                 compilation_options: PipelineCompilationOptions {
-                    constants: &[("GROUPS_ENABLED", groups)],
+                    constants: &[("GROUPS_ENABLED", groups), ("OBSTACLES_ENABLED", obstacles)],
                     ..default()
                 },
                 cache: None,
@@ -430,20 +466,24 @@ impl GpuFlock {
             mapped_at_creation: false,
         });
         Self {
-            spawn: pipeline("spawn", 0.0),
-            update_groups: pipeline("update_groups", 0.0),
-            gather_metadata: pipeline("gather_metadata", 0.0),
-            compact_metadata: pipeline("compact_metadata", 0.0),
-            clear_counts: pipeline("clear_counts", 0.0),
-            count_cells: pipeline("count", 0.0),
-            count_separation: pipeline("count_separation", 0.0),
-            scan_blocks: pipeline("scan_blocks", 0.0),
-            scan_block_sums: pipeline("scan_block_sums", 0.0),
-            scatter: pipeline("scatter", 0.0),
-            scatter_fine: pipeline("scatter_fine", 0.0),
-            separate: pipeline("separate", 0.0),
-            steer: pipeline("steer", 0.0),
-            steer_groups: pipeline("steer", 1.0),
+            spawn: pipeline("spawn", 0.0, 0.0),
+            update_groups: pipeline("update_groups", 0.0, 0.0),
+            gather_metadata: pipeline("gather_metadata", 0.0, 0.0),
+            compact_metadata: pipeline("compact_metadata", 0.0, 0.0),
+            clear_counts: pipeline("clear_counts", 0.0, 0.0),
+            count_cells: pipeline("count", 0.0, 0.0),
+            count_separation: pipeline("count_separation", 0.0, 0.0),
+            scan_blocks: pipeline("scan_blocks", 0.0, 0.0),
+            scan_block_sums: pipeline("scan_block_sums", 0.0, 0.0),
+            scatter: pipeline("scatter", 0.0, 0.0),
+            scatter_fine: pipeline("scatter_fine", 0.0, 0.0),
+            separate: pipeline("separate", 0.0, 0.0),
+            steer: [
+                pipeline("steer", 0.0, 0.0),
+                pipeline("steer", 1.0, 0.0),
+                pipeline("steer", 0.0, 1.0),
+                pipeline("steer", 1.0, 1.0),
+            ],
             layout,
             params,
             buffers: None,
@@ -452,6 +492,10 @@ impl GpuFlock {
             next_id: 0,
             group_count: 0,
             order_base: 0,
+            obstacles: Vec::new(),
+            scene_dirty: false,
+            #[cfg(test)]
+            scene_uploads: 0,
         }
     }
 
@@ -459,10 +503,18 @@ impl GpuFlock {
     /// count, then builds the grid and steers. A count of 0 forgets the flock, so the next
     /// non-zero count spawns a fresh one. A zero delta performs count maintenance only:
     /// spawn writes new instances without sorting, steering or advancing the random frame.
+    pub(crate) fn set_scene(&mut self, scene: &SwarmScene) {
+        assert!(scene.obstacles.len() <= MAX_OBSTACLES);
+        if self.obstacles != scene.obstacles {
+            self.obstacles.clone_from(&scene.obstacles);
+            self.scene_dirty = true;
+        }
+    }
+
     pub fn encode(
         &mut self,
         device: &RenderDevice,
-        _queue: &RenderQueue,
+        queue: &RenderQueue,
         encoder: &mut CommandEncoder,
         params: &GpuParams,
     ) {
@@ -475,7 +527,7 @@ impl GpuFlock {
             return;
         }
         let remap = params.groups.x != self.group_count;
-        if !params.simulates() && count == self.count && !remap {
+        if !params.simulates() && count == self.count && !remap && !self.scene_dirty {
             self.count = count;
             return;
         }
@@ -518,9 +570,33 @@ impl GpuFlock {
                 }
             }
             self.buffers = Some(grown);
+            self.scene_dirty = true;
             self.order_base = 0;
         }
         let buffers = self.buffers.as_ref().unwrap();
+        if self.scene_dirty {
+            if !self.obstacles.is_empty() {
+                let scene = SwarmScene {
+                    obstacles: self.obstacles.clone(),
+                    ..default()
+                };
+                let bytes: Vec<u8> = scene
+                    .obstacle_records()
+                    .iter()
+                    .flat_map(|v| v.to_array().into_iter().flat_map(f32::to_le_bytes))
+                    .collect();
+                queue.write_buffer(
+                    &buffers.arena,
+                    buffers.capacity as u64 * 5 / 2 * METADATA_SIZE,
+                    &bytes,
+                );
+                #[cfg(test)]
+                {
+                    self.scene_uploads += 1;
+                }
+            }
+            self.scene_dirty = false;
+        }
         let spawn_from = self.count.min(count);
         let block_count = buffers.table_size / SCAN_BLOCK;
         let step = GpuParams {
@@ -528,6 +604,7 @@ impl GpuFlock {
             table_mask: buffers.table_size - 1,
             frame: self.frame,
             block_count,
+            obstacles: UVec4::new(buffers.capacity * 5 / 2, params.obstacles.y, 0, 0),
             groups: UVec4::new(
                 params.groups.x,
                 self.next_id,
@@ -599,11 +676,8 @@ impl GpuFlock {
             (&self.scan_block_sums, 1),
             (&self.scatter, groups(count)),
             (
-                if params.groups.x == 0 {
-                    &self.steer
-                } else {
-                    &self.steer_groups
-                },
+                &self.steer
+                    [(params.groups.x != 0) as usize | (((params.obstacles.y != 0) as usize) << 1)],
                 groups(count),
             ),
         ] {
@@ -635,6 +709,7 @@ impl GpuFlock {
             .is_none_or(|buffers| buffers.capacity < count)
         {
             self.buffers = Some(FlockBuffers::new(device, &self.layout, &self.params, count));
+            self.scene_dirty = true;
         }
         let mut bytes = Vec::with_capacity(boids.len() * BOID_SIZE as usize);
         let mut metadata = Vec::with_capacity(boids.len() * METADATA_SIZE as usize);
@@ -716,6 +791,47 @@ impl GpuFlock {
                 ]
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub fn read_obstacle_records(
+        &self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> (Vec<Vec4>, u32) {
+        let buffers = self.buffers.as_ref().unwrap();
+        let size = self.obstacles.len() as u64 * 2 * METADATA_SIZE;
+        let staging = device.create_buffer(&BufferDescriptor {
+            label: Some("gpu_obstacles_readback"),
+            size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+        encoder.copy_buffer_to_buffer(
+            &buffers.arena,
+            buffers.capacity as u64 * 5 / 2 * METADATA_SIZE,
+            &staging,
+            0,
+            size,
+        );
+        queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(MapMode::Read, |result| result.unwrap());
+        device.poll(PollType::wait_indefinitely()).unwrap();
+        let bytes = staging.slice(..).get_mapped_range().unwrap();
+        let records = bytes
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|record| {
+                Vec4::from_array(std::array::from_fn(|axis| {
+                    f32::from_le_bytes(record[axis * 4..axis * 4 + 4].try_into().unwrap())
+                }))
+            })
+            .collect();
+        (records, self.scene_uploads)
     }
 
     /// Copies the first `count` boids back to the CPU (blocking).
@@ -805,7 +921,8 @@ mod tests {
     #[test]
     fn presentation_params_skip_paused_steps_and_scale_simulated_delta() {
         let mut app = crate::presentation::tests::clock_app();
-        app.init_resource::<GlobalState>()
+        app.init_resource::<SwarmScene>()
+            .init_resource::<GlobalState>()
             .init_resource::<GpuParams>()
             .add_systems(
                 Update,
@@ -838,6 +955,35 @@ mod tests {
                 .steps,
             0
         );
+    }
+
+    #[test]
+    fn scene_uniforms_use_the_upload_snapshot_and_clear_stale_enable_fields() {
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::X, 12.0);
+        let base = gpu_params(&GlobalState::default(), Vec3::ZERO, true, 0.01);
+        let active = GpuParams { count: 200, ..base }.with_scene(&scene);
+        assert_eq!(active.obstacles.y, 1);
+        assert_eq!(active.obstacle_settings, Vec4::new(4.0, 1.0, 1.0, 0.0));
+        scene.add_obstacle(Vec3::Y, 4.0);
+        let edited = GpuParams {
+            count: 1_000_000,
+            ..active
+        }
+        .with_scene(&scene);
+        assert_eq!(edited.obstacles.y, 2);
+        assert_eq!(edited.obstacle_settings.z, vehicle::world_scale(1_000_000));
+        scene.obstacle_strength = 0.0;
+        let inactive = edited.with_scene(&scene);
+        assert_eq!(inactive.obstacles, UVec4::ZERO);
+        assert_eq!(inactive.obstacle_settings, Vec4::ZERO);
+        scene.obstacle_strength = 8.0;
+        scene.obstacles.clear();
+        let cleared = edited.with_scene(&scene);
+        assert_eq!(cleared.obstacles, UVec4::ZERO);
+        assert_eq!(cleared.obstacle_settings, Vec4::ZERO);
+        assert_eq!(cleared.dt, base.dt);
+        assert_eq!(cleared.group_targets, base.group_targets);
     }
 
     #[test]
@@ -949,14 +1095,25 @@ mod tests {
             attractor_strength: Vec4::new(36.0, 37.0, 38.0, 39.0),
             groups: UVec4::new(2, 100, 101, 102),
             group_targets: std::array::from_fn(|i| Vec4::splat((40 + i) as f32)),
+            obstacles: UVec4::new(9000, 8, 0, 0),
+            obstacle_settings: Vec4::new(48.0, 49.0, 50.0, 51.0),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 320);
-        assert_eq!(bytes.len(), 320);
+        assert_eq!(GpuParams::min_size().get(), 352);
+        assert_eq!(bytes.len(), 352);
         assert_eq!(size_of::<BoidData>(), 80);
         assert_eq!(BOID_SIZE, 64);
+        for (axis, value) in [9000_u32, 8, 0, 0].into_iter().enumerate() {
+            assert_eq!(&bytes[320 + axis * 4..324 + axis * 4], &value.to_le_bytes());
+        }
+        for axis in 0..4 {
+            assert_eq!(
+                &bytes[336 + axis * 4..340 + axis * 4],
+                &((48 + axis) as f32).to_le_bytes()
+            );
+        }
         for (axis, value) in [2_u32, 100, 101, 102].into_iter().enumerate() {
             assert_eq!(&bytes[176 + axis * 4..180 + axis * 4], &value.to_le_bytes());
         }

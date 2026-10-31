@@ -44,6 +44,8 @@ struct Params {
     attractor_strength: vec4<f32>,
     groups: vec4<u32>,
     group_targets: array<vec4<f32>, 8>,
+    obstacles: vec4<u32>,
+    obstacle_settings: vec4<f32>,
 };
 
 struct Boid {
@@ -78,10 +80,12 @@ struct Instance {
 // Persistent metadata table [0, capacity), maintenance scratch [capacity, 2*capacity),
 // then two packed u32 order maps (capacity/4 vec4s each). Sorts carry only table indices.
 // Group/slot/ID/reserved values stay in the table; z is the input order-map base, w capacity.
-// Future scene records begin at 5*capacity/2 and share this eighth binding.
+// Scene records begin at 5*capacity/2 and share this eighth binding.
+// Spheres use two float-bitcast records: center/radius, clearance/reserved.
 @group(0) @binding(8) var<storage, read_write> arena: array<vec4<u32>>;
 
 override GROUPS_ENABLED: bool = false;
+override OBSTACLES_ENABLED: bool = false;
 
 fn read_order(base: u32, index: u32) -> u32 {
     return arena[2u * params.groups.w + base + index / 4u][index % 4u];
@@ -478,6 +482,25 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             // Mirrors Attractor::force: peak magnitude max_speed * strength at q=1/3.
             force += offset * (params.max_speed * params.attractor_strength.x * 6.75 * (1.0 - q) * (1.0 - q));
         }
+    }
+    if OBSTACLES_ENABLED {
+        let segment = velocity * params.obstacle_settings.y;
+        let length_squared = dot(segment, segment);
+        var avoidance = vec3<f32>(0.0);
+        for (var i = 0u; i < params.obstacles.y; i += 1u) {
+            let sphere = bitcast<vec4<f32>>(arena[params.obstacles.x + i * 2u]);
+            let clearance = bitcast<vec4<f32>>(arena[params.obstacles.x + i * 2u + 1u]).x * params.obstacle_settings.z;
+            var t = 0.0;
+            if length_squared > 0.0 { t = clamp(dot(sphere.xyz - position, segment) / length_squared, 0.0, 1.0); }
+            let offset = position + segment * t - sphere.xyz;
+            let distance = length(offset);
+            var normal = vec3<f32>(1.0, 0.0, 0.0);
+            if distance > 0.0 { normal = offset / distance; }
+            let surface = distance - sphere.w * params.obstacle_settings.z;
+            let weight = 1.0 - clamp(surface / clearance, 0.0, 1.0);
+            avoidance += normal * (weight * weight * (3.0 - 2.0 * weight));
+        }
+        force += limit(avoidance, 1.0) * (params.max_speed * params.obstacle_settings.x);
     }
     var acceleration = force / params.mass;
 

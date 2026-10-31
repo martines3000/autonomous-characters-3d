@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 102 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 109 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -70,6 +70,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
 | W A S D, Space, left Shift | Move the selected target (relative to the camera, real time) |
+| Swarm → Sphere obstacles | Add/remove/edit up to eight spheres; Show toggles wireframes |
 | Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
 | P | Pause / resume vehicle simulation |
 | O | Toggle real-time auto-orbit |
@@ -162,8 +163,30 @@ regrowth uses fresh IDs, rather than sorted indices or reused count values. Zero
 backend transitions start a new ID lifetime. Naive/Octree switches preserve membership. Group edits,
 colors and membership maintenance remain live while paused; motion still follows the simulation clock.
 
-All mechanics are optional. Stages 7a–7b implement the field and groups; obstacles, formations
-and predators remain planned. Disabled fields preserve original steering arithmetic. Attraction
+**Sphere obstacles** start Off (empty list). In Swarm, **Add at origin** creates a sphere; edit its
+world center, reference radius and clearance, or use Remove / Clear. Up to eight spheres are allowed.
+Orange wireframes show physical radii; faint outer wireframes show clearance. **Show** toggles only
+the gizmos. Obstacles remain visible and editable while paused. Strength is 0–20 (default 4);
+radius is 0.1–200; clearance is 0.1–200 (default 10). Editing **all clearances** updates existing
+spheres and the default for later additions; individual clearance edits affect one sphere.
+
+Avoidance projects each sphere center onto the segment from current position to position + velocity
+× one simulated second. At the closest point, the normal points away from the center (+X at exact
+coincidence). For surface distance d and clearance c, weight is smoothstep(1-clamp(d/c, 0, 1)).
+Inside the sphere weight is one; outside radius + clearance it is zero. Sum weighted normals, clamp
+to length one, then multiply by max speed × strength. Radius and clearance multiply world scale;
+centers stay in explicit world coordinates. Avoidance adds after the cursor field and before mass
+division. Seek, groups, speed/substeps, wall steering and the final speed clamp retain their laws.
+This is soft steering: fast vehicles or competing forces can penetrate spheres.
+
+`SwarmScene` owns the list independently of backend/count changes. Naive/Octree switches preserve
+vehicles and scene; CPU/GPU switches respawn vehicles and keep the scene. GPU sphere records share
+the eighth storage binding after metadata/order maps (256 reserved bytes). Records upload only
+on sphere edits or capacity growth. Empty/zero-strength avoidance compiles out of steering;
+64-byte Boids, 48-byte instances and the vehicle draw are unchanged.
+
+All mechanics are optional. Stages 7a–7c implement the field, groups and spheres; formations
+and predators remain planned. Disabled mechanics preserve original steering arithmetic. Attraction
 retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
 attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
 are retuned.
@@ -605,6 +628,11 @@ pgrep -a autonomous   # no process should remain after exit
 | `set attractor_strength` | 0–20, default 4; dimensionless force multiplier |
 | `set attractor_radius` | 1–200 reference units, default 60; multiplied by world scale |
 | `attractor` | `x y z` sets a persistent point without held F (finite world coordinates within ±10,000,000); `mouse` clears the override and restores held F |
+| `obstacle add` | `x y z radius`; finite world centers within ±10,000,000, reference radius 0.1–200; up to eight spheres |
+| `obstacle clear` | Remove all spheres (Off) |
+| `set obstacle_strength` | 0–20, default 4; dimensionless multiplier, zero bypasses avoidance |
+| `set obstacle_clearance` | 0.1–200 reference units, default 10; updates existing spheres and the default for additions |
+| `set obstacles_visible` | `on` (default) / `off`; gizmos only, does not change avoidance |
 | `target` | `x y z`, finite world coordinates, each within ±10,000,000 |
 | `camera` | `yaw_deg pitch_deg distance`; yaw ±360°, pitch ±89.9°, distance 1–10,000,000; looks at origin, positive pitch above it |
 | `frame` | Request Frame world, preserving orientation and anchor |
@@ -649,7 +677,8 @@ sandboxes.
 CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
 
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
-# Optional GPU_BENCH_GROUPS=0 (default) or 2..8; prints requested device storage limits.
+# Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
+# The benchmark prints requested device storage limits.
 GPU_BENCH_COUNTS=20000,100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
 
 # CPU benchmark (the exact filter skips the GPU benchmark)
@@ -675,11 +704,12 @@ branch keeps the first native build that compiled again.
 
 ## Roadmap
 
-Section 12 of [review-report.html](review-report.html#feature-expansion) proposes next features,
-starting with a Showcase milestone: color palettes, auto-orbit camera, pause and simulation speed.
-After that come a mouse attractor/repulsor, multiple swarm groups, obstacles, trails, formations and
-predators. Each milestone waits for explicit approval. Open issues are listed in
+Section 12 of [review-report.html](review-report.html#feature-expansion) proposed the feature roadmap.
+Showcase controls, the cursor field, swarm groups and static sphere avoidance are implemented.
+Formations, predators and trails remain future work; each milestone requires owner authorization.
+Open issues are listed in
 [plans/STATUS.md](plans/STATUS.md):
+
 - crowding in very large follow flocks;
 - rendering cost up close;
 - wall avoidance acting as drag.

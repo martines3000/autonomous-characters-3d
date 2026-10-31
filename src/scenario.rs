@@ -62,6 +62,8 @@ enum Command {
     Preset(CameraPreset),
     Target(Vec3),
     Attractor(Option<Vec3>),
+    ObstacleAdd(Vec3, f32),
+    ObstacleClear,
     Camera { yaw: f32, pitch: f32, distance: f32 },
     Frame,
     Present(bool),
@@ -80,6 +82,9 @@ enum Setting {
     AttractorMode(AttractorMode),
     AttractorStrength(f32),
     AttractorRadius(f32),
+    ObstacleStrength(f32),
+    ObstacleClearance(f32),
+    ObstaclesVisible(bool),
     Speed(f32),
     Orbit(bool),
     OrbitSpeed(f32),
@@ -178,6 +183,9 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("attractor_mode", "repel") => Setting::AttractorMode(AttractorMode::Repel),
         ("attractor_strength", _) => Setting::AttractorStrength(number(value, 0.0, 20.0)?),
         ("attractor_radius", _) => Setting::AttractorRadius(number(value, 1.0, 200.0)?),
+        ("obstacle_strength", _) => Setting::ObstacleStrength(number(value, 0.0, 20.0)?),
+        ("obstacle_clearance", _) => Setting::ObstacleClearance(number(value, 0.1, 200.0)?),
+        ("obstacles_visible", _) => Setting::ObstaclesVisible(switch(value)?),
         ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
         ("orbit", _) => Setting::Orbit(switch(value)?),
         ("orbit_speed", _) => Setting::OrbitSpeed(number(value, -45.0, 45.0)?),
@@ -261,6 +269,7 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
     let mut measuring = false;
     let mut mode = GlobalState::default().mode;
     let mut model_settings = ModelSettings::default();
+    let mut obstacle_count = 0;
     for (index, line) in script.lines().enumerate() {
         let line = script_line(line);
         if line.is_empty() {
@@ -303,6 +312,24 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                         _ => (),
                     }
                     Command::Set(value)
+                }
+                ["obstacle", "clear"] => {
+                    obstacle_count = 0;
+                    Command::ObstacleClear
+                }
+                ["obstacle", "add", x, y, z, radius] => {
+                    if obstacle_count >= crate::swarm::MAX_OBSTACLES {
+                        return Err("at most eight obstacles; clear before adding more".into());
+                    }
+                    obstacle_count += 1;
+                    Command::ObstacleAdd(
+                        Vec3::new(
+                            number(x, -1e7, 1e7)?,
+                            number(y, -1e7, 1e7)?,
+                            number(z, -1e7, 1e7)?,
+                        ),
+                        number(radius, 0.1, 200.0)?,
+                    )
                 }
                 ["group_target", group, "off"] => Command::Set(Setting::GroupTarget(
                     integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
@@ -412,6 +439,17 @@ fn run_scenario(world: &mut World) {
                         selection.0 = follow;
                     }
                 }
+                Command::ObstacleAdd(center, radius) => {
+                    world
+                        .resource_mut::<crate::swarm::SwarmScene>()
+                        .add_obstacle(center, radius);
+                }
+                Command::ObstacleClear => {
+                    let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+                    if !scene.obstacles.is_empty() {
+                        scene.obstacles.clear();
+                    }
+                }
                 Command::Attractor(point) => {
                     world.resource_mut::<GlobalState>().attractor.scripted_point = point;
                 }
@@ -499,6 +537,29 @@ fn run_scenario(world: &mut World) {
 
 fn apply_setting(world: &mut World, setting: Setting) {
     match setting {
+        Setting::ObstacleStrength(value) => {
+            let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+            if scene.obstacle_strength != value {
+                scene.obstacle_strength = value;
+            }
+        }
+        Setting::ObstacleClearance(value) => {
+            let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+            if scene.obstacle_clearance != value
+                || scene
+                    .obstacles
+                    .iter()
+                    .any(|sphere| sphere.clearance != value)
+            {
+                scene.set_clearance(value);
+            }
+        }
+        Setting::ObstaclesVisible(value) => {
+            let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+            if scene.show_obstacles != value {
+                scene.show_obstacles = value;
+            }
+        }
         Setting::Speed(value) => world.resource_mut::<Presentation>().speed = value,
         Setting::Orbit(value) => world.resource_mut::<Presentation>().orbit = value,
         Setting::OrbitSpeed(value) => world.resource_mut::<Presentation>().orbit_speed = value,
@@ -641,6 +702,50 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn obstacle_commands_validate_bounds_capacity_and_clearance_edits() {
+        let commands = parse("0 set obstacle_strength 8\n0 set obstacle_clearance 12\n0 obstacle add 1 -2 3 10\n1 set obstacles_visible off\n2 obstacle clear").unwrap();
+        assert_eq!(
+            commands[2].command,
+            Command::ObstacleAdd(Vec3::new(1.0, -2.0, 3.0), 10.0)
+        );
+        assert_eq!(commands[4].command, Command::ObstacleClear);
+        for command in [
+            "obstacle add NaN 0 0 10",
+            "obstacle add 0 0 0 0",
+            "obstacle add 0 0 0 201",
+            "obstacle add 0 0 0",
+            "set obstacle_strength -1",
+            "set obstacle_strength inf",
+            "set obstacle_clearance 0",
+            "set obstacles_visible maybe",
+        ] {
+            assert!(parse(&format!("0 {command}")).is_err(), "{command}");
+        }
+        let eight = "0 obstacle add 0 0 0 10\n".repeat(8);
+        assert!(parse(&eight).is_ok());
+        assert!(parse(&format!("{eight}0 obstacle add 0 0 0 10")).is_err());
+        assert!(parse(&format!("{eight}0 obstacle clear\n{eight}")).is_ok());
+        let mut world = World::new();
+        world.init_resource::<crate::swarm::SwarmScene>();
+        world
+            .resource_mut::<crate::swarm::SwarmScene>()
+            .add_obstacle(Vec3::ZERO, 10.0);
+        apply_setting(&mut world, Setting::ObstacleClearance(12.0));
+        apply_setting(&mut world, Setting::ObstacleStrength(8.0));
+        let scene = world.resource::<crate::swarm::SwarmScene>();
+        assert_eq!(scene.obstacle_clearance, 12.0);
+        assert_eq!(scene.obstacles[0].clearance, 12.0);
+        assert_eq!(scene.obstacle_strength, 8.0);
+        world.clear_trackers();
+        apply_setting(&mut world, Setting::ObstacleClearance(12.0));
+        apply_setting(&mut world, Setting::ObstacleStrength(8.0));
+        assert!(!world
+            .get_resource_ref::<crate::swarm::SwarmScene>()
+            .unwrap()
+            .is_changed());
+    }
+
     #[test]
     fn group_commands_validate_and_keep_disabled_defaults() {
         let mut world = World::new();
