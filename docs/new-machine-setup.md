@@ -1,8 +1,8 @@
 # Set up a new native development machine
 
 Follow these steps in order. Keep logs outside the checkout. Preserve source, dependency files and
-`.cargo/config.toml`; report setup blockers instead of patching them. Legacy `index.html`, `web/`,
-`Trunk.toml`, `Dockerfile` and WASM are out of scope; install no Trunk/WASM tooling.
+`.cargo/config.toml`; report setup blockers instead of patching them. The project is native only; install no
+Trunk/WASM tooling.
 
 ## 1. Discover and report before installing anything
 

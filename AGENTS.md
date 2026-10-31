@@ -34,7 +34,7 @@ This machine is shared by several agents and worktrees.
 
 ## Scope boundaries
 
-- Native development only. `index.html`, `web/`, `Trunk.toml`, `Dockerfile` and the WASM target are legacy and out of scope unless a task says otherwise.
+- Native development only. The original WASM web build (Trunk, Docker, nginx) was removed; do not reintroduce a web target unless a task says so.
 - `review-report.html` and `review-tools-research.md` describe the original pre-modernization code (commit `e7a53d7`). Keep them as historical records; do not edit them. `review-progress.md` is the historical log up to the native modernization; record new work in `plans/`.
 - Change `Cargo.toml`/`Cargo.lock` only in tasks that are about dependencies.
 - Do not change simulation semantics (frame-rate dependence, octree query behavior, default settings) as a side effect; each has its own entry in `plans/STATUS.md`.
