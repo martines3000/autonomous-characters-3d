@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 48 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 64 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -140,6 +140,71 @@ Style changes preserve shape, multipliers, coloring mode and solid color. To rep
 look, select **Classic** style, **Dart**, render size/length/width **1**, **Heading**, and **Classic**
 palette. Appearance changes preserve count, positions, velocities, follow state and all physical settings.
 
+### Custom static vehicle models
+
+In **Vehicles**, choose a scanned model in **Shape / model**, or enter a local `.glb` / `.gltf`
+path and press **Load**. Relative paths start at the repository root; absolute model paths work too.
+**Rescan** refreshes the nonrecursive `assets/models/` list. Reading, parsing, scanning and mesh
+construction run on Bevy's I/O task pool while the flock continues. Status shows loading, loaded
+triangle/expanded vertex/primitive counts, or a recoverable error. A failed import keeps the previous
+shape/model; fix the file/path and press Load again. New requests supersede old ones. Choosing a
+built-in shape cancels a pending import. Rescan does not reload files automatically.
+
+Set the model's source **Forward** and perpendicular **Up** axes (±X, ±Y, ±Z). Forward maps to the
+flock's local +Y; up maps to local +Z. Changing forward automatically picks a perpendicular up if
+necessary. Defaults are +Z forward / +Y up, matching the example. Baked scene bounds are centered
+and uniformly scaled to **2.5 units along the selected forward axis**, then **Model scale** (0.1–5,
+default 1) applies. Axis/scale edits reload in the background. Existing Render size, Length and Width
+still multiply this mesh. Every step is render-only; physical size, separation and simulation state
+stay unchanged. A zero forward extent is an error; choose a valid axis and retry.
+
+Successful loads/reloads select **Model colors** by default. This mode uses each material's linear
+base color factor multiplied by optional linear `COLOR_0`. Other coloring modes remain available;
+choose one after loading completes. Built-in meshes have no vertex colors and use white in Model
+colors mode. Metallic/roughness, lighting, rim and emission remain global scene-style settings;
+imported metallic/roughness factors do not override them. Vertex/material alpha is ignored because
+this renderer is opaque; alpha blend/mask materials are rejected.
+
+Supported subset:
+
+- GLB embedded BIN buffers and local relative `.gltf` sidecar buffers, including `.bin`. Buffer URIs
+  with schemes (including `data:`, HTTP and `file:`), absolute paths, backslashes or percent encoding
+  are rejected. Use ordinary relative sidecar names. No network requests or image decoding occur.
+- Default scene, or exactly one scene if no default exists. Acyclic node trees with finite,
+  nonsingular affine TRS/matrix transforms; transforms and inverse-transpose normals are baked.
+  Reflected transforms reverse winding. Cameras/lights are not imported.
+- One or more TRIANGLES primitives merged into **one mesh and one instanced draw**, with no
+  per-vehicle entities. Float32 VEC3 POSITION; optional float32 VEC3 NORMAL. Missing normals become
+  flat face normals. Optional RGB/RGBA COLOR_0 supports float32 or normalized u8/u16. Indices support
+  u8/u16/u32 or no indices. UV0 and TANGENT are ignored. Triangles expand to separate vertices.
+- Opaque single-sided base colors; no textures (base color, normal, metallic/roughness, occlusion,
+  emission or extension maps), nonzero material emission, double-sided materials, skins, animations,
+  morph targets/weights, UV1+, extra color sets, joint/weight attributes or sparse accessors.
+  All required and optional extensions are rejected, including Draco and meshopt. Stage 6 will
+  decide texture, material draw and animation support.
+- Maximum **100,000 triangles / 300,000 expanded vertices** per selected scene, at most 300,000
+  elements per accessor, a conservative **64 MiB combined source/buffer budget** (embedded bytes
+  count again when resolved), 4,096 nodes and hierarchy depth 128. These are sanity limits;
+  small low-poly vehicles are practical for large flocks. Zero-area triangles are skipped. Empty models,
+  non-finite data, zero normals, invalid color ranges, bad references, malformed buffer ranges,
+  attribute count mismatches and out-of-range indices fail with a feature and JSON path.
+
+Unsupported errors read `Unsupported <feature> at <JSON path>; expected <supported subset>`.
+Examples: `Unsupported texture map at materials[0].pbrMetallicRoughness.baseColorTexture`,
+`Unsupported sparse accessor at accessors[0].sparse`, and
+`Out-of-range index at meshes[0].primitives[0].indices`. Status also explains that the previous
+selection was kept and how to retry. Malformed input, missing resources, scene ambiguity and limits
+have distinct messages.
+
+`assets/models/glider.glb` is generated original work under the repository's terms. It has a pointed
+gold hull and blue swept wings, authored +Z forward / +Y up: two primitives, 72 expanded vertices,
+24 triangles, source bounds (-1.3, -0.2, -1) to (1.3, 0.2, 2). Regenerate it byte-for-byte with
+Python 3's standard library:
+
+```sh
+python3 scripts/make_example_models.py
+```
+
 ## How it works
 
 ```text
@@ -150,6 +215,7 @@ src/
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
 ├── instancing.rs    # one instanced draw and shared appearance uniform
 ├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
+├── vehicle_model.rs # bounded background static glTF import, axes and model choices
 ├── scene.rs         # styles, palettes, world grid, fog and framing
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
@@ -252,9 +318,12 @@ pgrep -a autonomous   # no process should remain after exit
 | `set style` | `studio`, `classic` |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
 | `set shape` | `dart`, `chevron` (alias `arrow`), `fish`, `bird` (alias `glider`) |
+| `set model` | Local model path, repository-relative or absolute; asynchronous, preserves selection on failure |
+| `set model_forward`, `set model_up` | `x`, `+x`, `-x`, `y`, `+y`, `-y`, `z`, `+z`, `-z`; up must be perpendicular to current forward |
+| `set model_scale` | Render-only model multiplier, 0.1–5; axes/scale changes reload the current/pending model |
 | `set visual_size` | Render-only multiplier, 0.1–5; default 1 |
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
-| `set color_mode` | `heading`, `altitude`, `speed`, `solid` |
+| `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `model_colors` (alias `model`) |
 | `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
 | `set auto_frame` | `on` / `off` (also `true` / `false`) |
 | `set gpu_max_neighbors` | Integer 0–512 |
@@ -280,6 +349,9 @@ settings at end, so keep settings, count, follow state, camera and window resolu
 a measurement. Keep the app focused: Bevy throttles unfocused updates to about 60 Hz even with
 `present immediate`. Warm up first, capture outside the window, check `uptime`, and repeat runs on
 an idle machine. Scripts do not seed or reset the simulation; GPU scatter and interactive frame deltas vary.
+Model loading is asynchronous: allow several frames after `set model` before screenshots or choosing a
+color mode. Put axis/scale commands before `set model` to avoid redundant reloads. Paths remain single
+whitespace-free tokens in scripts; the UI path field accepts spaces.
 The setting whitelist and ranges live together in `src/scenario.rs`; extend its typed settings for later stages.
 
 The instance stream stays 32 bytes: position plus packed speed/group in one Vec4, and rotation in

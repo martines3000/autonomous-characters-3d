@@ -13,6 +13,7 @@ pub enum VehicleShape {
     Chevron,
     Fish,
     Bird,
+    Custom,
 }
 
 impl VehicleShape {
@@ -23,11 +24,13 @@ impl VehicleShape {
             Self::Chevron => "Chevron",
             Self::Fish => "Fish",
             Self::Bird => "Bird",
+            Self::Custom => "Custom model",
         }
     }
     pub fn mesh(self) -> Mesh {
         let mut faces = Faces::default();
         match self {
+            Self::Custom => unreachable!("custom meshes come from VehicleModels"),
             Self::Dart => return Cone::new(0.7, 2.5).mesh().resolution(8).build(),
             Self::Chevron => faces.prism(
                 &[
@@ -85,15 +88,23 @@ pub enum ColorMode {
     Altitude,
     Speed,
     Solid,
+    ModelColors,
 }
 impl ColorMode {
-    pub const ALL: [Self; 4] = [Self::Heading, Self::Altitude, Self::Speed, Self::Solid];
+    pub const ALL: [Self; 5] = [
+        Self::Heading,
+        Self::Altitude,
+        Self::Speed,
+        Self::Solid,
+        Self::ModelColors,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Heading => "Heading",
             Self::Altitude => "Altitude",
             Self::Speed => "Speed",
             Self::Solid => "Solid",
+            Self::ModelColors => "Model colors",
         }
     }
 }
@@ -122,19 +133,13 @@ impl Default for VehicleAppearance {
 }
 
 pub fn ui(ui: &mut egui::Ui, appearance: &mut VehicleAppearance) {
-    ui.horizontal(|ui| {
-        ui.label("Shape");
-        for shape in VehicleShape::ALL {
-            ui.selectable_value(&mut appearance.shape, shape, shape.name());
-        }
-    });
     ui.add(egui::Slider::new(&mut appearance.visual_size, 0.1..=5.0).text("Render size"))
         .on_hover_text("Render-only multiplier. Does not change GlobalState::vehicle_size, neighbor radii, separation or steering.");
     ui.add(egui::Slider::new(&mut appearance.length, 0.25..=3.0).text("Length"))
         .on_hover_text("Render-only scale along local +Y (forward).");
     ui.add(egui::Slider::new(&mut appearance.width, 0.25..=3.0).text("Width"))
         .on_hover_text("Render-only scale on both axes perpendicular to forward (local X and Z).");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Color");
         for mode in ColorMode::ALL {
             ui.selectable_value(&mut appearance.color_mode, mode, mode.name()).on_hover_text(match mode {
@@ -142,6 +147,7 @@ pub fn ui(ui: &mut egui::Ui, appearance: &mut VehicleAppearance) {
                 ColorMode::Altitude => "Palette ramp from the bottom wall to the top wall, clamped outside the walls.",
                 ColorMode::Speed => "Palette ramp from zero speed to the simulation's configured maximum speed.",
                 ColorMode::Solid => "One user-chosen sRGB color for every vehicle.",
+                ColorMode::ModelColors => "Imported linear base color factors × COLOR_0; built-in meshes fall back to white.",
             });
         }
     });
@@ -168,9 +174,17 @@ impl VehicleMeshes {
 pub(crate) fn update_shape(
     appearance: Res<Appearance>,
     meshes: Res<VehicleMeshes>,
+    models: Res<crate::vehicle_model::VehicleModels>,
     mut flocks: Query<&mut Mesh3d, With<VehicleInstances>>,
 ) {
-    let handle = meshes.get(appearance.vehicles.shape);
+    let handle = if appearance.vehicles.shape == VehicleShape::Custom {
+        let Some(handle) = models.current.as_ref() else {
+            return;
+        };
+        handle.clone()
+    } else {
+        meshes.get(appearance.vehicles.shape)
+    };
     for mut mesh in &mut flocks {
         if mesh.0 != handle {
             mesh.0 = handle.clone();

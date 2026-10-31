@@ -465,7 +465,7 @@ mod tests {
             bytes.into_inner()
         };
         let before = encode(&state);
-        for shape in VehicleShape::ALL {
+        for shape in VehicleShape::ALL.into_iter().chain([VehicleShape::Custom]) {
             for color_mode in ColorMode::ALL {
                 {
                     let mut appearance = app.world_mut().resource_mut::<Appearance>();

@@ -4,6 +4,8 @@
 
 - [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
 
+- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 implemented and verified, awaiting orchestrator review; Stage 6 remains planned.
+
 ## Prioritized future tasks
 
 No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting.

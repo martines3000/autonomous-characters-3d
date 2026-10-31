@@ -13,6 +13,7 @@ use crate::{
     scene::{Appearance, HeadingPalette, SceneStyle},
     target::{Target, TargetSelection},
     vehicle_appearance::{ColorMode, VehicleShape},
+    vehicle_model::{ModelAxis, ModelSettings, VehicleModels},
     GlobalState, SimulationMode,
 };
 
@@ -72,6 +73,10 @@ enum Setting {
     OctreeSize(usize),
     Number(NumberSetting, f32),
     Shape(VehicleShape),
+    Model(PathBuf),
+    ModelForward(ModelAxis),
+    ModelUp(ModelAxis),
+    ModelScale(f32),
     VisualSize(f32),
     Length(f32),
     Width(f32),
@@ -158,12 +163,17 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("shape", "chevron" | "arrow") => Setting::Shape(VehicleShape::Chevron),
         ("shape", "fish") => Setting::Shape(VehicleShape::Fish),
         ("shape", "bird" | "glider") => Setting::Shape(VehicleShape::Bird),
+        ("model", _) => Setting::Model(PathBuf::from(value)),
+        ("model_forward", _) => Setting::ModelForward(ModelAxis::parse(value)?),
+        ("model_up", _) => Setting::ModelUp(ModelAxis::parse(value)?),
+        ("model_scale", _) => Setting::ModelScale(number(value, 0.1, 5.0)?),
         ("visual_size", _) => Setting::VisualSize(number(value, 0.1, 5.0)?),
         ("length", _) => Setting::Length(number(value, 0.25, 3.0)?),
         ("width", _) => Setting::Width(number(value, 0.25, 3.0)?),
         ("color_mode", "heading") => Setting::ColorMode(ColorMode::Heading),
         ("color_mode", "altitude") => Setting::ColorMode(ColorMode::Altitude),
         ("color_mode", "speed") => Setting::ColorMode(ColorMode::Speed),
+        ("color_mode", "model" | "model_colors") => Setting::ColorMode(ColorMode::ModelColors),
         ("color_mode", "solid") => Setting::ColorMode(ColorMode::Solid),
         ("solid_color", _) => Setting::SolidColor(hex_color(value)?),
         ("auto_frame", _) => Setting::AutoFrame(switch(value)?),
@@ -212,6 +222,7 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
     let mut last = 0.0;
     let mut measuring = false;
     let mut mode = GlobalState::default().mode;
+    let mut model_settings = ModelSettings::default();
     for (index, line) in script.lines().enumerate() {
         let line = script_line(line);
         if line.is_empty() {
@@ -240,6 +251,18 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     let value = setting(name, value, mode)?;
                     if let Setting::Mode(next) = value {
                         mode = next;
+                    }
+                    match &value {
+                        Setting::ModelForward(axis) => model_settings.set_forward(*axis),
+                        Setting::ModelUp(axis) => {
+                            if !model_settings.forward.perpendicular(*axis) {
+                                return Err(
+                                    "model_up must be perpendicular to model_forward".into()
+                                );
+                            }
+                            model_settings.up = *axis;
+                        }
+                        _ => (),
                     }
                     Command::Set(value)
                 }
@@ -398,7 +421,26 @@ fn apply_setting(world: &mut World, setting: Setting) {
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
-        Setting::Shape(value) => world.resource_mut::<Appearance>().vehicles.shape = value,
+        Setting::Shape(value) => {
+            world.resource_mut::<VehicleModels>().cancel();
+            world.resource_mut::<Appearance>().vehicles.shape = value;
+        }
+        Setting::Model(path) => world.resource_mut::<VehicleModels>().request(path),
+        Setting::ModelForward(axis) => {
+            let mut models = world.resource_mut::<VehicleModels>();
+            models.settings.set_forward(axis);
+            models.reload();
+        }
+        Setting::ModelUp(axis) => {
+            let mut models = world.resource_mut::<VehicleModels>();
+            models.settings.up = axis;
+            models.reload();
+        }
+        Setting::ModelScale(scale) => {
+            let mut models = world.resource_mut::<VehicleModels>();
+            models.settings.scale = scale;
+            models.reload();
+        }
         Setting::VisualSize(value) => {
             world.resource_mut::<Appearance>().vehicles.visual_size = value
         }
@@ -570,5 +612,40 @@ mod tests {
             world.get::<Transform>(target).unwrap().translation,
             Vec3::new(1.0, 2.0, 3.0)
         );
+    }
+
+    #[test]
+    fn model_commands_validate_axes_scale_and_color_mode_before_startup() {
+        let commands = parse("0 set model_forward -x\n0 set model_up +z\n0 set model_scale 2\n0 set model assets/models/glider.glb\n1 set color_mode model_colors").unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::Set(Setting::ModelForward(ModelAxis::NegX))
+        );
+        assert_eq!(
+            commands[1].command,
+            Command::Set(Setting::ModelUp(ModelAxis::Z))
+        );
+        assert_eq!(
+            commands[3].command,
+            Command::Set(Setting::Model("assets/models/glider.glb".into()))
+        );
+        assert_eq!(
+            commands[4].command,
+            Command::Set(Setting::ColorMode(ColorMode::ModelColors))
+        );
+        for bad in [
+            "model_forward north",
+            "model_up z",
+            "model_scale NaN",
+            "model_scale 0",
+            "model_scale 6",
+        ] {
+            assert!(parse(&format!("0 set {bad}"))
+                .unwrap_err()
+                .starts_with("line 1:"));
+        }
+        assert!(parse("0 set model_forward y\n0 set model_up -y")
+            .unwrap_err()
+            .contains("line 2: model_up must be perpendicular"));
     }
 }

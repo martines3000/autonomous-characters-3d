@@ -1796,6 +1796,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Appearance>()
+            .init_resource::<crate::vehicle_model::VehicleModels>()
             .add_systems(Startup, spawn_flock)
             .add_systems(
                 Update,
@@ -1825,7 +1826,17 @@ mod tests {
         };
         let before = snapshot(app.world_mut());
         let state = app.world().resource::<GlobalState>().clone();
-        for shape in VehicleShape::ALL.into_iter().chain([VehicleShape::Dart]) {
+        let model = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(VehicleShape::Bird.mesh());
+        app.world_mut()
+            .resource_mut::<crate::vehicle_model::VehicleModels>()
+            .current = Some(model.clone());
+        for shape in VehicleShape::ALL
+            .into_iter()
+            .chain([VehicleShape::Custom, VehicleShape::Dart])
+        {
             app.world_mut().resource_mut::<Appearance>().vehicles.shape = shape;
             app.update();
             assert_eq!(snapshot(app.world_mut()), before);
@@ -1833,14 +1844,18 @@ mod tests {
             assert!(app.world().get::<TargetSelection>(target).unwrap().0);
             assert_eq!(
                 app.world().get::<Mesh3d>(flock).unwrap().0,
-                app.world().resource::<VehicleMeshes>().get(shape)
+                if shape == VehicleShape::Custom {
+                    model.clone()
+                } else {
+                    app.world().resource::<VehicleMeshes>().get(shape)
+                }
             );
             assert_eq!(
                 app.world().get::<VehicleInstances>(flock).unwrap().0.len(),
                 state.vehicle_count
             );
         }
-        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 4);
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 5);
     }
 
     #[test]

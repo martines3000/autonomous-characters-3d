@@ -18,6 +18,8 @@ struct Appearance {
 struct Vertex {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @if(VERTEX_COLORS)
+    @location(5) color: vec4<f32>,
     // xyz: world position, w: packed normalized speed/reserved group.
     @location(8) i_position_speed_group: vec4<f32>,
     // Rotation quaternion (x, y, z, w).
@@ -82,6 +84,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
             out.color = palette_ramp(speed);
         }
         case 3u: { out.color = appearance.solid_color.rgb; }
+        case 4u: {
+            out.color = vec3<f32>(1.0);
+            @if(VERTEX_COLORS) { out.color = vertex.color.rgb; }
+        }
         default: { out.color = heading_color(rotate(q, vec3<f32>(0.0, 1.0, 0.0))); }
     }
     return out;

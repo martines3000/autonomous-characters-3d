@@ -6,6 +6,7 @@ mod scene;
 mod target;
 mod vehicle;
 mod vehicle_appearance;
+mod vehicle_model;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
@@ -64,6 +65,7 @@ fn main() {
             vehicle::VehiclePlugin,
             target::TargetPlugin,
             scene::ScenePlugin,
+            vehicle_model::VehicleModelPlugin,
             scenario::ScenarioPlugin,
         ))
         .add_systems(
@@ -209,6 +211,7 @@ fn ui(
     mut state: ResMut<GlobalState>,
     targets: Query<&target::TargetSelection, With<target::Target>>,
     mut appearance: ResMut<scene::Appearance>,
+    mut models: ResMut<vehicle_model::VehicleModels>,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
@@ -343,6 +346,7 @@ fn ui(
                 }
             });
             egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
+                vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
                 vehicle_appearance::ui(ui, &mut appearance.vehicles);
             });
         });
