@@ -473,6 +473,7 @@ pub(crate) fn frame_world(
     mut appearance: ResMut<Appearance>,
     time: Res<Time<Real>>,
     mut debounce: Local<CountFrame>,
+    mut presentation: Option<ResMut<crate::presentation::Presentation>>,
     mut cameras: Query<(&mut Transform, &mut PanOrbitCamera, &Projection), With<Camera3d>>,
 ) {
     if debounce.count != Some(state.vehicle_count) {
@@ -491,6 +492,9 @@ pub(crate) fn frame_world(
         return;
     }
     appearance.frame_requested = false;
+    if let Some(presentation) = &mut presentation {
+        presentation.cancel_camera_transition();
+    }
     for (mut transform, mut orbit, projection) in &mut cameras {
         let Projection::Perspective(projection) = projection else {
             continue;

@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 67 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 76 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -69,7 +69,10 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Right-drag / middle-drag / scroll | Orbit / pan / zoom the camera |
 | Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
-| W A S D, Space, left Shift | Move the selected target (relative to the camera) |
+| W A S D, Space, left Shift | Move the selected target (relative to the camera, real time) |
+| P | Pause / resume vehicle simulation |
+| O | Toggle real-time auto-orbit |
+| 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
 
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
@@ -82,7 +85,7 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- The Menu groups controls under **Simulation**, **Steering**, **Scene**, and **Vehicles**.
+- The Menu groups controls under **Presentation**, **Simulation**, **Steering**, **Scene**, and **Vehicles**.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
@@ -108,6 +111,51 @@ menu when it has focus.
   grid scale with the world.
 - Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
   `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
+
+### Presentation
+
+The compact **Presentation** section offers Pause/Resume, a **0.1×–4×** simulation-speed slider,
+quick **0.25× / 0.5× / 1× / 2×** buttons, auto-orbit and camera presets. The Controls panel shows
+**PAUSED** clearly. Shortcuts defer to egui keyboard focus, including model-path text entry.
+Defaults remain unpaused, 1×, and orbit off (orbit speed 10° per real second).
+
+Vehicle steering and integration use a dedicated Bevy `Time<Virtual>`, advanced from real time.
+Pause skips CPU steering/integration and GPU grid builds, sorting, steering and random-frame
+advancement; rendering uses the last instance buffer. Existing positions, velocities, headings and
+wander state stay bit-identical until simulation resumes. No catch-up time accumulates while paused.
+Camera input, UI, framing debounce, preset animation, auto-orbit and target keyboard movement use
+real time. The selected target still moves at **120 world units per real second** while paused or
+slowed; following vehicles respond only when simulation advances.
+
+Speed scales simulated seconds, including acceleration and sqrt(dt) wander diffusion, rather than
+multiplying velocity. At 1× and below each frame is one step, exactly as before. Above 1× a frame
+splits into ceil(speed) equal steps (four at 4×), rebuilding neighbors each time on both CPU and GPU,
+so no step is longer than a 1× step at the same frame rate. Step count depends only on speed, never
+on frame rate, so slow frames don't add GPU work. Bevy's existing **250 ms simulated frame cap**
+remains: long stalls discard excess time, with no accumulated backlog. Equal simulated durations
+give numerically equivalent deterministic motion; variable-step integration has normal
+rounding/discretization error, and random wander is statistically equivalent, not the same
+trajectory across different step sequences. High-speed substeps cost extra neighbor
+search/compute work.
+
+Pause and speed persist through all mode/count/appearance changes. CPU/GPU transitions respawn;
+Naive/Octree transitions keep the current flock. Counts retain their existing behavior: increasing
+adds vehicles, decreasing removes/truncates, zero clears. While paused, new vehicles stay at their
+spawn state. GPU growth runs only spawn maintenance and copies retained boid/instance buffers;
+it never steps or re-sorts existing vehicles. Shapes, models and appearance remain live and preserve
+simulation state, including asynchronous model loading.
+
+Auto-orbit rotates yaw about the current camera focus at **−45°/s to 45°/s**, using real time even
+while paused. Right/middle drag or scrolling suspends it while input is held; it resumes afterwards.
+Presets animate for **0.6 real seconds** and suspend orbit until finished. A requested preset waits
+for a held camera gesture to end; a new gesture cancels an active transition. Frame world (including
+auto-frame) cancels a pending/active preset and takes priority. Held drags continue normally.
+
+**Front**, **Side**, **Top** (89.9° to avoid a pole singularity) and **Overview** fit the wall corners
+with the existing aspect/FOV math, centered at the origin. **Target close-up** centers on the target's
+position when requested, at 30% of the overview fit distance; it intentionally crops the world and
+does not continuously track the target. Every preset scales with count, including the close-up.
+Manual pan/zoom remains available afterwards.
 
 ### Vehicle appearance
 
@@ -221,6 +269,7 @@ src/
 ├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
 ├── vehicle_model.rs # bounded background static glTF import, axes and model choices
 ├── scene.rs         # styles, palettes, world grid, fog and framing
+├── presentation.rs  # simulation clock, pause/speed, real-time orbit and camera presets
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
@@ -385,6 +434,11 @@ pgrep -a autonomous   # no process should remain after exit
 | `set vehicle_max_speed`, `set vehicle_wander_speed` | 0.1–100 |
 | `set vehicle_{separation,alignment,cohesion,wander,wall_avoid,seek}_factor` | 0.1–10; expand braces to a single field name |
 | `set vehicle_{separation,alignment,cohesion,wander}_distance`, `set vehicle_wander_radius` | 1–100 |
+| `pause`, `resume` | Freeze / resume vehicles; target and camera remain live |
+| `set speed` | Simulation multiplier 0.1–4; default 1; persists while paused |
+| `set orbit` | `on` / `off`; default off; uses real time |
+| `set orbit_speed` | Degrees per real second, −45–45; default 10 |
+| `preset` | `front`, `side`, `top`, `overview`, `closeup`; smooth transition, waits for manual input release |
 | `follow` | `on` / `off`; uses the existing target selection |
 | `target` | `x y z`, finite world coordinates, each within ±10,000,000 |
 | `camera` | `yaw_deg pitch_deg distance`; yaw ±360°, pitch ±89.9°, distance 1–10,000,000; looks at origin, positive pitch above it |
@@ -393,6 +447,13 @@ pgrep -a autonomous   # no process should remain after exit
 | `screenshot` | Output image path; Bevy Screenshot API, includes UI |
 | `measure begin`, `measure end` | Begin takes a label; end logs one `AC3D_MEASURE` line |
 | `exit` | Exit normally; end any measurement first |
+
+With a script, optional `AC3D_GPU_TIMING=1` enables Bevy render diagnostics. `measure begin` clears
+flock-span histories; `measure end` adds `AC3D_COMPUTE` lines grouped by simulation steps per frame,
+with mean/p95 milliseconds over the retained diagnostic history (up to 120 samples per path).
+`elapsed_gpu` uses GPU timestamps on supported Vulkan/DX12 devices; `elapsed_cpu` measures encoding.
+These spans include all substeps and their ordered uniform copies. Diagnostic readback adds overhead;
+keep it off for ordinary frame-rate measurements. No GPU test/benchmark is needed.
 
 `AC3D_MEASURE` reports frames, arithmetic mean/p50/p95 frame milliseconds, FPS (`1000 / mean`),
 physical window resolution, count, mode, style, palette, shape, color mode and render multipliers. Samples use `Time<Real>` and include

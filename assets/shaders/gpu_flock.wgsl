@@ -158,6 +158,8 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let radius = sqrt(max(1.0 - z * z, 0.0));
     let direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
     boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0));
+    // Spawn-only maintenance must be drawable while the simulation stays paused.
+    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu)), boids[index].rotation);
 }
 
 @compute @workgroup_size(256)

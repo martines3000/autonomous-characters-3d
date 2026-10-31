@@ -155,7 +155,7 @@ pub(crate) fn input_controls(
     mut target_query: Query<(&mut Transform, &TargetSelection), With<Target>>,
     camera_query: Query<&Transform, (With<Camera3d>, Without<Target>)>,
     mut contexts: EguiContexts,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
 ) {
     if contexts
         .ctx_mut()
@@ -243,7 +243,7 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<EguiUserTextures>()
                 .init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<Time>()
+                .init_resource::<Time<Real>>()
                 .init_resource::<GlobalState>()
                 .add_systems(Update, (input_controls, update_target_scale));
             let target = app
@@ -260,12 +260,12 @@ mod tests {
                 app.world_mut().resource_mut::<GlobalState>().vehicle_count =
                     if step % 2 == 0 { 1_000_000 } else { 200 };
                 app.world_mut()
-                    .resource_mut::<Time>()
+                    .resource_mut::<Time<Real>>()
                     .advance_to(Duration::from_nanos(step * 1_000_000_000 / steps));
                 app.update();
             }
             assert_eq!(
-                app.world().resource::<Time>().elapsed(),
+                app.world().resource::<Time<Real>>().elapsed(),
                 Duration::from_secs(1)
             );
             let position = app.world().get::<Transform>(target).unwrap().translation;
@@ -277,11 +277,45 @@ mod tests {
     }
 
     #[test]
+    fn target_keyboard_uses_real_time_when_paused_or_slowed() {
+        for (paused, speed) in [(true, 1.0), (false, 0.25), (false, 2.0)] {
+            let mut app = crate::presentation::tests::clock_app();
+            app.init_resource::<EguiUserTextures>()
+                .init_resource::<ButtonInput<KeyCode>>()
+                .add_systems(Update, input_controls);
+            {
+                let mut p = app
+                    .world_mut()
+                    .resource_mut::<crate::presentation::Presentation>();
+                p.paused = paused;
+                p.speed = speed;
+            }
+            let target = app
+                .world_mut()
+                .spawn((Target, TargetSelection(true), Transform::default()))
+                .id();
+            app.world_mut()
+                .spawn((Camera3d::default(), Transform::default()));
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyW);
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+            assert_eq!(
+                app.world().get::<Transform>(target).unwrap().translation,
+                Vec3::NEG_Z * 12.0
+            );
+        }
+    }
+
+    #[test]
     fn target_selection_controls_movement_and_color() {
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<Time>()
+            .init_resource::<Time<Real>>()
             .init_resource::<Assets<StandardMaterial>>()
             .add_systems(Update, (input_controls, update_target_color))
             .add_observer(select_target);
@@ -333,7 +367,7 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyW);
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs_f32(1.0 / 60.0));
         app.update();
         assert_eq!(

@@ -28,6 +28,26 @@ use rand::RngExt;
 
 pub struct VehiclePlugin;
 
+#[derive(bevy::ecs::schedule::ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+struct CpuStep;
+
+// Match Bevy's fixed-schedule convention: kernels read the current simulation step through Time.
+// Restore the outer clock before any other Update system runs.
+pub(crate) fn step_cpu(world: &mut World) {
+    if world.resource::<GlobalState>().mode == SimulationMode::Gpu {
+        return;
+    }
+    let frame = *world.resource::<crate::presentation::SimulationFrame>();
+    let original = *world.resource::<Time>();
+    for _ in 0..frame.steps {
+        let mut time = Time::default();
+        time.advance_by(frame.step);
+        *world.resource_mut::<Time>() = time;
+        world.run_schedule(CpuStep);
+    }
+    *world.resource_mut::<Time>() = original;
+}
+
 #[derive(Component)]
 pub struct Vehicle;
 
@@ -52,16 +72,11 @@ impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VehicleSpawner>()
             .add_systems(Startup, spawn_flock)
+            .add_systems(CpuStep, (movement, update).chain())
             .add_systems(PostUpdate, crate::vehicle_appearance::update_shape)
             .add_systems(
                 Update,
-                (
-                    vehicle_spawner,
-                    vehicle_cleanup,
-                    movement,
-                    update,
-                    sync_instances,
-                )
+                (vehicle_spawner, vehicle_cleanup, step_cpu, sync_instances)
                     .chain()
                     .after(crate::target::input_controls),
             );
@@ -634,6 +649,134 @@ mod tests {
                     "count={count} mode={mode} median_ms={median:.3} p95_ms={p95:.3} steps={steps}"
                 );
             }
+        }
+    }
+
+    fn presentation_app(mode: SimulationMode) -> (App, Entity) {
+        let mut app = crate::presentation::tests::clock_app();
+        app.insert_resource(GlobalState {
+            mode,
+            vehicle_count: 1,
+            ..default()
+        })
+        .add_systems(CpuStep, (movement, update).chain())
+        .add_systems(
+            Update,
+            step_cpu.after(crate::presentation::prepare_simulation),
+        );
+        app.world_mut().spawn((
+            Target,
+            TargetSelection(true),
+            Transform::from_xyz(10_000.0, 0.0, 0.0),
+        ));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Vehicle,
+                VehicleVelocity::default(),
+                VehicleAcceleration::default(),
+                VehicleWanderRotation::default(),
+                Transform::default(),
+            ))
+            .id();
+        (app, entity)
+    }
+
+    #[test]
+    fn presentation_speed_matches_simulated_duration_at_different_frame_rates() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let mut reference: Option<(Vec3, Vector3<f32>)> = None;
+            for (fps, speed) in [
+                (60, 1.0),
+                (30, 0.5),
+                (120, 2.0),
+                (240, 4.0),
+                (30, 4.0),
+                (144, 0.25),
+            ] {
+                let (mut app, entity) = presentation_app(mode);
+                app.world_mut()
+                    .resource_mut::<crate::presentation::Presentation>()
+                    .speed = speed;
+                let frames = (fps as f32 / speed).ceil() as u64;
+                for frame in 1..=frames {
+                    app.world_mut().resource_mut::<Time<Real>>().advance_to(
+                        Duration::from_secs_f64(
+                            (frame as f64 / fps as f64).min(1.0 / speed as f64),
+                        ),
+                    );
+                    app.update();
+                }
+                let position = app.world().get::<Transform>(entity).unwrap().translation;
+                let velocity = app.world().get::<VehicleVelocity>(entity).unwrap().0;
+                if let Some((p, v)) = reference {
+                    assert!(
+                        position.distance(p) < 1.5,
+                        "{mode:?} {fps} FPS {speed}×: {position:?} vs {p:?}"
+                    );
+                    assert!(
+                        (velocity - v).magnitude() < 1.0,
+                        "{mode:?} {fps} FPS {speed}×: {velocity:?} vs {v:?}"
+                    );
+                } else {
+                    reference = Some((position, velocity));
+                }
+                assert!(position.is_finite());
+                assert!(velocity.magnitude() <= 80.0);
+            }
+        }
+    }
+
+    #[test]
+    fn pause_preserves_all_cpu_state_bits_and_resume_uses_no_catch_up() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let (mut app, entity) = presentation_app(mode);
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(16));
+            app.update();
+            let snapshot = |app: &App| {
+                let t = app.world().get::<Transform>(entity).unwrap();
+                let v = &app.world().get::<VehicleVelocity>(entity).unwrap().0;
+                let a = &app.world().get::<VehicleAcceleration>(entity).unwrap().0;
+                let w = app.world().get::<VehicleWanderRotation>(entity).unwrap();
+                t.translation
+                    .to_array()
+                    .into_iter()
+                    .chain(t.rotation.to_array())
+                    .chain(v.iter().copied())
+                    .chain(a.iter().copied())
+                    .chain([w.theta, w.phi])
+                    .map(f32::to_bits)
+                    .collect::<Vec<_>>()
+            };
+            let before = snapshot(&app);
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = true;
+            for _ in 0..100 {
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(100));
+                app.update();
+                assert_eq!(snapshot(&app), before);
+            }
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = false;
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(16));
+            app.update();
+            assert_ne!(snapshot(&app), before);
+            assert_eq!(
+                app.world()
+                    .resource::<crate::presentation::SimulationFrame>()
+                    .steps,
+                1
+            );
+            // The nested schedule must leave the outer clock untouched.
+            assert_eq!(app.world().resource::<Time>().delta(), Duration::ZERO);
         }
     }
 
@@ -1485,7 +1628,8 @@ mod tests {
                 &mut flock,
                 &device,
                 &queue,
-                &gpu_params(&state, Vec3::ZERO, true, 0.0),
+                // dt = 0 means paused (no steering); a negligible step still steers.
+                &gpu_params(&state, Vec3::ZERO, true, 1e-9),
             );
             let actual = Quat::from_vec4(flock.read_boids(&device, &queue)[0][2]);
             let expected = Quat::from_rotation_arc(Vec3::Y, direction);
@@ -1676,6 +1820,69 @@ mod tests {
     }
 
     #[test]
+    fn paused_count_and_mode_changes_preserve_pause_and_retained_vehicles() {
+        let mut app = crate::presentation::tests::clock_app();
+        app.insert_resource(cpu_state())
+            .init_resource::<VehicleSpawner>()
+            .add_systems(CpuStep, (movement, update).chain())
+            .add_systems(
+                Update,
+                (vehicle_spawner, vehicle_cleanup, step_cpu)
+                    .chain()
+                    .after(crate::presentation::prepare_simulation),
+            );
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        app.world_mut()
+            .spawn((Target, TargetSelection(false), Transform::default()));
+        let mut retained = std::collections::HashMap::new();
+        for (mode, count) in [
+            (SimulationMode::Naive, 23),
+            (SimulationMode::Octree, 23),
+            (SimulationMode::Octree, 30),
+            (SimulationMode::Naive, 7),
+            (SimulationMode::Gpu, 7),
+            (SimulationMode::Octree, 12),
+        ] {
+            {
+                let mut state = app.world_mut().resource_mut::<GlobalState>();
+                state.mode = mode;
+                state.vehicle_count = count;
+            }
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+            let current: std::collections::HashMap<_, _> = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform, &VehicleVelocity), With<Vehicle>>()
+                .iter(app.world())
+                .map(|(e, t, v)| (e, (*t, v.0)))
+                .collect();
+            for (entity, value) in &current {
+                if let Some(before) = retained.get(entity) {
+                    assert_eq!(value, before);
+                }
+            }
+            assert_eq!(
+                current.len(),
+                if mode == SimulationMode::Gpu {
+                    0
+                } else {
+                    count
+                }
+            );
+            assert!(
+                app.world()
+                    .resource::<crate::presentation::Presentation>()
+                    .paused
+            );
+            retained = current;
+        }
+    }
+
+    #[test]
     fn diagonal_velocity_is_limited_by_magnitude() {
         let mut velocity = Vector3::repeat(80.0);
         limit(&mut velocity, 80.0);
@@ -1798,6 +2005,7 @@ mod tests {
             .init_resource::<Appearance>()
             .init_resource::<crate::vehicle_model::VehicleModels>()
             .add_systems(Startup, spawn_flock)
+            .add_systems(CpuStep, (movement, update).chain())
             .add_systems(
                 Update,
                 (vehicle_spawner, vehicle_cleanup, sync_instances).chain(),

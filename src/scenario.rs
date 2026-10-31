@@ -10,6 +10,7 @@ use bevy::{
 };
 
 use crate::{
+    presentation::{CameraPreset, Presentation, MAX_SPEED, MIN_SPEED},
     scene::{Appearance, HeadingPalette, SceneStyle},
     target::{Target, TargetSelection},
     vehicle_appearance::{ColorMode, VehicleShape},
@@ -29,6 +30,10 @@ impl Plugin for ScenarioPlugin {
         let commands = parse(&script).unwrap_or_else(|error| {
             panic!("AC3D_SCRIPT {}: {error}", PathBuf::from(&path).display())
         });
+        // Opt-in GPU timestamp spans for measuring substep cost in the real application.
+        if std::env::var_os("AC3D_GPU_TIMING").is_some() {
+            app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+        }
         app.insert_resource(Scenario {
             commands: commands.into(),
             measurement: None,
@@ -52,6 +57,8 @@ struct TimedCommand {
 enum Command {
     Set(Setting),
     Follow(bool),
+    Pause(bool),
+    Preset(CameraPreset),
     Target(Vec3),
     Camera { yaw: f32, pitch: f32, distance: f32 },
     Frame,
@@ -65,6 +72,9 @@ enum Command {
 #[derive(Debug, PartialEq)]
 enum Setting {
     Count(usize),
+    Speed(f32),
+    Orbit(bool),
+    OrbitSpeed(f32),
     Mode(SimulationMode),
     Style(SceneStyle),
     Palette(HeadingPalette),
@@ -151,6 +161,9 @@ fn switch(value: &str) -> Result<bool, String> {
 
 fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, String> {
     Ok(match (name, value) {
+        ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
+        ("orbit", _) => Setting::Orbit(switch(value)?),
+        ("orbit_speed", _) => Setting::OrbitSpeed(number(value, -45.0, 45.0)?),
         ("count" | "vehicle_count", _) => Setting::Count(integer(value, 0, mode.max_vehicles())?),
         ("mode", "gpu") => Setting::Mode(SimulationMode::Gpu),
         ("mode", "octree") => Setting::Mode(SimulationMode::Octree),
@@ -271,6 +284,9 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     }
                     Command::Set(value)
                 }
+                ["pause"] => Command::Pause(true),
+                ["resume"] => Command::Pause(false),
+                ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
                 ["follow", value @ ("on" | "off")] => Command::Follow(switch(value)?),
                 ["target", x, y, z] => Command::Target(Vec3::new(
                     number(x, -1e7, 1e7)?,
@@ -342,6 +358,10 @@ fn run_scenario(world: &mut World) {
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
+                Command::Pause(paused) => world.resource_mut::<Presentation>().paused = paused,
+                Command::Preset(preset) => {
+                    world.resource_mut::<Presentation>().preset = Some(preset)
+                }
                 Command::Follow(follow) => {
                     for mut selection in world
                         .query_filtered::<&mut TargetSelection, With<Target>>()
@@ -363,6 +383,9 @@ fn run_scenario(world: &mut World) {
                     pitch,
                     distance,
                 } => {
+                    world
+                        .resource_mut::<Presentation>()
+                        .cancel_camera_transition();
                     for (mut transform, mut orbit) in world
                         .query_filtered::<(&mut Transform, &mut PanOrbitCamera), With<Camera3d>>()
                         .iter_mut(world)
@@ -404,6 +427,14 @@ fn run_scenario(world: &mut World) {
                         .observe(save_to_disk(path));
                 }
                 Command::MeasureBegin(label) => {
+                    for diagnostic in world
+                        .resource_mut::<bevy::diagnostic::DiagnosticsStore>()
+                        .iter_mut()
+                    {
+                        if diagnostic.path().as_str().contains("flock_") {
+                            diagnostic.clear_history();
+                        }
+                    }
                     scenario.measurement = Some(Measurement {
                         label,
                         samples: Vec::new(),
@@ -423,6 +454,9 @@ fn run_scenario(world: &mut World) {
 
 fn apply_setting(world: &mut World, setting: Setting) {
     match setting {
+        Setting::Speed(value) => world.resource_mut::<Presentation>().speed = value,
+        Setting::Orbit(value) => world.resource_mut::<Presentation>().orbit = value,
+        Setting::OrbitSpeed(value) => world.resource_mut::<Presentation>().orbit_speed = value,
         Setting::FlockDraw(value) => world.resource_mut::<crate::instancing::FlockDraw>().0 = value,
         Setting::Msaa(value) => {
             for mut msaa in world
@@ -482,6 +516,23 @@ fn apply_setting(world: &mut World, setting: Setting) {
 }
 
 fn report(world: &mut World, mut measurement: Measurement) {
+    for diagnostic in world
+        .resource::<bevy::diagnostic::DiagnosticsStore>()
+        .iter()
+    {
+        if diagnostic.path().as_str().contains("flock_") && diagnostic.history_len() > 0 {
+            let mut values: Vec<_> = diagnostic.values().copied().collect();
+            values.sort_by(f64::total_cmp);
+            info!(
+                "AC3D_COMPUTE label={} path={} samples={} mean_ms={:.4} p95_ms={:.4}",
+                measurement.label,
+                diagnostic.path().as_str(),
+                values.len(),
+                diagnostic.average().unwrap_or(0.0),
+                values[(values.len() * 95).div_ceil(100) - 1]
+            );
+        }
+    }
     let window = world
         .query_filtered::<&Window, With<PrimaryWindow>>()
         .single(world)
@@ -519,6 +570,28 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn presentation_commands_validate_and_keep_equal_time_order() {
+        let commands = parse("0 pause\n0 set speed 0.25\n0 set orbit on\n0 set orbit_speed -15\n0 preset closeup\n1 resume\n2 exit").unwrap();
+        assert_eq!(commands[0].command, Command::Pause(true));
+        assert_eq!(commands[4].command, Command::Preset(CameraPreset::CloseUp));
+        assert_eq!(commands[5].command, Command::Pause(false));
+        for bad in [
+            "0 set speed 0",
+            "0 set speed 4.1",
+            "0 set speed NaN",
+            "0 set orbit maybe",
+            "0 set orbit_speed 46",
+            "0 preset unknown",
+            "0 pause on",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        for name in ["front", "side", "top", "overview", "closeup"] {
+            assert!(parse(&format!("0 preset {name}")).is_ok());
+        }
+    }
+
     #[test]
     fn measurement_controls_validate_and_preserve_default_render_and_simulation() {
         assert!(crate::instancing::FlockDraw::default().0);

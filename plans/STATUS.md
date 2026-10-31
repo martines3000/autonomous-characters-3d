@@ -2,6 +2,8 @@
 
 ## Current work
 
+- [Presentation controls](planned/2026-10-31-presentation-controls.md): Stage 5 done: simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
+
 - [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
 
 - [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 committed (`7e66fd3`); Stage 6 remains planned.

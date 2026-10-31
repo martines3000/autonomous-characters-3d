@@ -9,6 +9,7 @@ use bevy::{
     core_pipeline::schedule::camera_driver,
     prelude::*,
     render::{
+        diagnostic::RecordDiagnostics,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_resource::{
             binding_types::{storage_buffer_sized, uniform_buffer},
@@ -69,6 +70,12 @@ pub(crate) struct GpuParams {
     pub target_position: Vec3,
 }
 
+impl GpuParams {
+    fn simulates(&self) -> bool {
+        self.dt > 0.0
+    }
+}
+
 pub struct GpuFlockPlugin;
 
 impl Plugin for GpuFlockPlugin {
@@ -93,10 +100,10 @@ impl Plugin for GpuFlockPlugin {
     }
 }
 
-fn update_gpu_params(
+pub(crate) fn update_gpu_params(
     state: Res<GlobalState>,
     targets: Query<(&Transform, &TargetSelection), With<Target>>,
-    time: Res<Time>,
+    frame: Res<crate::presentation::SimulationFrame>,
     mut params: ResMut<GpuParams>,
 ) {
     let (target, selection) = targets
@@ -104,7 +111,7 @@ fn update_gpu_params(
         .map_or((Vec3::ZERO, false), |(transform, selection)| {
             (transform.translation, selection.0)
         });
-    *params = gpu_params(&state, target, selection, time.delta_secs());
+    *params = gpu_params(&state, target, selection, frame.step.as_secs_f32());
 }
 
 pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f32) -> GpuParams {
@@ -155,11 +162,28 @@ fn run_gpu_flock(
     mut context: RenderContext,
     mut flock: ResMut<GpuFlock>,
     params: Res<GpuParams>,
+    frame: Res<crate::presentation::SimulationFrame>,
     queue: Res<RenderQueue>,
     mut draw: ResMut<FlockInstances>,
 ) {
     let device = context.render_device().clone();
-    flock.encode(&device, &queue, context.command_encoder(), &params);
+    let diagnostics = context.diagnostic_recorder();
+    let recorder = diagnostics.as_deref();
+    let name = match frame.steps {
+        0 => "flock_0_steps",
+        1 => "flock_1_steps",
+        2 => "flock_2_steps",
+        3 => "flock_3_steps",
+        _ => "flock_4_steps",
+    };
+    let span = recorder.time_span(context.command_encoder(), name);
+    // A paused frame still permits spawn/truncate maintenance, never sorting or steering.
+    if frame.steps > 0 || params.count != flock.count {
+        for _ in 0..frame.steps.max(1) {
+            flock.encode(&device, &queue, context.command_encoder(), &params);
+        }
+    }
+    span.end(context.command_encoder());
     if params.count > 0 {
         *draw = FlockInstances {
             buffer: flock
@@ -245,7 +269,7 @@ impl FlockBuffers {
         let instances = buffer(
             "gpu_flock_instances",
             capacity as u64 * size_of::<crate::instancing::InstanceData>() as u64,
-            BufferUsages::VERTEX,
+            BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
         let bind_group = device.create_bind_group(
             "gpu_flock",
@@ -332,17 +356,22 @@ impl GpuFlock {
 
     /// Records one simulation step for `params.count` boids: spawns boids beyond the current
     /// count, then builds the grid and steers. A count of 0 forgets the flock, so the next
-    /// non-zero count spawns a fresh one.
+    /// non-zero count spawns a fresh one. A zero delta performs count maintenance only:
+    /// spawn writes new instances without sorting, steering or advancing the random frame.
     pub fn encode(
         &mut self,
         device: &RenderDevice,
-        queue: &RenderQueue,
+        _queue: &RenderQueue,
         encoder: &mut CommandEncoder,
         params: &GpuParams,
     ) {
         let count = params.count;
         if count == 0 {
             self.count = 0;
+            return;
+        }
+        if !params.simulates() && count <= self.count {
+            self.count = count;
             return;
         }
         if self
@@ -360,6 +389,13 @@ impl GpuFlock {
                         0,
                         self.count as u64 * BOID_SIZE,
                     );
+                    encoder.copy_buffer_to_buffer(
+                        &old.instances,
+                        0,
+                        &grown.instances,
+                        0,
+                        self.count as u64 * size_of::<crate::instancing::InstanceData>() as u64,
+                    );
                 }
             }
             self.buffers = Some(grown);
@@ -376,7 +412,14 @@ impl GpuFlock {
         };
         let mut bytes = encase::UniformBuffer::new(Vec::<u8>::new());
         bytes.write(&step).unwrap();
-        queue.write_buffer(&self.params, 0, bytes.as_ref());
+        // Queue writes all happen before submission. Encoder copies keep each substep's
+        // uniforms distinct, including its random frame and spawn range.
+        let upload = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gpu_flock_step_params"),
+            contents: bytes.as_ref(),
+            usage: BufferUsages::COPY_SRC,
+        });
+        encoder.copy_buffer_to_buffer(&upload, 0, &self.params, 0, GpuParams::min_size().get());
 
         let groups = |items: u32| items.div_ceil(WORKGROUP);
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -387,6 +430,11 @@ impl GpuFlock {
         if spawn_from < count {
             pass.set_pipeline(&self.spawn);
             pass.dispatch_workgroups(groups(count - spawn_from), 1, 1);
+        }
+        if !params.simulates() {
+            drop(pass);
+            self.count = count;
+            return;
         }
         if params.max_neighbors != 0 {
             // Exact separation in a fine grid; reuse the grid buffers for the coarse
@@ -491,6 +539,44 @@ impl GpuFlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_params_skip_paused_steps_and_scale_simulated_delta() {
+        let mut app = crate::presentation::tests::clock_app();
+        app.init_resource::<GlobalState>()
+            .init_resource::<GpuParams>()
+            .add_systems(
+                Update,
+                update_gpu_params.after(crate::presentation::prepare_simulation),
+            );
+        for speed in [0.25, 1.0, 2.0] {
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .speed = speed;
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(10));
+            app.update();
+            let params = app.world().resource::<GpuParams>();
+            assert!(params.simulates());
+            // dt is per step; above 1× the frame splits into ceil(speed) steps.
+            assert!((params.dt - 0.01 * speed / speed.ceil()).abs() < 1e-8);
+        }
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        app.update();
+        let params = app.world().resource::<GpuParams>();
+        assert_eq!(params.count, 20_000);
+        assert_eq!(params.dt, 0.0);
+        assert!(!params.simulates());
+        assert_eq!(
+            app.world()
+                .resource::<crate::presentation::SimulationFrame>()
+                .steps,
+            0
+        );
+    }
 
     #[test]
     fn params_use_live_settings_and_only_enable_gpu_mode() {

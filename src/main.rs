@@ -1,6 +1,7 @@
 mod gpu_flock;
 mod instancing;
 mod octree;
+mod presentation;
 mod scenario;
 mod scene;
 mod target;
@@ -67,6 +68,7 @@ fn main() {
             scene::ScenePlugin,
             vehicle_model::VehicleModelPlugin,
             scenario::ScenarioPlugin,
+            presentation::PresentationPlugin,
         ))
         .add_systems(
             PreUpdate,
@@ -212,6 +214,7 @@ fn ui(
     targets: Query<&target::TargetSelection, With<target::Target>>,
     mut appearance: ResMut<scene::Appearance>,
     mut models: ResMut<vehicle_model::VehicleModels>,
+    mut presentation: ResMut<presentation::Presentation>,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
@@ -220,6 +223,9 @@ fn ui(
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
+            egui::CollapsingHeader::new("Presentation").default_open(true).show(ui, |ui| {
+                presentation::ui(ui, &mut presentation);
+            });
             egui::CollapsingHeader::new("Simulation").default_open(true).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (mode, label) in [
@@ -356,6 +362,14 @@ fn ui(
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
+            if presentation.paused {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "PAUSED — target and camera remain live",
+                );
+            } else {
+                ui.label(format!("Simulation: {:.2}×", presentation.speed));
+            }
             if following {
                 ui.colored_label(egui::Color32::LIGHT_GREEN, "Follow: ON (green target)");
                 ui.label("Vehicles follow the selected target.");
@@ -366,6 +380,11 @@ fn ui(
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
                 for (input, action) in [
+                    ("P / O", "Pause / auto-orbit"),
+                    (
+                        "1 / 2 / 3 / 4 / 5",
+                        "Front / side / top / overview / target",
+                    ),
                     ("Left-click target", "Start following"),
                     ("Left-click background", "Stop following"),
                     ("Right-drag", "Orbit camera"),
