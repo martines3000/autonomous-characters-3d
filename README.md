@@ -1,226 +1,201 @@
 # 3D Boids simulation
 
-[demo](https://ac3d.skippy-ai.com/)
+A 3D flocking (boids) simulation in Rust and [Bevy](https://bevyengine.org/). Vehicles steer
+with separation, alignment, cohesion and wander, and can follow a target you move around.
 
-## Local native development
+![300,000 vehicles in GPU mode](docs/images/gpu-300000.jpg)
 
-For a fresh clone on another machine, follow [new-machine setup](docs/new-machine-setup.md).
+*300,000 vehicles simulated on the GPU at about 92 FPS (Apple M3 Pro).*
 
-Use `rustup` and run commands from the repository root. `rust-toolchain.toml`
-selects the tested Rust 1.99.1 toolchain, including formatting and lint tools.
-On macOS, Xcode command-line tools are also required. Run builds and tests
-sequentially, with no other Cargo command or native app running.
+## Project history
+
+### 2022–2023: university project
+
+Built in about a week as a bonus assignment for a university course (first commit December 2022,
+web build February 2023). Rust 1.66, Bevy 0.9.1, Rayon and nalgebra:
+
+- naive O(n²) neighbor search and an arena-allocated octree, both multithreaded;
+- an egui menu for live simulation parameters;
+- vehicles drawn as cones, plus a WASM web build ([original demo](https://ac3d.skippy-ai.com/); removed in 2026,
+  still in the `master` history);
+- a benchmark comparing the two modes ([chart](meritve.png); slower and less exact than today's numbers).
+
+### 2026: revisited with AI coding agents
+
+Almost four years later the project no longer built on current toolchains. It was picked up again to
+see how far today's coding agents (OpenAI Codex and Claude Code, with Claude orchestrating Codex
+workers later on) get in a handful of prompts. They upgraded the stack, audited the code, found and fixed bugs,
+added tests and benchmarks, optimized it, and moved the simulation to the GPU. I wrote the prompts and
+made the decisions; the agents wrote the code, plans and checks.
+
+| | Original (2023) | Now (2026) |
+| --- | --- | --- |
+| Stack | Rust 1.66, Bevy 0.9.1 | Rust 1.99.1, Bevy 0.20.1, bevy_egui 0.43.1 |
+| Builds today | No | Yes (verified on macOS; Linux/Windows setup documented) |
+| Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
+| Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
+| Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
+| Tests | None | 33 regression tests, GPU parity tests, seeded benchmarks |
+| Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
+
+Bugs found and fixed include:
+- NaNs from normalizing zero vectors;
+- octree queries that checked one leaf and missed neighbors;
+- frame-rate-dependent movement;
+- a speed clamp that allowed √3× the maximum;
+- a mass slider that ignored existing vehicles;
+- followers collapsing into a single point.
+
+The audit is [review-report.html](review-report.html). Each fix has an ExecPlan with evidence in
+[plans/completed/](plans/completed/), and [plans/STATUS.md](plans/STATUS.md) tracks the open work.
+
+## Run it
+
+Needs [rustup](https://rustup.rs/); `rust-toolchain.toml` installs the pinned Rust 1.99.1. macOS
+needs Xcode command-line tools. Linux needs Bevy's system libraries, clang and mold. For a fresh
+machine, follow [docs/new-machine-setup.md](docs/new-machine-setup.md).
 
 ```sh
-CARGO_BUILD_JOBS=4 cargo build --release --locked
 CARGO_BUILD_JOBS=4 cargo run --release --locked
-CARGO_BUILD_JOBS=4 cargo fmt --all -- --check
-CARGO_BUILD_JOBS=4 cargo test --release --locked
-python3 scripts/smoke-native.py
 ```
 
-Close the app before continuing with the checks. The smoke check opens the app
-for ten seconds and then closes it. It requires a desktop session with graphics
-support; it checks startup, not flocking correctness or performance. The normal
-Rust tests cover camera input and framing, target selection and scaling, vehicle
-cleanup, instance data, parameter encoding, and numerical safety of steering.
-GPU tests and benchmarks are ignored by the normal test command and need a real
-GPU; device creation may fail in a sandbox even on a machine with a GPU.
+`cargo run` supplies the asset root. To start the binary directly:
+`CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d`.
 
-```sh
-# GPU regression tests; exclude the long benchmark from the general filter.
-CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
+### Controls
 
-# Headless GPU benchmark, run separately.
-CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
+| Input | Action |
+| --- | --- |
+| Right-drag / middle-drag / scroll | Orbit / pan / zoom the camera |
+| Left-click the red target | Vehicles follow it (target turns green) |
+| Left-click the background | Back to wandering |
+| W A S D, Space, left Shift | Move the selected target (relative to the camera) |
+
+The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
+menu when it has focus.
+
+### Modes and settings
+
+- **GPU** (default) keeps every vehicle in GPU buffers. The count slider goes up to 1,000,000.
+  **Follow neighbor samples** (default 16, 0 = all) caps alignment/cohesion samples while following;
+  separation always sees every close neighbor.
+- **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
+- Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
+  count truncates the flock; zero clears it.
+- Vehicles are colored by heading, so groups flying together share a color. The walls, floor grid
+  and fog grow with the vehicle count. Defaults live in `GlobalState::default` in `src/main.rs`.
+
+## How it works
+
+```text
+src/
+├── main.rs          # app setup, settings, egui menu, camera input
+├── vehicle.rs       # CPU steering and integration, tests, benchmarks
+├── octree.rs        # exact radius queries for the CPU octree mode
+├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
+├── instancing.rs    # one instanced draw for every vehicle
+└── target.rs        # selectable, movable target
+assets/shaders/
+├── gpu_flock.wgsl             # GPU simulation
+└── vehicle_instancing.wesl    # vehicle rendering
 ```
 
-The GPU tests check CPU parity with cap 0, complete separation with cap 1,
-spawn/growth/truncation/reset, bounds, and retained headings. Benchmark cases are
-configured with comma-separated environment variables: `GPU_BENCH_COUNTS`
-(default `10000,30000,100000,300000,1000000`), `GPU_BENCH_CAPS` (default
-`0,32,64,128`), and `GPU_BENCH_MODES` (default `wander,follow`). To compare the
-selected default cap with unlimited steering:
+Each frame in GPU mode, compute passes do the following:
+1. Bin vehicles into a hashed uniform grid (count, prefix sum, scatter).
+2. Compute separation in a finer grid.
+3. Steer and integrate.
+4. Write instance data straight into the buffer the draw call reads, with no CPU readback.
 
-```sh
-GPU_BENCH_COUNTS=20000,100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
-```
-
-Each case spawns on the GPU, warms up for 600 steps at 1/60 s, then times 60
-steps including encode, submit and blocking device wait. It prints median/p95
-milliseconds, requested/effective cap, nearest-distance statistics for 1,000
-sampled boids against the whole flock, the percentage below 1.4 units (dart
-width), mean speed, and follow-mode mean target distance. Readback and CPU
-statistics are outside the timed interval. Any completed step over 250 ms skips
-the rest of that case; skipped cases report their partial progress and are not
-steady-state comparisons. Check `uptime` and repeat measurements at similar load.
-
-Agent and planning conventions are in `AGENTS.md`, `PLANS.md` and `plans/STATUS.md`.
-
-`cargo run` supplies the asset root. When running the binary directly, set it:
-
-```sh
-CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d
-```
-
-Native development uses Bevy 0.20.1 and bevy_egui 0.43.1. Camera control and
-mesh picking use Bevy's built-in plugins; audio is disabled because the app does
-not use it. The original native compatibility build is preserved on the
-`codex/native-baseline` branch. The HTML report describes the original codebase;
-web builds are outside this migration's scope.
-
-Controls: right-drag to orbit, middle-drag to pan, and scroll to zoom. Left-click
-the red target to select it; click the background to return to wandering. Move a
-selected target with WASD, Space and left Shift. Camera and target controls defer
-to the menu when it consumes input. The on-screen Controls panel lists these
-shortcuts and shows Follow ON/OFF. The target turns green while selected and
-returns to red when following is off. Its visible and pickable sphere scales
-with the current world size; its position and 120-unit/s movement speed do not.
-
-The menu's mode selector offers **GPU** (default), **Octree** and **Naive**.
-Startup uses 20,000 vehicles. The count slider spans 0–1,000,000 in GPU mode and
-0–50,000 in either CPU mode; switching to a CPU mode clamps the count to its range.
-GPU mode's **follow neighbor samples** slider spans 0–512, defaults to 16, and
-limits alignment/cohesion samples only while following. Zero means unlimited.
-Separation always sees every close neighbor. Wander uses the full query even
-when the follow cap is nonzero. Samples favor the current coarse cell; they are
-not a nearest-k selection.
-
-Switching between CPU and GPU discards the previous flock and respawns it in the
-selected mode; switching between Naive and Octree keeps the CPU flock. Increasing
-the GPU count adds new vehicles, lowering it truncates the existing flock, and
-setting it to zero clears it so the next increase spawns a fresh flock. GPU state
-is not read back into CPU entities during a mode switch.
-
-Vehicles are colored by heading (hue from the horizontal direction, lighter when
-climbing), so groups flying together share a color. The faint box marks the walls
-that wandering vehicles steer back into, with a grid on its floor; both, and the
-distance fog, grow with the vehicle count. The startup camera frames the default
-world; use the camera controls after changing the count.
-
-Separation pushes a vehicle away from each neighbor closer than the separation
-distance, harder the closer it is, and the pushes add up. Its factor scales those
-pushes; alignment and cohesion factors limit their steering forces. This keeps
-moderate follow flocks apart, but very large balls still become crowded under
-seek pressure (see the performance table and `plans/STATUS.md`).
-
-For dependency diagnostics, install the separate CLI with
-`CARGO_BUILD_JOBS=4 cargo install --locked --version 0.20.2 cargo-deny`, then run
-`cargo deny --locked --target aarch64-apple-darwin check advisories` on this Mac.
-No advisory suppressions are configured. This command does not upgrade packages.
-`samply` is an optional native CPU profiler; after installing version 0.13.1, run
-`CARGO_MANIFEST_DIR="$PWD" samply record ./target/release/autonomous-characters-3d`.
-For source line information, first rebuild with
-`CARGO_BUILD_JOBS=4 CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --locked`.
-Keep profiling separate from uninstrumented performance measurements.
-
-## Implementation
-
-- `GlobalState` defaults live in its `Default` implementation in `src/main.rs`.
-- Naive and Octree use parallel CPU queries. The octree stores append-only nodes
-  and points linked by indices, is rebuilt in each call to `flock`, and answers
-  exact radius queries matching the naive reference. IO and async task pools get
-  one thread each, leaving the remaining cores for simulation queries.
-- GPU mode keeps vehicles entirely in GPU buffers (`src/gpu_flock.rs`,
-  `assets/shaders/gpu_flock.wgsl`). Compute passes build a hashed uniform grid by
-  counting, prefix sum and scatter, then steer and integrate the flock. Capped
-  follow mode first computes complete separation in a finer grid, then samples
-  alignment/cohesion in the coarse grid. Unlimited mode and wander use one grid.
-- All vehicles use one instanced draw call (`src/instancing.rs`,
-  `assets/shaders/vehicle_instancing.wesl`), with Bevy's PBR lighting and fog.
-  CPU modes upload position/rotation each frame; GPU compute writes the instance
-  buffer directly, with no simulation readback during normal rendering.
-- Steering, wander and target movement scale with frame time, tuned at a 60 Hz
-  reference. The existing wall-avoidance term also applies inside the walls and
-  acts as drag: measured wander speed settles near 29 rather than the configured
-  40. Changing that behavior is a joint CPU/GPU follow-up.
+CPU modes run parallel queries and upload instance data each frame. Steering is frame-rate
+independent (tuned at 60 Hz). Separation pushes add up and grow stronger with closeness.
 
 ## Performance
 
-Measurements below were supplied by the orchestrator on an Apple M3 Pro in
-release builds. GPU step timings are headless **encode + submit + wait**, not
-rendered frame times: fresh PCG spawn at frame 0, 600 warmup steps (10 simulated
-seconds at 1/60 s), then 60 timed steps. Median milliseconds, load average about 3:
+Apple M3 Pro, release build. Headless median milliseconds per simulation step (no rendering):
 
-| Vehicles | Wander | Follow, cap 16 | Follow, unlimited | Follow sample below 1.4 units |
+| Vehicles | CPU naive | CPU octree | GPU wander | GPU follow (cap 16) |
 | --- | --- | --- | --- | --- |
-| 20,000 | 0.67 | 1.4 | 16.9 | 2.2% |
-| 100,000† | 2.5 | 6.4 | 220 | 19% |
-| 300,000 | 7.4 | 13.2 | Skipped: step >250 ms | 42% |
-| 1,000,000 | 26.1 | 44.9 | Skipped: step >250 ms | 15% |
+| 10,000 | 25.5 | 3.7 | | |
+| 20,000 | | | 0.67 | 1.4 |
+| 100,000 | | | 2.5 | 6.4 |
+| 300,000 | | | 7.4 | 13.2 |
+| 1,000,000 | | | 26.1 | 44.9 |
 
-†100,000 comes from the earlier sweep at load average 1.4–4. Other rows are the
-repeat after removing the unnecessary wander fine-grid pass. Requested caps 0
-and 16 now use identical wander work, with comparable timings and 0% sampled
-nearest distances below 1.4 units. The non-monotonic follow crowding percentages
-are snapshots after the fixed warmup, not a claim that the largest flock is less
-dense once fully gathered. Detailed evidence is in
-[the GPU plan](plans/completed/2026-10-30-gpu-flocking.md).
+In the app (vsync, 120 Hz), FPS depends on camera distance:
+- 20,000 vehicles: about 107–127 FPS;
+- 300,000 seen from afar: about 92 FPS;
+- 100,000 seen up close: about 59 FPS.
 
-App observations include rendering, vsync enabled on a 120 Hz display, load
-average about 3. At the default GPU/20,000 start, the FPS counter reported about
-107–120 wandering and about 127 following. Camera distance matters: 100,000
-wandering with close views of the flocks reached about 59 FPS; 300,000 viewed
-from far away reached about 92 FPS. Before the cap, 30,000 followers ran at about
-31 FPS. Close-up dart coverage suggests fill-rate/rendering cost can exceed the
-simulation cost; fewer triangles, distance impostors, MSAA cost and a depth
-pre-pass are future investigations, not measured improvements.
+Details and caveats are in [the GPU plan](plans/completed/2026-10-30-gpu-flocking.md) and
+[the CPU benchmark plan](plans/completed/2026-10-30-seeded-headless-benchmarks.md).
 
-### CPU reference
+## Development
 
-Earlier headless CPU benchmark (steering and integration per 1/60 s step, no
-rendering; seed `0xB01D5`; Apple M3 Pro, release build; median ms). Both CPU modes
-receive identical inputs and compute the same flocking. The spawn cube and walls
-grow with the cube root of the vehicle count, so density stays constant.
-
-| Vehicles | Naive | Octree |
-| --- | --- | --- |
-| 200 | 0.07 | 0.14 |
-| 1,000 | 0.59 | 0.56 |
-| 2,000 | 1.46 | 0.84 |
-| 5,000 | 6.75 | 1.82 |
-| 10,000 | 25.53 | 3.74 |
-
-Earlier Octree app measurements (window/rendering included, no vsync) were about
-4.5 ms/frame with 10,000 wandering vehicles and 12.5 ms with 30,000. CPU following
-at large counts remains quadratic (about 30 ms/simulation step at 5,000), because
-the flock gathers within the 30-unit alignment radius of almost every vehicle.
-These CPU results are reference measurements from before the GPU implementation.
-
-Run the CPU benchmark alone with nothing else heavy running (timings roughly
-double on a busy machine). The exact filter avoids also running the GPU benchmark:
+Run from the repository root, one Cargo command at a time, with no app running:
 
 ```sh
+CARGO_BUILD_JOBS=4 cargo fmt --all -- --check
+CARGO_BUILD_JOBS=4 cargo test --release --locked
+CARGO_BUILD_JOBS=4 cargo build --release --locked
+python3 scripts/smoke-native.py   # opens the app for 10 s; needs a desktop session
+git diff --check
+```
+
+The normal tests cover:
+- steering safety and CPU modes;
+- the camera and the target;
+- instance data and GPU parameter encoding.
+
+GPU tests and benchmarks are `#[ignore]`d. They need a real GPU, and device creation can fail inside
+sandboxes.
+
+```sh
+# GPU regression tests: CPU parity, complete separation, spawn/grow/truncate, bounds
+CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
+
+# GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
+GPU_BENCH_COUNTS=20000,100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
+
+# CPU benchmark (the exact filter skips the GPU benchmark)
 CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::flocking_benchmark -- --exact --ignored --nocapture --test-threads=1
 ```
 
-Details and caveats are in `plans/completed/2026-10-30-seeded-headless-benchmarks.md`
-and `plans/completed/2026-10-30-count-scaled-spawn-region.md`.
+The GPU benchmark warms up 600 steps at 1/60 s, then times 60 steps (encode, submit and wait). It
+prints median/p95 times, spacing and speed. Steps over 250 ms end a case early. Benchmark on an idle
+machine: check `uptime` and repeat runs.
 
-Historical chart from the original version (single-leaf octree queries that
-skipped neighbors, unknown machine and seed; not comparable with the tables above):
+Optional tools:
+- `cargo-deny` (`cargo install --locked --version 0.20.2 cargo-deny`):
+  `cargo deny --locked --target aarch64-apple-darwin check advisories`.
+- `samply` 0.13.1: `CARGO_MANIFEST_DIR="$PWD" samply record ./target/release/autonomous-characters-3d`.
+  For source lines, build with `CARGO_PROFILE_RELEASE_DEBUG=1`.
+  Keep profiling separate from timing runs.
 
-![meritve](meritve.png)
+Agent and planning conventions are in [AGENTS.md](AGENTS.md), [PLANS.md](PLANS.md) and
+[plans/STATUS.md](plans/STATUS.md).
+
+The project is native only; the original WASM web build was removed. The `codex/native-baseline`
+branch keeps the first native build that compiled again.
+
+## Roadmap
+
+Section 12 of [review-report.html](review-report.html#feature-expansion) proposes next features,
+starting with a Showcase milestone: color palettes, auto-orbit camera, pause and simulation speed.
+After that come a mouse attractor/repulsor, multiple swarm groups, obstacles, trails, formations and
+predators. Each milestone waits for explicit approval. Open issues are listed in
+[plans/STATUS.md](plans/STATUS.md):
+- crowding in very large follow flocks;
+- rendering cost up close;
+- wall avoidance acting as drag.
 
 ## Sources
 
-Some sources I used for inspiration and help building this.
-
-### Boids
-
-- http://www.red3d.com/cwr/boids/
-- https://natureofcode.com/book/chapter-6-autonomous-agents/
-- https://dl.acm.org/doi/10.1145/37401.37406
-
-### Octree
-
-- https://en.wikipedia.org/wiki/Octree
-- https://magnum.graphics/showcase/octree/?spheres=20&sphere-radius=0.1&sphere-velocity=1.0
-- https://castle-engine.io/vrml_engine_doc/output/xsl/html/section.how_octree_works.html
-
-### Language and libraries used
-
-- Rust 1.99.1 (tested local development toolchain)
-- Bevy 0.20.1 (game engine)
-- Bevy parallel queries (multithreading)
-- Nalgebra 0.35.0 (linear algebra library)
+- Boids: [Craig Reynolds](http://www.red3d.com/cwr/boids/),
+  [The Nature of Code, ch. 6](https://natureofcode.com/book/chapter-6-autonomous-agents/),
+  [Reynolds 1987](https://dl.acm.org/doi/10.1145/37401.37406)
+- Octree: [Wikipedia](https://en.wikipedia.org/wiki/Octree),
+  [Magnum octree demo](https://magnum.graphics/showcase/octree/?spheres=20&sphere-radius=0.1&sphere-velocity=1.0),
+  [Castle Game Engine notes](https://castle-engine.io/vrml_engine_doc/output/xsl/html/section.how_octree_works.html)
+- Arena-allocated trees in Rust:
+  [article](https://dev.to/deciduously/no-more-tears-no-more-knots-arena-allocated-trees-in-rust-44k6),
+  [generational-arena](https://github.com/fitzgen/generational-arena)
