@@ -2,7 +2,7 @@
 
 ## Current work
 
-- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a/7b committed (`d657d5d`, `fd9921a`); 7c static sphere avoidance implemented and verified, awaiting orchestrator review. Shared CPU/GPU law, change-only binding-8 scene uploads, UI/gizmos/scenarios, 109 release tests and nine GPU tests pass. Off GPU step has no measurable regression versus 7b; Clippy stays at seven existing warnings. Stages 7d–7e remain separate work.
+- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a–7c committed (`4e0d5a6` latest); 7d analytic Sphere/Helix formations implemented and verified, awaiting orchestrator review. Dense carried group slots, simulated-time morphs, UI/scenarios, 116 release tests and 11 GPU tests pass. Off headless costs remain within observed variation; cap/convergence/desktop evidence recorded. Clippy remains seven existing warnings. Stage 7e remains separate work.
 
 - [Presentation controls](planned/2026-10-31-presentation-controls.md): Stage 5 done: simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
 

@@ -77,6 +77,13 @@ enum Command {
 enum Setting {
     Count(usize),
     Groups(u32),
+    FormationMode(crate::formation::FormationMode),
+    FormationCenter(Vec3),
+    FormationExtent(f32),
+    FormationArrival(f32),
+    FormationStrength(f32),
+    FormationMorph(f32),
+    FormationMorphSpeed(f32),
     GroupTarget(usize, Option<Vec3>),
     GroupColor(usize, [u8; 3]),
     AttractorMode(AttractorMode),
@@ -176,6 +183,14 @@ fn switch(value: &str) -> Result<bool, String> {
 
 fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, String> {
     Ok(match (name, value) {
+        ("formation", "off") => Setting::FormationMode(crate::formation::FormationMode::Off),
+        ("formation", "sphere") => Setting::FormationMode(crate::formation::FormationMode::Sphere),
+        ("formation", "helix") => Setting::FormationMode(crate::formation::FormationMode::Helix),
+        ("formation_extent", _) => Setting::FormationExtent(number(value, 1.0, 200.0)?),
+        ("formation_arrival_radius", _) => Setting::FormationArrival(number(value, 0.1, 200.0)?),
+        ("formation_strength", _) => Setting::FormationStrength(number(value, 0.0, 20.0)?),
+        ("formation_morph", _) => Setting::FormationMorph(number(value, 0.0, 1.0)?),
+        ("formation_morph_speed", _) => Setting::FormationMorphSpeed(number(value, 0.0, 2.0)?),
         ("groups", "off") => Setting::Groups(0),
         ("groups", _) => Setting::Groups(integer(value, 2, crate::swarm::MAX_GROUPS)? as u32),
         ("attractor_mode", "off") => Setting::AttractorMode(AttractorMode::Off),
@@ -313,6 +328,11 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     }
                     Command::Set(value)
                 }
+                ["formation_center", x, y, z] => Command::Set(Setting::FormationCenter(Vec3::new(
+                    number(x, -1e7, 1e7)?,
+                    number(y, -1e7, 1e7)?,
+                    number(z, -1e7, 1e7)?,
+                ))),
                 ["obstacle", "clear"] => {
                     obstacle_count = 0;
                     Command::ObstacleClear
@@ -537,6 +557,29 @@ fn run_scenario(world: &mut World) {
 
 fn apply_setting(world: &mut World, setting: Setting) {
     match setting {
+        value @ (Setting::FormationMode(_)
+        | Setting::FormationCenter(_)
+        | Setting::FormationExtent(_)
+        | Setting::FormationArrival(_)
+        | Setting::FormationStrength(_)
+        | Setting::FormationMorph(_)
+        | Setting::FormationMorphSpeed(_)) => {
+            let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+            let mut formation = scene.formation;
+            match value {
+                Setting::FormationMode(mode) => formation.set_mode(mode),
+                Setting::FormationCenter(value) => formation.center = value,
+                Setting::FormationExtent(value) => formation.extent = value,
+                Setting::FormationArrival(value) => formation.arrival_radius = value,
+                Setting::FormationStrength(value) => formation.strength = value,
+                Setting::FormationMorph(value) => formation.morph = value,
+                Setting::FormationMorphSpeed(value) => formation.morph_speed = value,
+                _ => unreachable!(),
+            }
+            if scene.formation != formation {
+                scene.formation = formation;
+            }
+        }
         Setting::ObstacleStrength(value) => {
             let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
             if scene.obstacle_strength != value {
@@ -702,6 +745,51 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn formation_commands_validate_ranges_presets_and_unchanged_writes() {
+        use crate::formation::FormationMode;
+        let commands=parse("0 set formation sphere\n0 formation_center 1 -2 3\n0 set formation_extent 80\n0 set formation_arrival_radius 12\n0 set formation_strength 3\n0 set formation_morph 0.5\n0 set formation_morph_speed 0.2\n1 set formation helix\n2 set formation off").unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::Set(Setting::FormationMode(FormationMode::Sphere))
+        );
+        assert_eq!(
+            commands[1].command,
+            Command::Set(Setting::FormationCenter(Vec3::new(1.0, -2.0, 3.0)))
+        );
+        for value in [
+            "set formation torus",
+            "formation_center NaN 0 0",
+            "formation_center 1 2",
+            "set formation_extent 0",
+            "set formation_strength 21",
+            "set formation_morph -0.1",
+            "set formation_morph 1.1",
+            "set formation_morph_speed inf",
+            "set formation_arrival_radius 0",
+        ] {
+            assert!(parse(&format!("0 {value}")).is_err(), "{value}");
+        }
+        let mut world = World::new();
+        world.init_resource::<crate::swarm::SwarmScene>();
+        apply_setting(&mut world, Setting::FormationMode(FormationMode::Helix));
+        assert_eq!(
+            world.resource::<crate::swarm::SwarmScene>().formation.morph,
+            1.0
+        );
+        world.clear_trackers();
+        apply_setting(&mut world, Setting::FormationMode(FormationMode::Helix));
+        assert!(!world
+            .get_resource_ref::<crate::swarm::SwarmScene>()
+            .unwrap()
+            .is_changed());
+        apply_setting(&mut world, Setting::FormationMorph(0.5));
+        assert_eq!(
+            world.resource::<crate::swarm::SwarmScene>().formation.morph,
+            0.5
+        );
+    }
+
     #[test]
     fn obstacle_commands_validate_bounds_capacity_and_clearance_edits() {
         let commands = parse("0 set obstacle_strength 8\n0 set obstacle_clearance 12\n0 obstacle add 1 -2 3 10\n1 set obstacles_visible off\n2 obstacle clear").unwrap();

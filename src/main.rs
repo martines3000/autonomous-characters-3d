@@ -1,3 +1,4 @@
+mod formation;
 mod gpu_flock;
 mod instancing;
 mod octree;
@@ -222,7 +223,7 @@ fn ui(
     mut appearance: ResMut<scene::Appearance>,
     mut models: ResMut<vehicle_model::VehicleModels>,
     mut presentation: ResMut<presentation::Presentation>,
-    mut swarm_scene: ResMut<swarm::SwarmScene>,
+    mut swarm_ui: swarm::SwarmUi,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
@@ -283,13 +284,15 @@ fn ui(
             egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
                 swarm::ui(ui, &mut state.attractor);
                 ui.separator();
+                let mut scene = swarm_ui.scene.clone();
+                formation::ui(ui, &mut scene.formation, swarm_ui.orbit_focus(), swarm_ui.formation.morph);
+                ui.separator();
                 let mut groups = state.groups;
                 swarm::groups_ui(ui, &mut groups);
                 if groups != state.groups { state.groups = groups; }
                 ui.separator();
-                let mut scene = swarm_scene.clone();
                 swarm::obstacles_ui(ui, &mut scene);
-                if scene != *swarm_scene { *swarm_scene = scene; }
+                if scene != *swarm_ui.scene { *swarm_ui.scene = scene; }
             });
             egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");
@@ -394,10 +397,16 @@ fn ui(
             }
             if following {
                 ui.colored_label(egui::Color32::LIGHT_GREEN, "Follow: ON (green target)");
-                ui.label("Vehicles follow the selected target.");
+                ui.label(if swarm_ui.scene.formation.enabled() {
+                    "Formation overrides following; selection stays stored."
+                } else {
+                    "Vehicles follow the selected target."
+                });
             } else {
                 ui.colored_label(egui::Color32::LIGHT_RED, "Follow: OFF (red target)");
-                ui.label(if state.groups.has_targets() {
+                ui.label(if swarm_ui.scene.formation.enabled() {
+                    "Vehicles use formation slots."
+                } else if state.groups.has_targets() {
                     "Vehicles use group targets where enabled."
                 } else {
                     "Vehicles wander freely."

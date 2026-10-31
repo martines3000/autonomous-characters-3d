@@ -46,6 +46,9 @@ struct Params {
     group_targets: array<vec4<f32>, 8>,
     obstacles: vec4<u32>,
     obstacle_settings: vec4<f32>,
+    formation: vec4<u32>,
+    formation_center_extent: vec4<f32>,
+    formation_settings: vec4<f32>,
 };
 
 struct Boid {
@@ -86,6 +89,7 @@ struct Instance {
 
 override GROUPS_ENABLED: bool = false;
 override OBSTACLES_ENABLED: bool = false;
+override FORMATION_ENABLED: bool = false;
 
 fn read_order(base: u32, index: u32) -> u32 {
     return arena[2u * params.groups.w + base + index / 4u][index % 4u];
@@ -93,6 +97,66 @@ fn read_order(base: u32, index: u32) -> u32 {
 
 fn write_order(base: u32, index: u32, record: u32) {
     arena[2u * params.groups.w + base + index / 4u][index % 4u] = record;
+}
+
+// Maintenance uses current record order, not sorted identity. counts/starts are spare until
+// the normal grid build. Fixed-size blocks keep assignment linear with no cross-boid matching.
+@compute @workgroup_size(64)
+fn formation_count(@builtin(global_invocation_id) id: vec3<u32>) {
+    let block = id.x;
+    if block >= params.formation.z { return; }
+    var histogram = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    for (var i = block * 256u; i < min((block + 1u) * 256u, params.count); i += 1u) {
+        let record = read_order(params.groups.z, i);
+        var group = 0u;
+        if params.groups.x != 0u { group = arena[record].y; }
+        arena[record].z = histogram[group];
+        histogram[group] += 1u;
+    }
+    for (var group = 0u; group < 8u; group += 1u) { atomicStore(&counts[block * 8u + group], histogram[group]); }
+}
+
+var<workgroup> formation_totals: array<u32, 8>;
+
+@compute @workgroup_size(8)
+fn formation_scan(@builtin(local_invocation_index) group: u32) {
+    var total = 0u;
+    for (var block = 0u; block < params.formation.z; block += 1u) { total += atomicLoad(&counts[block * 8u + group]); }
+    formation_totals[group] = total;
+    workgroupBarrier();
+    var base = 0u;
+    for (var other = 0u; other < group; other += 1u) { base += formation_totals[other]; }
+    arena[params.formation.w + group] = vec4<u32>(base, total, 0u, 0u);
+    for (var block = 0u; block < params.formation.z; block += 1u) {
+        starts[block * 8u + group] = base;
+        base += atomicLoad(&counts[block * 8u + group]);
+    }
+}
+
+@compute @workgroup_size(256)
+fn formation_assign(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.count { return; }
+    let record = read_order(params.groups.z, id.x);
+    var group = 0u;
+    if params.groups.x != 0u { group = arena[record].y; }
+    arena[record].z += starts[(id.x / 256u) * 8u + group];
+}
+
+fn formation_target(slot: u32, group: u32) -> vec3<f32> {
+    let range = arena[params.formation.w + group].xy;
+    let local_slot = slot - range.x;
+    let u = (f32(local_slot) + 0.5) / f32(max(range.y, 1u));
+    let y = 1.0 - 2.0 * u;
+    let angle = f32((local_slot * 1640531527u) >> 8u) / 16777216.0 * (2.0 * PI);
+    let radius = sqrt(max(0.0, 1.0 - y * y));
+    let sphere = vec3<f32>(radius * cos(angle), y, radius * sin(angle));
+    let helix_angle = 3.0 * (2.0 * PI) * u;
+    let helix = vec3<f32>(0.6 * cos(helix_angle), 0.8 * y, 0.6 * sin(helix_angle));
+    let count = max(params.groups.x, 1u);
+    let columns = u32(ceil(sqrt(f32(count))));
+    let rows = (count + columns - 1u) / columns;
+    let center = vec3<f32>(f32(group % columns) - f32(columns - 1u) * 0.5, f32(group / columns) - f32(rows - 1u) * 0.5, 0.0) * 2.25;
+    return params.formation_center_extent.xyz + (center + (sphere + (helix - sphere) * params.formation_settings.z)) * params.formation_center_extent.w;
 }
 
 // Count edits compact retained metadata before spawning, making vacant records reusable without
@@ -502,6 +566,12 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         force += limit(avoidance, 1.0) * (params.max_speed * params.obstacle_settings.x);
     }
+    if FORMATION_ENABLED {
+        let slot = arena[read_order(stepped_order_base(), index)].z;
+        let offset = formation_target(slot, group) - position;
+        let desired = normalize_or_zero(offset) * params.max_speed * min(length(offset) / params.formation_settings.x, 1.0);
+        force += limit(desired - velocity, params.max_speed * params.formation_settings.y);
+    }
     var acceleration = force / params.mass;
 
     var theta = me.wander_theta;
@@ -513,13 +583,13 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         seeking = group_target.w != 0.0;
         seek_target = group_target.xyz;
     }
-    if seeking {
+    if seeking && !FORMATION_ENABLED {
         let seek = normalize_or_zero(seek_target - position) * params.max_speed - velocity;
         acceleration += limit(seek, params.max_speed * params.seek_factor) / params.mass;
     } else {
         let walls = params.walls;
         let outside = (position < -walls) | (position > walls);
-        if !any(outside) {
+        if !FORMATION_ENABLED && !any(outside) {
             var seed = pcg(index ^ pcg(params.frame * 2654435761u + 1u));
             let bound = PI / 16.0 * sqrt(params.dt * REFERENCE_HZ);
             theta += (random(&seed) * 2.0 - 1.0) * bound;
@@ -531,7 +601,9 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             acceleration += limit(wander, params.max_speed * params.wander_factor) / params.mass;
         }
         let back = select(vec3<f32>(0.0), select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
-        acceleration += limit(back - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
+        if !FORMATION_ENABLED || !seeking {
+            acceleration += limit(back - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
+        }
     }
 
     velocity = limit(velocity + acceleration * (params.dt * REFERENCE_HZ), params.max_speed);

@@ -1,6 +1,7 @@
 //! Optional swarm forces share the same arithmetic with gpu_flock.wgsl.
 use bevy::{
     camera_controller::pan_orbit_camera::prelude::*,
+    ecs::system::SystemParam,
     prelude::*,
     render::{extract_resource::ExtractResource, RenderApp},
     window::PrimaryWindow,
@@ -223,6 +224,7 @@ pub struct SwarmScene {
     pub obstacle_strength: f32,
     pub obstacle_clearance: f32,
     pub show_obstacles: bool,
+    pub formation: crate::formation::Formation,
 }
 
 impl Default for SwarmScene {
@@ -232,6 +234,7 @@ impl Default for SwarmScene {
             obstacle_strength: 4.0,
             obstacle_clearance: 10.0,
             show_obstacles: true,
+            formation: default(),
         }
     }
 }
@@ -357,16 +360,39 @@ pub fn obstacles_ui(ui: &mut egui::Ui, scene: &mut SwarmScene) {
     ui.small("Empty list is Off. One simulated second of look-ahead; penetration is possible.");
 }
 
+#[derive(SystemParam)]
+pub(crate) struct SwarmUi<'w, 's> {
+    pub scene: ResMut<'w, SwarmScene>,
+    pub formation: Res<'w, crate::formation::FormationFrame>,
+    cameras: Query<'w, 's, (&'static Transform, &'static PanOrbitCamera), With<Camera3d>>,
+}
+
+impl SwarmUi<'_, '_> {
+    pub fn orbit_focus(&self) -> Option<Vec3> {
+        self.cameras.single().ok().map(|(transform, camera)| {
+            transform.translation + transform.forward() * camera.last_anchor_depth().abs() as f32
+        })
+    }
+}
+
 pub struct SwarmPlugin;
 impl Plugin for SwarmPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SwarmScene>()
+        app.init_resource::<crate::formation::FormationFrame>()
+            .init_resource::<SwarmScene>()
             .init_gizmo_group::<SwarmMarker>();
         let mut store = app.world_mut().resource_mut::<GizmoConfigStore>();
         let (config, _) = store.config_mut::<SwarmMarker>();
         config.depth_bias = -1.0;
         config.line.width = 2.0;
         app.add_systems(
+            Update,
+            crate::formation::prepare_frame
+                .after(crate::presentation::prepare_simulation)
+                .before(vehicle::step_cpu)
+                .before(crate::gpu_flock::update_gpu_params),
+        )
+        .add_systems(
             Update,
             cursor_input
                 .after(crate::target::input_controls)

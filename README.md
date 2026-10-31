@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 109 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 116 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -185,8 +185,35 @@ the eighth storage binding after metadata/order maps (256 reserved bytes). Recor
 on sphere edits or capacity growth. Empty/zero-strength avoidance compiles out of steering;
 64-byte Boids, 48-byte instances and the vehicle draw are unchanged.
 
-All mechanics are optional. Stages 7a–7c implement the field, groups and spheres; formations
-and predators remain planned. Disabled mechanics preserve original steering arithmetic. Attraction
+**Formations** start Off. Swarm offers Sphere / Helix presets, a world center (or **Use orbit focus**),
+extent, arrival radius, arrival force cap, morph target and morph speed. Sphere/Helix select blend
+endpoints 0/1; active preset changes morph toward that endpoint. The morph target can select any
+intermediate shape. Actual morph advances by fractions per simulated second (default 0.25), freezes
+on pause and follows simulation speed/substeps. Zero morph speed snaps on the next simulation step.
+First enabling selects the requested shape immediately; vehicles still travel to their slots.
+
+Each enabled vehicle has a dense unique metadata slot. Count/group-count edits and enabling rebuild
+slots by current record order within each group. Sorts, shape edits and Naive/Octree switches retain
+slots; backend switches respawn. Off preserves latent slots and assigns no new ones until enabled.
+Groups get separate shapes on an XY grid, spaced 2.25 extents apart. Raising group count keeps the
+existing membership policy; empty groups can have no shape until growth.
+
+Targets are analytic: a Fibonacci sphere or a three-turn helix, linearly blended. The sphere uses an
+integer golden-angle phase so million-slot longitudes retain precision; animation phase is independent.
+Extent (default 60) and arrival radius (default 10) scale with world size. For slot offset d, desired
+velocity is normalized(d) × max speed × min(length(d)/arrival radius, 1). Arrival force is desired
+minus velocity, capped at max speed × strength (default 4). Strength controls the cap, not a gain.
+Formation replaces global/group seek and wander, retaining flocking, attractor, obstacles, and walls
+where the original branch would wander. Follow selection stays stored and resumes when formation
+is Off. Strength zero retains the navigation selection with zero arrival force.
+
+Active formation uses **follow neighbor samples**, even without following; zero keeps the exact
+query. Separation remains exact across all groups. Crowding, flocking and obstacles can prevent exact
+slot convergence. Eight small group-range records share the arena after the sphere reservation;
+there is no dense target array or per-frame scene upload. Off steering compiles formation out.
+
+All mechanics are optional. Stages 7a–7d implement the field, groups, spheres and formations;
+predators remain planned. Disabled mechanics preserve original steering arithmetic. Attraction
 retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
 attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
 are retuned.
@@ -427,7 +454,8 @@ src/
 ├── vehicle_animation.rs # background rigid/skin baking, interpolation and budgets
 ├── scene.rs         # styles, palettes, world grid, fog and framing
 ├── presentation.rs  # simulation clock, pause/speed, real-time orbit and camera presets
-├── swarm.rs         # optional cursor field, groups, metadata policy and UI
+├── swarm.rs         # optional cursor field, groups, obstacles and Swarm UI
+├── formation.rs     # analytic targets and simulated-substep morph snapshot
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
@@ -628,6 +656,13 @@ pgrep -a autonomous   # no process should remain after exit
 | `set attractor_strength` | 0–20, default 4; dimensionless force multiplier |
 | `set attractor_radius` | 1–200 reference units, default 60; multiplied by world scale |
 | `attractor` | `x y z` sets a persistent point without held F (finite world coordinates within ±10,000,000); `mouse` clears the override and restores held F |
+| `set formation` | `off` (default), `sphere`, `helix`; presets select morph targets 0/1 |
+| `formation_center` | `x y z`, finite world coordinates within ±10,000,000 |
+| `set formation_extent` | 1–200 reference units, default 60; multiplied by world scale |
+| `set formation_arrival_radius` | 0.1–200 reference units, default 10; multiplied by world scale |
+| `set formation_strength` | 0–20, default 4; cap in multiples of max speed |
+| `set formation_morph` | Target blend 0–1 (sphere to helix) |
+| `set formation_morph_speed` | Fractions per simulated second, 0–2, default 0.25; zero snaps next step |
 | `obstacle add` | `x y z radius`; finite world centers within ±10,000,000, reference radius 0.1–200; up to eight spheres |
 | `obstacle clear` | Remove all spheres (Off) |
 | `set obstacle_strength` | 0–20, default 4; dimensionless multiplier, zero bypasses avoidance |
@@ -678,7 +713,9 @@ CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture -
 
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
 # Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
-# The benchmark prints requested device storage limits.
+# Optional GPU_BENCH_FORMATION=off (default), sphere or helix; active shapes use the chosen cap.
+# Optional GPU_BENCH_WARMUP=1..6000 (default 600); 3540 plus 60 timed steps gives 60 simulated seconds.
+# The benchmark prints device limits and formation slot convergence after its simulated steps.
 GPU_BENCH_COUNTS=20000,100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
 
 # CPU benchmark (the exact filter skips the GPU benchmark)
@@ -705,8 +742,8 @@ branch keeps the first native build that compiled again.
 ## Roadmap
 
 Section 12 of [review-report.html](review-report.html#feature-expansion) proposed the feature roadmap.
-Showcase controls, the cursor field, swarm groups and static sphere avoidance are implemented.
-Formations, predators and trails remain future work; each milestone requires owner authorization.
+Showcase controls, the cursor field, swarm groups, static sphere avoidance and analytic formations
+are implemented. Predators and trails remain future work; each milestone requires owner authorization.
 Open issues are listed in
 [plans/STATUS.md](plans/STATUS.md):
 

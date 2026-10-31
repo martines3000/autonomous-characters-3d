@@ -1,7 +1,7 @@
 # Add optional swarm mechanics with one CPU/GPU contract
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It designs all of Stage 7;
-Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; the current worker implements **7c only**. The orchestrator owns review, commits and authorization of
+Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; 7c is committed as `4e0d5a6`; the current worker implements **7d only**. The orchestrator owns review, commits and authorization of
 subsequent workers. Owner order: 7a attractor, 7b groups, 7c obstacles, 7d formations, 7e predators.
 
 ## Purpose
@@ -25,11 +25,22 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 - [x] (2026-10-31 22:17Z) Stage 7c: bounded sphere law, resource/arena lifecycle, UI/gizmos and scenarios.
 - [x] (2026-10-31 22:17Z) Stage 7c: 109 release tests and all nine ignored GPU tests pass, including new scene snapshot/parity/arena regressions.
 - [x] (2026-10-31 22:17Z) Stage 7c: repeated 7b/Off/eight-sphere benchmarks, rendered/desktop evidence and full gates pass. Awaiting owner review/commit.
-- [ ] Stage 7d: formation slots and arrival (separate worker).
+- [x] (2026-10-31 23:09Z) Stage 7d: analytic targets, dense slots, morph clock, UI/scenarios.
+- [x] (2026-10-31 23:09Z) Stage 7d: 116 release tests and all 11 ignored GPU tests pass in the single final device run.
+- [x] (2026-10-31 23:09Z) Stage 7d: repeated Off/On/cap/60-second convergence measurements, desktop proof and gates pass; awaiting owner review/commit.
 - [ ] Stage 7e: bounded predator objects and fleeing (separate worker).
 - [ ] Orchestrator review and commits.
 
 ## Surprises & Discoveries
+
+- Stage 7d: analytic target tests cover one million slots without longitude banding or duplicate y.
+  After 11 simulated seconds the 1M flock is still far from assigned slots (median roughly 930–1013
+  world units with cap 16). A 60-second check is necessary to distinguish assembly time from failure.
+  First long run reaches median 69.4 (wander-wall branch) / 51.7 (stored-follow branch), with a long
+  unsettled tail. Flocking and exact separation remain active, so zero slot error is not promised.
+- Stage 7d: slot assignment uses the existing counts/starts scratch, plus only 128 persistent arena
+  bytes for group ranges. It adds no per-slot Vec4 allocation or edit upload at one million.
+
 
 - Stage 7c: egui runs its primary pass in PostUpdate (`bevy_egui-0.43.1/src/lib.rs:1145`).
   Extracting a new scene with Update-produced count/settings could mix snapshots during UI edits.
@@ -134,6 +145,48 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
   Rationale: preserve the accepted default path, metadata/order-map identity and later scene arena.
   Date: 2026-10-31.
 
+- Decision (7d, before code): analytic Fibonacci sphere and three-turn helix; no slot-target array.
+  For local slot i of n, u=(i+0.5)/n, y=1-2u, angle=2π*f32((i*1640531527 wrapping)>>8)/2^24.
+  Sphere=(sqrt(max(0,1-y²))*cos(angle), y, sqrt(max(0,1-y²))*sin(angle)).
+  Helix=(0.6*cos(6πu), 0.8*y, 0.6*sin(6πu)). Blend linearly by actual morph fraction.
+  The integer angle phase avoids large-float longitude quantization at one million; it never uses
+  animation phase. Both shapes and every blend remain within unit extent; monotonic y preserves
+  unique slots. Multiply by extent*S and add center plus a group grid offset. Grid columns are
+  ceil(sqrt(group count)), rows ceil(count/columns), spacing 2.25*extent*S in the XY plane.
+  Default extent 60, arrival radius 10, strength 4, center origin. All explicit centers are world units.
+  Rationale: bounded O(1) target evaluation, no 16 MiB edits or new binding, deterministic shared law.
+  Date: 2026-10-31.
+- Decision (7d): Sphere/Helix select morph targets 0/1. The morph slider/command sets a target fraction;
+  actual fraction approaches it at morph speed (default 0.25 fraction/s) in simulated substeps.
+  Zero morph speed snaps to the requested fraction on the next simulated step. First enable snaps
+  the initial shape to the selected target; switching active presets morphs without slot reassignment.
+  A changed-only `FormationFrame` snapshots settings and four substep fractions after the simulation
+  clock is prepared. CPU steps/GPU encode consume the same samples; pause freezes actual morph.
+  Scene settings change only on user/scenario edits, never because time advances. Navigation force
+  adds after obstacles and before flock mass division. Formation suppresses global/group seek and
+  wander, but retains wall steering only when the original navigation branch would wander.
+  Follow selection and group targets stay stored. Strength zero retains the formation navigation
+  selection with zero arrival force; Off explicitly restores normal navigation.
+  Rationale: consistent substeps, no per-frame scene uploads and no retained live target array.
+  Date: 2026-10-31.
+- Decision (7d): assign global dense metadata.z slots by group prefix plus current-order rank within
+  that group. Trigger on count edits, group-count edits and Off→On; preserve slots during active
+  shape edits/sorts/CPU mode switches. CPU uses two linear passes. GPU uses fixed 256-record blocks:
+  count/local-rank, eight-group block-prefix scan, then add block/group bases. Existing counts/starts
+  buffers serve as maintenance scratch, overwritten by the next normal grid build. Binding-8 tail
+  reserves eight vec4 group ranges immediately after 16 sphere records: `[5C/2+16,5C/2+24)`.
+  Range records are `(global start, member count, 0, 0)`; future predator data follows +24.
+  Recompute after capacity growth/count changes; no header copy or host readback is needed.
+  Rationale: O(N), exact deterministic assignment for identical records, no matching or ninth binding.
+  Date: 2026-10-31.
+- Decision (7d): enabled formations activate the configured GPU alignment/cohesion cap regardless of
+  following; zero remains exact. Separation stays exact and foreign groups never consume samples.
+  Eight steer variants specialize group/obstacle/formation enable bits. Benchmark sphere cap 0/16
+  at 100k/1M and record convergence/slow-step cutoffs before accepting dense-mode practicality.
+  Rationale: formations deliberately gather dense flocks; preserve the existing explicit cap control
+  and expose the exact path rather than add a hidden density approximation.
+  Date: 2026-10-31.
+
 ## Assumptions and Open Questions
 
 - The first groups implementation supports two groups (table capacity at most eight), one shared
@@ -151,7 +204,7 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Outcomes & Retrospective
 
-Design complete before implementation. Stages 7a–7c are implemented; 7d–7e remain specifications.
+Design complete before implementation. Stages 7a–7c are committed; 7d is implemented and verified; 7e remains a specification.
 Stage handoffs and validation evidence are recorded below.
 Stage 7a is implemented and ready for orchestrator review, without commits or dependency changes.
 Release suite: 97 passed, 7 ignored (eight new non-ignored tests and one new ignored GPU test).
@@ -232,6 +285,35 @@ look-ahead are delivered. Other GPUs and worst-case multi-feature density remain
 7d/7e must extend the shared tail after the sphere reservation and preserve the same snapshot,
 change-detection and capacity-relocation rules.
 
+### Stage 7d handoff
+
+Stage 7c was reviewed/committed by the orchestrator as `4e0d5a6`. Stage 7d now delivers optional
+Sphere/Helix formations, analytic targets, dense carried slots with per-group ranges/centers,
+simulated-substep morphing, navigation override/restoration, explicit cap policy, Swarm controls
+and validated scenario commands. The GPU Boid remains 64 bytes, instance 48 bytes, bindings eight;
+the only persistent formation storage addition is the 128-byte group-range header. No dense target
+array, dependency, predator code or baseline steering/default retuning was introduced.
+
+Final gate: formatting check; 116 release tests pass (13 ignored: 11 GPU and two benchmarks);
+warning-free release build; Clippy seven existing warnings, repeated for the test target; ten-second
+native smoke; diff check. The single final ignored GPU suite passed all 11 tests, including mixed
+formation/group/obstacle/attractor parity and slot/range survival through sort/growth/truncation/
+remapping/Off→On. New formation parity worst position error is 1.53e-05 world units and velocity
+error 8.54e-06. CPU lifecycle coverage also checks backend respawn and CPU mode preservation.
+Formula tests cover one million slots, all three tested blend fractions and world scaling.
+
+Off headless changes are +3.8% / +1.8% / +0.3% / +1.7% for 100k wander/follow and 1M wander/follow,
+within observed run variation; all four final runs remain recorded. Cap/60-second convergence,
+whole-frame intervals and nine captures are below. Desktop and all four rendered apps reach `exit`.
+Paused mid-morph scene pixels remain identical across two seconds. No Cargo/rustc/app remains.
+The worker did not commit, push, merge, reset or discard repository changes; HEAD remains `4e0d5a6`.
+
+Nonzero slot error is an explicit residual: arrival competes with retained flocking, exact separation,
+wall drag and soft obstacle avoidance. A blocked slot or goal outside the walls may never converge.
+The 1M 60-second p95 tail remains material despite good median convergence. Other GPUs, dense helix
+cost at 1M and worst-case multi-group combinations remain unmeasured. Stage 7e must append predator
+records after the group-range header and preserve the same change-only/simulated-time contract.
+
 ## Context and Orientation
 
 `src/vehicle.rs::flocking_force` returns flock force, divided by mass by `flock`; `movement` adds
@@ -281,7 +363,7 @@ force evaluation. No Boid/Instance layout changes in 7a, no storage buffers or p
 
 For 7b–7e, add scalar enable/strength/extent controls beside the attractor in `GlobalState`.
 The fixed group table lives in `GlobalState::groups`; a CPU `SwarmScene` resource introduced in 7c
-owns the obstacle vector, formation-slot vector and
+owns the obstacle vector, analytic formation controls and later
 predator objects/path state; extracted render data contains only the packed uniform/arena snapshot.
 CPU kernels read the same scene snapshot for each substep. If a moving obstacle/predator path changes
 between substeps, evaluate its simulated-time position analytically from the substep clock on both
@@ -293,7 +375,7 @@ same substep morph time. The disabled path never reads these collections.
 | Attractor | `GlobalState::attractor`, no per-vehicle state | Two appended Vec4 uniforms; no storage or metadata |
 | Groups | `GlobalState::groups` fixed group table; carried ID/group/slot component | Uniform group table and enable/count; separate metadata table resolved through sorted order maps; Instance.w group bits |
 | Obstacles | `SwarmScene` bounded typed sphere vector and path state | Uniform count/arena offset/strength/clearance; sphere records in shared arena |
-| Formations | `SwarmScene` dense Vec<Vec4> slot targets and morph/path parameters; carried slot component | Uniform center/extent/arrival/morph/time and slot offset/count; slot targets and carried metadata slot in arena |
+| Formations | `SwarmScene::formation` controls, changed-only substep `FormationFrame`, carried dense slot | Analytic sphere/helix uniforms; eight group ranges after sphere reservation; metadata.z slot |
 | Predators | `SwarmScene` bounded control objects, group masks and simulated path state | Uniform count/offset/strength/path time; object records in arena; no prey-history buffer |
 
 7b adds CPU metadata components but keeps the GPU Boid at 64 bytes. A persistent `vec4<u32>`
@@ -370,7 +452,7 @@ vehicles and metadata may be initialized during pause without stepping retained 
 | Attractor × formations | Field temporarily deforms assembly; arrival returns members to slots on release. |
 | Attractor × predators | Add field and flee; neither silently changes the other's strength. |
 | Groups × obstacles | All groups avoid the same proxies; cross-group separation remains complete. |
-| Groups × formations | Disjoint slot ranges per group; same formation law and one shared slot arena. |
+| Groups × formations | Disjoint carried slot ranges, separate centers and one shared range header; analytic targets. |
 | Groups × predators | Explicit prey-group mask; no skipped threats due to alignment/cohesion caps. |
 | Obstacles × formations | Avoidance competes additively with arrival; blocked slots may never converge. |
 | Obstacles × predators | Both terms apply to prey; control-object paths need separate obstacle handling if desired later. |
@@ -387,12 +469,13 @@ Controls panel shows hold F, its selected mode and the plane rule. Scenario prop
 - 7b: `set groups off|2..8`, `group_target group x y z` or `group_target group off`, `group_color group RRGGBB`; zero-based group indices 0–7.
 - 7c: `obstacle add x y z radius`, `obstacle clear`, `set obstacle_strength k`,
   `set obstacle_clearance r`; bounded list and reference radii validated before startup.
-- 7d: `set formation off|sphere|helix`, `formation_center x y z`, `set formation_extent r`,
-  `set formation_strength k`, `set formation_morph t` (0..1).
+- 7d: `set formation off|sphere|helix`, `formation_center x y z`, `set formation_extent r` (1..200),
+  `set formation_arrival_radius r` (0.1..200), `set formation_strength k` (0..20),
+  `set formation_morph t` (0..1), `set formation_morph_speed r` (0..2 fractions/s).
 - 7e: `predator add x y z radius`, `predator clear`, `set predator_strength k`,
   `set predator_path off|orbit`, `set predator_groups mask`.
 
-Only 7a–7b commands are implemented so far. Later command ranges and record layouts are
+Stages 7a–7d commands are implemented. Later command ranges and record layouts are
 finalized in their stage checkpoints; parsing always rejects non-finite/out-of-budget data.
 
 ## Concrete Steps
@@ -756,6 +839,127 @@ Look-ahead is fixed at one simulated second, and spheres are static in 7c. Dynam
 and predators remain 7d/7e work. Other GPUs, dense multi-feature combinations and worst-case CPU
 counts are unmeasured. No group rebalancing or neighbor/separation policy changed.
 
+### Stage 7d implementation and headless evidence
+
+`formation.rs` owns Copy settings, bounded analytic formulas, arrival law, and extracted
+`FormationFrame`. `SwarmScene::formation` stores edited settings only. `prepare_frame` snapshots
+settings after the simulation clock and calculates four morph samples; CPU/GPU use matching samples
+at each simulated substep. Only changed values mark resources. The UI uses an aggregate SystemParam
+for scene, actual morph and orbit focus; controls stay in Swarm and explain stored following.
+No per-frame GlobalState or scene write was added.
+
+CPU metadata assignment runs after spawn/cleanup/membership and before stepping, using current query
+record order. GPU assignment runs before sorting, after compaction/spawn/remap. A 64-thread dispatch
+handles fixed 256-record blocks serially per invocation, writing local group ranks into metadata.z
+and group histograms into existing counts. One eight-thread workgroup scans block totals and writes
+range headers; the final 256-thread pass adds group/block prefixes to each slot. All passes are O(N)
+with fixed eight-group capacity, and run only on active topology changes or enabling. Normal sorts
+carry slots through the existing order maps. Active Sphere/Helix changes preserve slots. Off keeps
+latent metadata untouched; enabling establishes valid dense slots, including vehicles spawned Off.
+CPU↔GPU respawns, CPU modes retain slots. Existing group membership/rebalancing rules remain intact.
+
+Compute Params is 400 bytes (previously 352): formation mode/reserved/block-count/range-offset at
+byte 352, center/extent at 368, arrival/strength/actual-morph/reserved at 384. Tests extend encase/Naga
+offsets and buffer bounds. Boids remain 64 bytes and instances 48. Eight specialization variants
+remove all inactive formation reads/math. Binding 8 grows only 128 bytes: ranges occupy
+`[5C/2+16,5C/2+24)` vec4s, after the 256-byte sphere reservation. Each is u32 `(start,count,0,0)`.
+Sphere uploads cannot overwrite these ranges. Growth reassigns ranges from retained/spawned records
+rather than copying old headers. Predator records in 7e must begin at `5C/2+24` or later. No dense
+slot-target allocation (16 MiB at 1M capacity), host readback, matching or new storage binding.
+
+GPU benchmark comparison: baseline is exact committed `4e0d5a6` before edits. Same Ryzen 9 7900X /
+Radeon RX 7900 XT (RADV NAVI31), Vulkan/Mesa 26.2.5-arch1.1, Linux 7.2.8-9-omarchy, pinned Rust,
+release profile, PCG frame-zero spawn, dt=1/60 s, 600 warmup plus 60 timed encode/submit/wait samples.
+Groups, attractor and obstacles are Off. Formation uses default origin/extent 60/arrival 10/cap-strength
+4 and fixed sphere blend zero. Original configured cap is 16; Off wander stays exact. Active sphere
+uses configured cap regardless of follow selection; cap zero is the complete query. Separation is
+always exact. Stored follow suppresses the wander-wall branch while formation still overrides seek.
+
+Two baseline runs, four final Off runs (two extra repeats for 100k variance), and two On runs per cap;
+all valid runs retained. GPU shader/fixture is unchanged when adding optional `GPU_BENCH_WARMUP` for
+long convergence checks. No Cargo/rustc/app overlapped. Uptime preceded each command; snapshots and
+logs are in the evidence root below. First Off launch follows this worker's compilation (load 5.44,
+2.89,2.23); no competing process was running. Process inventory showed idle desktop processes only.
+Later Off loads are 2.84/2.59/2.16, 1.17/1.43/1.71, 0.96/1.29/1.63. All requested steps completed;
+no 250 ms slow-step cutoff fired. Readback, density and slot statistics stay outside timed samples.
+
+Averages of per-run median milliseconds:
+
+| Case | 7c Off | 7d Off | Sphere cap 16 | Sphere cap 0 | Off change |
+| --- | --- | --- | --- | --- | --- |
+| 100k wander | 0.673 | 0.699 | 0.744 | 2.407 | +3.83% |
+| 100k stored follow | 3.162 | 3.217 | 0.698 | 1.439 | +1.77% |
+| 1M wander | 4.622 | 4.635 | 6.853 | 8.021 | +0.28% |
+| 1M stored follow | 7.842 | 7.975 | 6.686 | 9.579 | +1.69% |
+
+Off results remain within this run's noise envelope; 1M wander differs by about 0.3% and follow by
+1.7%. The short 100k wander sample spans 0.659–0.748 ms; dense 100k follow spans 2.771–3.416 ms.
+No fixed-state speedup or exact trajectory replay is claimed: GPU scatter and capped neighbor
+selection are nondeterministic. `all-headless-medians.md` retains each median/p95, alongside raw logs.
+
+Cap decision: keep explicit cap activation for formation, with zero exact still available. At 11
+simulated seconds cap 16 reduces 1M step cost relative to exact while preserving complete separation.
+On versus Off changes navigation, density and wall-branch choice, so it is not an isolated analytic
+formula cost. The original baseline steering/density defaults are not retuned.
+
+Convergence is measured against each record's own carried slot, using the same analytic CPU target
+and actual group ranges. Default 11-second runs are still assembling at 1M. Additional cap-16 runs
+use `GPU_BENCH_WARMUP=3540` plus 60 samples (60 simulated seconds); these show a recognizable shape
+with nonzero slot error and a long tail. Both replicas are retained:
+
+| Case / cohort | Simulated seconds | Run 1 / 2 median (p95) slot distance, world units |
+| --- | --- | --- |
+| 100k wander / on-cap16 | 11.000 | 362.707 (581.925) / 362.394 (583.745) |
+| 100k stored follow / on-cap16 | 11.000 | 274.201 (529.398) / 272.841 (531.019) |
+| 1M wander / on-cap16 | 11.000 | 1012.920 (1575.149) / 1012.864 (1575.453) |
+| 1M stored follow / on-cap16 | 11.000 | 930.088 (1455.942) / 930.116 (1455.714) |
+| 100k wander / on-cap0 | 11.000 | 381.789 (588.088) / 381.906 (587.884) |
+| 100k stored follow / on-cap0 | 11.000 | 290.313 (536.605) / 290.217 (536.758) |
+| 1M wander / on-cap0 | 11.000 | 1037.133 (1592.615) / 1037.167 (1592.770) |
+| 1M stored follow / on-cap0 | 11.000 | 951.040 (1480.432) / 950.990 (1480.623) |
+| 100k wander / convergence60 | 60.000 | 24.639 (45.015) / 24.723 (44.978) |
+| 100k stored follow / convergence60 | 60.000 | 30.088 (45.201) / 30.064 (45.237) |
+| 1M wander / convergence60 | 60.000 | 69.391 (726.329) / 69.379 (725.689) |
+| 1M stored follow / convergence60 | 60.000 | 51.740 (289.038) / 51.975 (289.578) |
+
+Evidence root:
+`/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/stage7d/`.
+
+Rendered 7d measurements: four fresh apps, physical 1776×1000 floating window, immediate
+presentation, 100k GPU Dart, Studio/Aurora, heading color, neutral sizes, 4× MSAA, 1× simulation,
+camera yaw 25°/pitch 18°/distance 2,500. Sphere uses default controls, cap 16, no groups/follow/
+attractor/obstacles. Three-second warmup, four-second sample, exit at eight seconds. These are
+whole-frame intervals during assembly, not steady-state GPU timestamps. No captures during timing.
+Scripts, launch uptime and window-size transcripts are `timing-{off,on}-{1,2}.*` in the evidence root.
+
+| Formation | Run 1 mean / p50 / p95 ms (frames) | Run 2 mean / p50 / p95 ms (frames) |
+| --- | --- | --- |
+| Off | 1.072 / 0.980 / 1.470 (3,729) | 1.002 / 0.970 / 1.260 (3,991) |
+| Sphere | 1.058 / 0.988 / 1.369 (3,782) | 1.028 / 0.989 / 1.293 (3,892) |
+
+Desktop: `desktop.ac3d` / log runs for 52 real seconds and reaches `exit`. Native window is temporarily
+floated/resized to 1776×1000; no desktop config changes persist. Camera yaw 25°/pitch 18°, distance
+1,500 (650 for Octree), vsync about 60 Hz, 4× simulated speed, default flocking/formation settings;
+no steering factors were weakened to obtain the shapes. Captures:
+
+- `sphere-assembling.png`: 20k GPU, about four simulated seconds after resume.
+- `sphere-assembled.png`: same sphere after about 60 simulated seconds; visible shell, nonzero slot error.
+- `morph-midway.png`: paused about halfway through the four-simulated-second sphere→helix target morph;
+  actual vehicles lag the moving target shape rather than being teleported.
+- `helix.png`: about 32 further simulated seconds after resume; recognizable three-turn coil.
+- `groups-formations.png`: two groups, cyan/orange, separate spheres on the XY grid, about 32 simulated
+  seconds after group count/slot reassignment. Existing membership policy remains unchanged.
+- `formation-obstacle.png`: same pair, reference-radius-14 sphere at (-313,0,180); soft avoidance
+  deforms the left formation after about 16 simulated seconds.
+- `paused-a.png`, `paused-b.png`: paused during another active morph/assembly; absolute differing pixel
+  count is zero in `960x750+420+100`, excluding UI/FPS. Two real seconds apart, no scene motion.
+- `octree-formation.png`: 1,500 CPU Octree members, two separate spheres, about 20 simulated seconds
+  after backend respawn; scene settings persist and slots rebuild.
+
+Nonzero convergence error is expected with preserved flocking, wall drag and exact separation.
+Obstructed/out-of-wall slots may never converge; helix crowding and very large group combinations
+remain limits. Measurements cover this RX 7900 XT only. Stage 7e is not implemented.
+
 ## Interfaces and Dependencies
 
 7a: new `src/swarm.rs` owns AttractorMode/settings, force kernel, cursor input, gizmo and UI.
@@ -778,6 +982,14 @@ specializations and a 256-byte sphere tail in binding 8. CPU `group_flocking_for
 scene snapshot. Scenario adds validated obstacle add/clear and strength/clearance/visibility setters.
 No new crate, storage binding, vehicle instance attribute or physics/collider integration.
 
+7d: new `formation.rs` owns `Formation`, `FormationMode`, `FormationFrame`, target/arrival functions
+and UI. `SwarmScene` embeds settings; `SwarmUi` supplies scene, actual phase and orbit focus. CPU
+`update_formation_slots` runs in maintenance; `group_flocking_force` adds arrival before mass division
+and `step_cpu` selects the frame's substep sample. GPU appends three uniforms, three maintenance
+pipelines and four formation-enabled steer variants. Group ranges share the existing arena;
+`counts`/`starts` are temporary maintenance scratch. Scenario adds mode/center/extent/arrival/cap/
+morph/speed setters; the benchmark gains optional formation and warmup controls.
+
 ---
 
 Revision notes:
@@ -799,3 +1011,11 @@ Revision notes:
 - 2026-10-31: Stage 7b committed by orchestrator as fd9921a; authorized 7c only and finalized sphere law, arena stride and upload lifecycle before code.
 
 - 2026-10-31: Stage 7c implemented with a shared sphere law, 256-byte arena tail, coherent render-scene snapshot, change-only uploads, UI/scenarios and repeated headless/rendered/desktop evidence; 109 release tests and the single final nine-test GPU gate pass.
+
+- 2026-10-31: Orchestrator committed 7c as 4e0d5a6; authorized 7d only. Finalized analytic formulas, morph/substep snapshot, slot maintenance, arena ranges and explicit formation cap policy before implementation.
+
+- 2026-10-31: Stage 7d CPU gate passes (116 tests), analytic GPU benchmark runs at 100k/1M, and convergence measurement extended to 60 simulated seconds. No target-buffer allocation or per-frame scene write was introduced.
+
+- 2026-10-31: Stage 7d desktop scenarios and repeated rendered intervals pass; recorded cap/convergence limitations and zero-pixel paused proof. The single final 11-test device gate passes.
+
+- 2026-10-31: Stage 7d complete and uncommitted; final 116-test / 11-device-test gate, Clippy baseline, desktop exit/pixel proof and all performance evidence recorded. Stage 7e remains separate owner-authorized work.
