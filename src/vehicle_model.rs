@@ -1,5 +1,6 @@
 //! Bounded static glTF import. Background jobs never mutate the running simulation.
 use std::{
+    collections::HashMap,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -158,15 +159,52 @@ impl ImportedModel {
         for normal in &mut self.normals {
             *normal = (rotation * Vec3::from_array(*normal)).to_array();
         }
-        let indices = (0..self.positions.len() as u32).collect();
-        Ok(Mesh::new(
+        Ok(self.indexed_mesh())
+    }
+
+    /// Share only exact shader inputs. Hard edges, material seams and triangle order stay intact.
+    /// Include any future vertex attributes here before sharing vertices that carry them.
+    fn indexed_mesh(self) -> Mesh {
+        let mut lookup = HashMap::<[u32; 10], u32>::with_capacity(self.positions.len());
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut colors = Vec::new();
+        let mut indices = Vec::with_capacity(self.positions.len());
+        for ((position, normal), color) in self
+            .positions
+            .into_iter()
+            .zip(self.normals)
+            .zip(self.colors)
+        {
+            let key = [
+                position[0].to_bits(),
+                position[1].to_bits(),
+                position[2].to_bits(),
+                normal[0].to_bits(),
+                normal[1].to_bits(),
+                normal[2].to_bits(),
+                color[0].to_bits(),
+                color[1].to_bits(),
+                color[2].to_bits(),
+                color[3].to_bits(),
+            ];
+            let index = *lookup.entry(key).or_insert_with(|| {
+                let index = positions.len() as u32;
+                positions.push(position);
+                normals.push(normal);
+                colors.push(color);
+                index
+            });
+            indices.push(index);
+        }
+        Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
-        .with_inserted_indices(Indices::U32(indices)))
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32(indices))
     }
 }
 
@@ -303,9 +341,11 @@ fn load(path: &Path, settings: ModelSettings) -> Result<(Mesh, usize, usize, usi
             &mut remaining,
         )
     })?;
-    let vertices = model.positions.len();
+    let triangles = model.positions.len() / 3;
     let primitives = model.primitives;
-    Ok((model.mesh(settings)?, vertices, vertices / 3, primitives))
+    let mesh = model.mesh(settings)?;
+    let vertices = mesh.count_vertices();
+    Ok((mesh, vertices, triangles, primitives))
 }
 
 fn parse(
@@ -1012,7 +1052,8 @@ mod tests {
             assert!((Vec3::from_array(*normal).length() - 1.0).abs() < 1e-5);
         }
         let mesh = model.mesh(default()).unwrap();
-        assert_eq!(mesh.count_vertices(), 72);
+        assert_eq!(mesh.count_vertices(), 62);
+        assert_eq!(mesh.indices().unwrap().len(), 72);
         for (_, values) in mesh.attributes() {
             match values {
                 VertexAttributeValues::Float32x3(values) => {
@@ -1024,6 +1065,71 @@ mod tests {
                 _ => panic!("unexpected attribute"),
             }
         }
+    }
+
+    #[test]
+    fn exact_indexing_reuses_vertices_without_changing_triangle_inputs_or_seams() {
+        let mut input = ImportedModel {
+            positions: [[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [0.0, 1.0, 2.0]].repeat(5),
+            normals: vec![[0.0, 0.0, 1.0]; 15],
+            colors: vec![[1.0, 0.5, 0.0, 1.0]; 15],
+            primitives: 1,
+        };
+        input.normals[6..9].fill([1.0, 0.0, 0.0]);
+        input.colors[9..12].fill([0.0, 0.5, 1.0, 1.0]);
+        input.positions[12][0] = f32::from_bits((-1.0_f32).to_bits() + 1);
+        input.positions[13][1] = -0.0;
+        let expected_positions = input.positions.clone();
+        let expected_normals = input.normals.clone();
+        let expected_colors = input.colors.clone();
+        let mesh = input.indexed_mesh();
+        assert_eq!(mesh.count_vertices(), 11);
+        let indices: Vec<_> = mesh.indices().unwrap().iter().collect();
+        assert_eq!(indices.len(), 15);
+        assert_eq!(indices[..3], indices[3..6]);
+        // Expanding the new index buffer must recover every original attribute bit, in order.
+        for (attribute, expected) in [
+            (
+                Mesh::ATTRIBUTE_POSITION,
+                expected_positions
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                Mesh::ATTRIBUTE_NORMAL,
+                expected_normals.iter().flatten().copied().collect(),
+            ),
+            (
+                Mesh::ATTRIBUTE_COLOR,
+                expected_colors.iter().flatten().copied().collect(),
+            ),
+        ] {
+            let values = mesh.attribute(attribute).unwrap();
+            let actual: Vec<f32> = match values {
+                VertexAttributeValues::Float32x3(values) => {
+                    indices.iter().flat_map(|&i| values[i]).collect()
+                }
+                VertexAttributeValues::Float32x4(values) => {
+                    indices.iter().flat_map(|&i| values[i]).collect()
+                }
+                _ => panic!("unexpected attribute"),
+            };
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn loaded_status_counts_indexed_vertices_and_retains_triangle_count() {
+        let (mesh, vertices, triangles, primitives) =
+            load(&root().join("assets/models/glider.glb"), default()).unwrap();
+        assert_eq!((vertices, triangles, primitives), (62, 24, 2));
+        assert_eq!(mesh.count_vertices(), vertices);
+        assert_eq!(mesh.indices().unwrap().len(), triangles * 3);
     }
 
     #[test]

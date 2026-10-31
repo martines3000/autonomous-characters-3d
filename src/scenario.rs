@@ -69,6 +69,8 @@ enum Setting {
     Style(SceneStyle),
     Palette(HeadingPalette),
     AutoFrame(bool),
+    FlockDraw(bool),
+    Msaa(Msaa),
     FollowSamples(u32),
     OctreeSize(usize),
     Number(NumberSetting, f32),
@@ -176,6 +178,9 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("color_mode", "model" | "model_colors") => Setting::ColorMode(ColorMode::ModelColors),
         ("color_mode", "solid") => Setting::ColorMode(ColorMode::Solid),
         ("solid_color", _) => Setting::SolidColor(hex_color(value)?),
+        ("flock_draw", _) => Setting::FlockDraw(switch(value)?),
+        ("msaa", "4") => Setting::Msaa(Msaa::Sample4),
+        ("msaa", "off") => Setting::Msaa(Msaa::Off),
         ("auto_frame", _) => Setting::AutoFrame(switch(value)?),
         ("gpu_max_neighbors", _) => Setting::FollowSamples(integer(value, 0, 512)? as u32),
         ("octree_size", _) => Setting::OctreeSize(integer(value, 2, 500)?),
@@ -418,6 +423,15 @@ fn run_scenario(world: &mut World) {
 
 fn apply_setting(world: &mut World, setting: Setting) {
     match setting {
+        Setting::FlockDraw(value) => world.resource_mut::<crate::instancing::FlockDraw>().0 = value,
+        Setting::Msaa(value) => {
+            for mut msaa in world
+                .query_filtered::<&mut Msaa, With<Camera3d>>()
+                .iter_mut(world)
+            {
+                *msaa = value;
+            }
+        }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
@@ -473,6 +487,18 @@ fn report(world: &mut World, mut measurement: Measurement) {
         .single(world)
         .expect("primary window");
     let resolution = (window.physical_width(), window.physical_height());
+    let draw = world.resource::<crate::instancing::FlockDraw>().0;
+    let (transform, msaa) = world
+        .query_filtered::<(&Transform, &Msaa), With<Camera3d>>()
+        .single(world)
+        .expect("camera");
+    info!(
+        "AC3D_RENDER camera_distance={:.3} camera_xyz={:?} msaa={} flock_draw={}",
+        transform.translation.length(),
+        transform.translation,
+        msaa.samples(),
+        draw
+    );
     let state = world.resource::<GlobalState>();
     let appearance = world.resource::<Appearance>();
     let frames = measurement.samples.len();
@@ -493,6 +519,33 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn measurement_controls_validate_and_preserve_default_render_and_simulation() {
+        assert!(crate::instancing::FlockDraw::default().0);
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        world.init_resource::<crate::instancing::FlockDraw>();
+        let camera = world.spawn((Camera3d::default(), Msaa::Sample4)).id();
+        let before = world.resource::<GlobalState>().clone();
+        for command in parse("0 set flock_draw off\n0 set msaa off").unwrap() {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(!world.resource::<crate::instancing::FlockDraw>().0);
+        assert_eq!(*world.get::<Msaa>(camera).unwrap(), Msaa::Off);
+        for command in parse("0 set flock_draw on\n0 set msaa 4").unwrap() {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(world.resource::<crate::instancing::FlockDraw>().0);
+        assert_eq!(*world.get::<Msaa>(camera).unwrap(), Msaa::Sample4);
+        assert_eq!(world.resource::<GlobalState>(), &before);
+        assert!(parse("0 set flock_draw maybe").is_err());
+        assert!(parse("0 set msaa 8").is_err());
+    }
+
     #[test]
     fn parses_all_commands_and_preserves_equal_time_order() {
         let script = "# example\n0 set count 200\n0 set mode gpu\n0 set style classic\n0 set palette dusk # comment\n0 set auto_frame off\n0 set vehicle_mass 70\n0 set gpu_max_neighbors 16\n0 set octree_size 50\n1 follow on\n1 target 1 -2 3\n1 camera 90 20 600\n2 frame\n2 present immediate\n3 screenshot /tmp/shot.png\n4 measure begin sample\n5 measure end\n6 present vsync\n7 follow off\n8 exit\n";

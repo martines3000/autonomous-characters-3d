@@ -64,14 +64,27 @@ impl ExtractComponent<RenderApp> for VehicleInstances {
     }
 }
 
+/// Developer measurement aid: skip only the flock draw, retaining simulation and scene work.
+#[derive(Resource, ExtractResource, Clone)]
+#[extract_app(RenderApp)]
+pub(crate) struct FlockDraw(pub bool);
+
+impl Default for FlockDraw {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 pub struct InstancingPlugin;
 
 impl Plugin for InstancingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AppearanceUniform>()
+            .init_resource::<FlockDraw>()
             .add_plugins((
                 ExtractComponentPlugin::<VehicleInstances>::default(),
                 ExtractResourcePlugin::<AppearanceUniform>::default(),
+                ExtractResourcePlugin::<FlockDraw>::default(),
             ))
             .add_systems(PostUpdate, update_appearance);
 
@@ -220,6 +233,7 @@ fn prepare_instance_buffer(
 
 #[allow(clippy::too_many_arguments)]
 fn queue_instanced(
+    draw: Res<FlockDraw>,
     draw_functions: Res<DrawFunctions<Transparent3d>>,
     pipeline: Res<InstancingPipeline>,
     mut pipelines: ResMut<SpecializedMeshPipelines<InstancingPipeline>>,
@@ -231,6 +245,9 @@ fn queue_instanced(
     views: Query<&ExtractedView>,
     view_key_cache: Res<ViewKeyCache>,
 ) {
+    if !draw.0 {
+        return;
+    }
     let draw_function = draw_functions.read().id::<DrawInstanced>();
     for view in &views {
         let Some(phase) = phases.get_mut(&view.retained_view_entity) else {

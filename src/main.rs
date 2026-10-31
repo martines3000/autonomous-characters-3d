@@ -430,8 +430,9 @@ mod tests {
         let count = state.vehicle_count;
         let mut cameras = app
             .world_mut()
-            .query_filtered::<(&Transform, &Projection), With<Camera3d>>();
-        let (transform, projection) = cameras.single(app.world()).unwrap();
+            .query_filtered::<(&Transform, &Projection, &Msaa), With<Camera3d>>();
+        let (transform, projection, msaa) = cameras.single(app.world()).unwrap();
+        assert_eq!(*msaa, Msaa::Sample4);
         assert!(transform.translation.length() > vehicle::walls(count).length());
         let Projection::Perspective(projection) = projection else {
             panic!("expected perspective camera");

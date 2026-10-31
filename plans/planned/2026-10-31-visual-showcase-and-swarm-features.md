@@ -27,7 +27,7 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 - [x] (2026-10-31 12:50Z) Stage 2: vehicle appearance, commit `f2e3eb0`; ignored GPU regressions pass (3/3).
 - [x] (2026-10-31 13:40Z) Review fixes for stages 1–2: owner approved findings 1 (held drag stops after auto-framing) and 2 (far target hidden by sky/culled); both fixed with regression tests. Finding 3 (per-frame `Appearance` change marking) deferred by the owner: cost only.
 - [x] (2026-10-31 19:10Z) Stage 3: custom static 3D models (see the custom-vehicle-models plan). Orchestrator review: zero-area triangles are now skipped instead of rejecting the model; axis caption glyphs replaced.
-- [ ] Stage 4: rendering optimization (measure first).
+- [x] (2026-10-31 19:55Z) Stage 4: rendering optimization (see the rendering-optimization plan). Import now shares bit-identical vertices through an index buffer: the 3,456-triangle stress model drops from 10,368 to 2,119 GPU vertices and from about 24 to 11.5 ms at 100k. Low-poly shapes sit at a ~1 ms floor; no LOD, impostors, culling or MSAA change was justified. Orchestrator review: accepted; the close-up (distance 100 at 1280×720) does not fill the screen, so fragment/overdraw cost at dense close views stays unmeasured.
 - [ ] Stage 5: presentation controls.
 - [ ] Stage 6: animated and multipart models.
 - [ ] Stage 7a: mouse attractor/repulsor.

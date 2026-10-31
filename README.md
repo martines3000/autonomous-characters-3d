@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 64 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 67 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -146,7 +146,7 @@ In **Vehicles**, choose a scanned model in **Shape / model**, or enter a local `
 path and press **Load**. Relative paths start at the repository root; absolute model paths work too.
 **Rescan** refreshes the nonrecursive `assets/models/` list. Reading, parsing, scanning and mesh
 construction run on Bevy's I/O task pool while the flock continues. Status shows loading, loaded
-triangle/expanded vertex/primitive counts, or a recoverable error. A failed import keeps the previous
+triangle/GPU vertex/primitive counts, or a recoverable error. A failed import keeps the previous
 shape/model; fix the file/path and press Load again. New requests supersede old ones. Choosing a
 built-in shape cancels a pending import. Rescan does not reload files automatically.
 
@@ -176,7 +176,9 @@ Supported subset:
 - One or more TRIANGLES primitives merged into **one mesh and one instanced draw**, with no
   per-vehicle entities. Float32 VEC3 POSITION; optional float32 VEC3 NORMAL. Missing normals become
   flat face normals. Optional RGB/RGBA COLOR_0 supports float32 or normalized u8/u16. Indices support
-  u8/u16/u32 or no indices. UV0 and TANGENT are ignored. Triangles expand to separate vertices.
+  u8/u16/u32 or no indices. UV0 and TANGENT are ignored. Import validates expanded triangles,
+  then shares bit-identical position/normal/color tuples through an index buffer. Hard edges,
+  material/color seams, triangle order and shader inputs stay unchanged; no approximate welding.
 - Opaque single-sided base colors; no textures (base color, normal, metallic/roughness, occlusion,
   emission or extension maps), nonzero material emission, double-sided materials, skins, animations,
   morph targets/weights, UV1+, extra color sets, joint/weight attributes or sparse accessors.
@@ -197,12 +199,14 @@ selection was kept and how to retry. Malformed input, missing resources, scene a
 have distinct messages.
 
 `assets/models/glider.glb` is generated original work under the repository's terms. It has a pointed
-gold hull and blue swept wings, authored +Z forward / +Y up: two primitives, 72 expanded vertices,
+gold hull and blue swept wings, authored +Z forward / +Y up: two primitives, 72 source vertices (62 indexed GPU vertices),
 24 triangles, source bounds (-1.3, -0.2, -1) to (1.3, 0.2, 2). Regenerate it byte-for-byte with
 Python 3's standard library:
 
 ```sh
 python3 scripts/make_example_models.py
+# Deterministic rendering stress model, same surface/colors, 3,456 triangles (250,048 bytes):
+python3 scripts/make_example_models.py --subdivisions 12 --output /tmp/ac3d-heavy.glb
 ```
 
 ## How it works
@@ -235,6 +239,51 @@ independent (tuned at 60 Hz). Separation pushes add up and grow stronger with cl
 
 ## Performance
 
+### RX 7900 XT, Stage 4 (2026-10-31)
+
+Ryzen 9 7900X, Radeon RX 7900 XT / RADV, Vulkan, Mesa 26.2.5-arch1.1, native release,
+Hyprland/Wayland. Physical window fixed at **1280×720**, immediate presentation, GPU wander,
+Studio/Aurora, **MSAA 4×**, neutral model/render size and proportions. Each case uses two fresh
+launches, six seconds warmup and twelve seconds sampled; no captures during timings. Launch
+one-minute load stayed <=3.0; competing GPU jobs were excluded. These are uncapped frame intervals,
+not GPU timestamp durations or displayed monitor refresh rates.
+
+Camera yaw/pitch is **0° / 17.28°**. Default framing uses Frame world: distance **2851.546** at
+20k and **4876.075** at 100k. Close-up distance is **100** at both counts, inside the flock.
+Dart has **14 triangles**; heavy is a deterministic **3,456-triangle** subdivision of the example
+glider, preserving its surface/normals/colors. Table means average the two per-run means;
+FPS below is 1000 / that mean. Full per-run mean/p50/p95, FPS, settings, loads, rejected attempts,
+Bird (24 triangles), small glider (24), MSAA-off, Classic and no-draw controls are in the
+[Stage 4 plan](plans/planned/2026-10-31-rendering-optimization.md).
+
+| Vehicles | View | Model | Before mean ms / FPS | After mean ms / FPS |
+| ---: | --- | --- | ---: | ---: |
+| 20,000 | default | Dart | 1.038 / 963.4 | 1.042 / 960.2 |
+| 20,000 | default | Heavy | 5.277 / 189.5 | 2.874 / 347.9 |
+| 20,000 | close | Dart | 1.081 / 925.5 | 1.028 / 972.3 |
+| 20,000 | close | Heavy | 5.295 / 188.9 | 2.885 / 346.6 |
+| 100,000 | default | Dart | 1.025 / 975.6 | 1.019 / 981.4 |
+| 100,000 | default | Heavy | 23.868 / 41.9 | 11.538 / 86.7 |
+| 100,000 | close | Dart | 1.027 / 973.2 | 1.004 / 996.0 |
+| 100,000 | close | Heavy | 24.099 / 41.5 | 11.588 / 86.3 |
+
+Exact import indexing cuts heavy-model GPU vertices from **10,368 to 2,119**, retaining all
+3,456 triangles and every position/normal/color bit, hard edge and color seam. Heavy mean frame
+intervals fall **45.5–51.9%**. Default Dart keeps its existing mesh/shader path; its small timing
+differences are run variation. Hashing/allocation happens once during background import. Models
+without shared full attribute tuples benefit less; the import triangle ceiling is not a flock
+performance guarantee.
+
+The heavy model costs nearly the same near/far and with MSAA off, while no-draw controls retain
+simulation/scene work near 1 ms. This supports a geometry/vertex bottleneck for that model;
+CPU/compute/presentation contributions at the low-poly floor remain unseparated. Classic versus
+Studio establishes no measurable scene penalty at this floor. No approximate LOD, impostors,
+culling, extra depth pass, cheaper shading or MSAA default reduction was justified. There is no
+visual quality loss or LOD transition; MSAA stays 4×. Developer scenarios can use `set msaa off`
+and `set flock_draw off` for comparisons; normal startup draws the flock with 4× MSAA.
+
+### Historical Apple M3 Pro measurements (2026-10-30)
+
 Apple M3 Pro, release build. Headless median milliseconds per simulation step (no rendering):
 
 | Vehicles | CPU naive | CPU octree | GPU wander | GPU follow (cap 16) |
@@ -265,6 +314,8 @@ CARGO_BUILD_JOBS=4 cargo build --release --locked
 python3 scripts/smoke-native.py   # opens the app for 10 s; needs a desktop session
 git diff --check
 ```
+
+Generator regression checks: `python3 -m unittest discover -s scripts -p 'test_make_example_models.py'`.
 
 The normal tests cover:
 - steering safety and CPU modes;
@@ -325,6 +376,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
 | `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `model_colors` (alias `model`) |
 | `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
+| `set msaa` | Developer measurement control: `4` (default) or `off`; changes the camera only |
+| `set flock_draw` | Developer measurement control: `on` (default) / `off`; skips only flock drawing, retains GPU simulation and scene |
 | `set auto_frame` | `on` / `off` (also `true` / `false`) |
 | `set gpu_max_neighbors` | Integer 0–512 |
 | `set octree_size` | Integer 2–500 |

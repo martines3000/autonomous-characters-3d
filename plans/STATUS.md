@@ -4,14 +4,16 @@
 
 - [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
 
-- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 implemented and verified, awaiting orchestrator review; Stage 6 remains planned.
+- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 committed (`7e66fd3`); Stage 6 remains planned.
+
+- [Rendering optimization](planned/2026-10-31-rendering-optimization.md): Stage 4 done: 54 before / 32 after timings; exact import indexing halves heavy-model frame time.
 
 ## Prioritized future tasks
 
-No ExecPlan exists yet for these; create one from `TEMPLATE.md` when starting.
+Items without a linked ExecPlan need one from `TEMPLATE.md` when starting.
 
 1. **Follow-mode density at 100,000+ vehicles.** With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
-2. **Rendering cost in close-up views.** On the M3 Pro, 100,000 wandering vehicles viewed close up reach about 59 FPS, while 300,000 viewed from far away reach about 92 FPS. Investigate fewer triangles per dart or distance impostors, MSAA cost and a depth pre-pass; measure each before changing visuals.
+2. **Rendering budgets for heavy custom models and other GPUs.** [Stage 4](planned/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
 3. **Wall avoidance acts as drag inside the walls.** Both CPU and GPU apply the wall-avoidance term every step, even in bounds, steering toward zero velocity. Wander speed settles near 29 units/s rather than the configured 40. The owner should decide the intended behavior before changing both implementations together.
 
 Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye after the wall-drag decision (wander currently settles near 29 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS).
