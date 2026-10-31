@@ -30,13 +30,51 @@ const SHADER: &str = include_str!("../assets/shaders/gpu_flock.wgsl");
 const WORKGROUP: u32 = 256;
 // Cells per prefix-sum block; matches SCAN_BLOCK in the shader.
 const SCAN_BLOCK: u32 = 512;
-// `Boid` in the shader: position/theta, velocity/phi, rotation, separation scratch.
-pub(crate) type BoidData = [Vec4; 4];
-const BOID_SIZE: u64 = size_of::<BoidData>() as u64;
+// Test/readback snapshot combines the 64-byte shader Boid and separate 16-byte metadata.
+#[cfg(test)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct BoidData {
+    pub state: [Vec4; 4],
+    pub metadata: UVec4,
+}
+
+#[cfg(test)]
+impl From<[Vec4; 4]> for BoidData {
+    fn from(state: [Vec4; 4]) -> Self {
+        Self {
+            state,
+            metadata: UVec4::ZERO,
+        }
+    }
+}
+#[cfg(test)]
+impl std::ops::Deref for BoidData {
+    type Target = [Vec4; 4];
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for BoidData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+#[cfg(test)]
+impl<'a> IntoIterator for &'a BoidData {
+    type Item = &'a Vec4;
+    type IntoIter = std::slice::Iter<'a, Vec4>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.state.iter()
+    }
+}
+const BOID_SIZE: u64 = size_of::<[Vec4; 4]>() as u64;
+const METADATA_SIZE: u64 = size_of::<UVec4>() as u64;
 
 /// Everything the shader needs for one step; filled each frame from `GlobalState`, the target
 /// and the frame time. `count` is 0 when another simulation mode is active.
-#[derive(Resource, ExtractResource, Clone, Copy, Default, Debug, ShaderType)]
+#[derive(Resource, ExtractResource, Clone, Copy, Default, Debug, PartialEq, ShaderType)]
 #[extract_app(RenderApp)]
 pub(crate) struct GpuParams {
     pub count: u32,
@@ -71,6 +109,9 @@ pub(crate) struct GpuParams {
     pub attractor_position_radius: Vec4,
     // x: signed strength (zero disables); yzw: reserved.
     pub attractor_strength: Vec4,
+    // x: active group count (0 = off), y: next spawn ID, z: input order-map base, w: capacity.
+    pub groups: UVec4,
+    pub group_targets: [Vec4; crate::swarm::MAX_GROUPS],
 }
 
 impl GpuParams {
@@ -114,7 +155,12 @@ pub(crate) fn update_gpu_params(
         .map_or((Vec3::ZERO, false), |(transform, selection)| {
             (transform.translation, selection.0)
         });
-    *params = gpu_params(&state, target, selection, frame.step.as_secs_f32());
+    params.set_if_neq(gpu_params(
+        &state,
+        target,
+        selection,
+        frame.step.as_secs_f32(),
+    ));
 }
 
 pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f32) -> GpuParams {
@@ -127,7 +173,16 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
         count: count as u32,
         // Sparse wander uses exactly the unlimited path, avoiding an otherwise unconditional
         // fine-grid rebuild and separation pass. The cap targets dense follow-mode flocks.
-        max_neighbors: if follow { state.gpu_max_neighbors } else { 0 },
+        max_neighbors: if follow || state.groups.has_targets() {
+            state.gpu_max_neighbors
+        } else {
+            0
+        },
+        groups: UVec4::new(state.groups.count, 0, 0, 0),
+        group_targets: state
+            .groups
+            .table
+            .map(|group| group.target.map_or(Vec4::ZERO, |point| point.extend(1.0))),
         follow: follow as u32,
         dt,
         cell_size: state.vehicle_size
@@ -194,7 +249,7 @@ fn run_gpu_flock(
     };
     let span = recorder.time_span(context.command_encoder(), name);
     // A paused frame still permits spawn/truncate maintenance, never sorting or steering.
-    if frame.steps > 0 || params.count != flock.count {
+    if frame.steps > 0 || params.count != flock.count || params.groups.x != flock.group_count {
         for _ in 0..frame.steps.max(1) {
             flock.encode(&device, &queue, context.command_encoder(), &params);
         }
@@ -215,25 +270,35 @@ fn run_gpu_flock(
 pub(crate) struct GpuFlock {
     layout: BindGroupLayout,
     spawn: ComputePipeline,
+    update_groups: ComputePipeline,
+    gather_metadata: ComputePipeline,
+    compact_metadata: ComputePipeline,
     clear_counts: ComputePipeline,
     count_cells: ComputePipeline,
     count_separation: ComputePipeline,
     scan_blocks: ComputePipeline,
     scan_block_sums: ComputePipeline,
     scatter: ComputePipeline,
+    scatter_fine: ComputePipeline,
     separate: ComputePipeline,
     steer: ComputePipeline,
+    steer_groups: ComputePipeline,
     params: Buffer,
     buffers: Option<FlockBuffers>,
     // Boids alive on the GPU.
     count: u32,
     frame: u32,
+    next_id: u32,
+    group_count: u32,
+    // Vec4 offset (0 or capacity/4) of the order map matching the current boids.
+    order_base: u32,
 }
 
-// The bind group keeps the grid buffers alive; only these two are used directly.
+// The bind group keeps the grid buffers alive; state, instances and metadata are also used directly.
 pub(crate) struct FlockBuffers {
     pub boids: Buffer,
     pub instances: Buffer,
+    arena: Buffer,
     bind_group: BindGroup,
     capacity: u32,
     table_size: u32,
@@ -287,6 +352,12 @@ impl FlockBuffers {
             capacity as u64 * size_of::<crate::instancing::InstanceData>() as u64,
             BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
+        let arena = buffer(
+            "gpu_flock_metadata_arena",
+            // Two metadata tables and two packed u32 order maps; scene data shares this binding.
+            capacity as u64 * METADATA_SIZE * 5 / 2,
+            BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        );
         let bind_group = device.create_bind_group(
             "gpu_flock",
             layout,
@@ -299,11 +370,13 @@ impl FlockBuffers {
                 starts.as_entire_binding(),
                 block_sums.as_entire_binding(),
                 instances.as_entire_binding(),
+                arena.as_entire_binding(),
             )),
         );
         Self {
             boids,
             instances,
+            arena,
             bind_group,
             capacity,
             table_size,
@@ -324,6 +397,7 @@ impl GpuFlock {
                 storage_buffer_sized(false, None),
                 storage_buffer_sized(false, None),
                 storage_buffer_sized(false, None),
+                storage_buffer_sized(false, None),
             ),
         );
         let layout = device.create_bind_group_layout("gpu_flock", &entries);
@@ -336,13 +410,16 @@ impl GpuFlock {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |entry_point| {
+        let pipeline = |entry_point, groups| {
             device.create_compute_pipeline(&RawComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some(entry_point),
-                compilation_options: default(),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &[("GROUPS_ENABLED", groups)],
+                    ..default()
+                },
                 cache: None,
             })
         };
@@ -353,20 +430,28 @@ impl GpuFlock {
             mapped_at_creation: false,
         });
         Self {
-            spawn: pipeline("spawn"),
-            clear_counts: pipeline("clear_counts"),
-            count_cells: pipeline("count"),
-            count_separation: pipeline("count_separation"),
-            scan_blocks: pipeline("scan_blocks"),
-            scan_block_sums: pipeline("scan_block_sums"),
-            scatter: pipeline("scatter"),
-            separate: pipeline("separate"),
-            steer: pipeline("steer"),
+            spawn: pipeline("spawn", 0.0),
+            update_groups: pipeline("update_groups", 0.0),
+            gather_metadata: pipeline("gather_metadata", 0.0),
+            compact_metadata: pipeline("compact_metadata", 0.0),
+            clear_counts: pipeline("clear_counts", 0.0),
+            count_cells: pipeline("count", 0.0),
+            count_separation: pipeline("count_separation", 0.0),
+            scan_blocks: pipeline("scan_blocks", 0.0),
+            scan_block_sums: pipeline("scan_block_sums", 0.0),
+            scatter: pipeline("scatter", 0.0),
+            scatter_fine: pipeline("scatter_fine", 0.0),
+            separate: pipeline("separate", 0.0),
+            steer: pipeline("steer", 0.0),
+            steer_groups: pipeline("steer", 1.0),
             layout,
             params,
             buffers: None,
             count: 0,
             frame: 0,
+            next_id: 0,
+            group_count: 0,
+            order_base: 0,
         }
     }
 
@@ -384,9 +469,13 @@ impl GpuFlock {
         let count = params.count;
         if count == 0 {
             self.count = 0;
+            self.next_id = 0;
+            self.order_base = 0;
+            self.group_count = params.groups.x;
             return;
         }
-        if !params.simulates() && count <= self.count {
+        let remap = params.groups.x != self.group_count;
+        if !params.simulates() && count == self.count && !remap {
             self.count = count;
             return;
         }
@@ -406,6 +495,20 @@ impl GpuFlock {
                         self.count as u64 * BOID_SIZE,
                     );
                     encoder.copy_buffer_to_buffer(
+                        &old.arena,
+                        0,
+                        &grown.arena,
+                        0,
+                        self.count as u64 * METADATA_SIZE,
+                    );
+                    encoder.copy_buffer_to_buffer(
+                        &old.arena,
+                        (old.capacity as u64 * 2 + self.order_base as u64) * METADATA_SIZE,
+                        &grown.arena,
+                        grown.capacity as u64 * 2 * METADATA_SIZE,
+                        self.count as u64 * 4,
+                    );
+                    encoder.copy_buffer_to_buffer(
                         &old.instances,
                         0,
                         &grown.instances,
@@ -415,6 +518,7 @@ impl GpuFlock {
                 }
             }
             self.buffers = Some(grown);
+            self.order_base = 0;
         }
         let buffers = self.buffers.as_ref().unwrap();
         let spawn_from = self.count.min(count);
@@ -424,6 +528,12 @@ impl GpuFlock {
             table_mask: buffers.table_size - 1,
             frame: self.frame,
             block_count,
+            groups: UVec4::new(
+                params.groups.x,
+                self.next_id,
+                self.order_base,
+                buffers.capacity,
+            ),
             ..*params
         };
         let mut bytes = encase::UniformBuffer::new(Vec::<u8>::new());
@@ -443,10 +553,25 @@ impl GpuFlock {
             timestamp_writes: None,
         });
         pass.set_bind_group(0, &*buffers.bind_group, &[]);
+        if count != self.count && spawn_from > 0 {
+            pass.set_pipeline(&self.gather_metadata);
+            pass.dispatch_workgroups(groups(spawn_from), 1, 1);
+            pass.set_pipeline(&self.compact_metadata);
+            pass.dispatch_workgroups(groups(spawn_from), 1, 1);
+        }
         if spawn_from < count {
             pass.set_pipeline(&self.spawn);
             pass.dispatch_workgroups(groups(count - spawn_from), 1, 1);
         }
+        if remap {
+            pass.set_pipeline(&self.update_groups);
+            pass.dispatch_workgroups(groups(count), 1, 1);
+        }
+        self.next_id = self
+            .next_id
+            .checked_add(count - spawn_from)
+            .expect("GPU spawn ID exhausted");
+        self.group_count = params.groups.x;
         if !params.simulates() {
             drop(pass);
             self.count = count;
@@ -460,7 +585,7 @@ impl GpuFlock {
                 (&self.count_separation, groups(count)),
                 (&self.scan_blocks, block_count),
                 (&self.scan_block_sums, 1),
-                (&self.scatter, groups(count)),
+                (&self.scatter_fine, groups(count)),
                 (&self.separate, groups(count)),
             ] {
                 pass.set_pipeline(pipeline);
@@ -473,12 +598,22 @@ impl GpuFlock {
             (&self.scan_blocks, block_count),
             (&self.scan_block_sums, 1),
             (&self.scatter, groups(count)),
-            (&self.steer, groups(count)),
+            (
+                if params.groups.x == 0 {
+                    &self.steer
+                } else {
+                    &self.steer_groups
+                },
+                groups(count),
+            ),
         ] {
             pass.set_pipeline(pipeline);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         drop(pass);
+        if params.max_neighbors == 0 {
+            self.order_base = buffers.capacity / 4 - self.order_base;
+        }
         self.count = count;
         self.frame = self.frame.wrapping_add(1);
     }
@@ -489,6 +624,9 @@ impl GpuFlock {
         let count = boids.len() as u32;
         if count == 0 {
             self.count = 0;
+            self.next_id = 0;
+            self.group_count = 0;
+            self.order_base = 0;
             return;
         }
         if self
@@ -498,13 +636,35 @@ impl GpuFlock {
         {
             self.buffers = Some(FlockBuffers::new(device, &self.layout, &self.params, count));
         }
-        let bytes: Vec<u8> = boids
-            .iter()
-            .flat_map(|boid| boid.iter().flat_map(|v| v.to_array()))
-            .flat_map(f32::to_le_bytes)
-            .collect();
-        queue.write_buffer(&self.buffers.as_ref().unwrap().boids, 0, &bytes);
+        let mut bytes = Vec::with_capacity(boids.len() * BOID_SIZE as usize);
+        let mut metadata = Vec::with_capacity(boids.len() * METADATA_SIZE as usize);
+        for boid in boids {
+            for value in boid.state.iter().flat_map(|v| v.to_array()) {
+                bytes.extend(value.to_le_bytes());
+            }
+            for value in boid.metadata.to_array() {
+                metadata.extend(value.to_le_bytes());
+            }
+        }
+        let buffers = self.buffers.as_ref().unwrap();
+        queue.write_buffer(&buffers.boids, 0, &bytes);
+        queue.write_buffer(&buffers.arena, 0, &metadata);
+        let order: Vec<u8> = (0..count).flat_map(u32::to_le_bytes).collect();
+        queue.write_buffer(
+            &buffers.arena,
+            buffers.capacity as u64 * 2 * METADATA_SIZE,
+            &order,
+        );
         self.count = count;
+        self.order_base = 0;
+        self.next_id = boids
+            .iter()
+            .map(|b| b.metadata.x)
+            .max()
+            .unwrap()
+            .checked_add(1)
+            .unwrap();
+        self.group_count = 0;
     }
 
     /// Read the draw stream to verify stable phase transport after sorting and paused growth.
@@ -564,7 +724,9 @@ impl GpuFlock {
         if self.count == 0 {
             return Vec::new();
         }
-        let size = self.count as u64 * BOID_SIZE;
+        let state_size = self.count as u64 * BOID_SIZE;
+        let order_offset = state_size + self.count as u64 * METADATA_SIZE;
+        let size = order_offset + self.count as u64 * 4;
         let staging = device.create_buffer(&BufferDescriptor {
             label: Some("gpu_flock_readback"),
             size,
@@ -572,32 +734,65 @@ impl GpuFlock {
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-        encoder.copy_buffer_to_buffer(&self.buffers.as_ref().unwrap().boids, 0, &staging, 0, size);
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.as_ref().unwrap().boids,
+            0,
+            &staging,
+            0,
+            state_size,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.as_ref().unwrap().arena,
+            0,
+            &staging,
+            state_size,
+            self.count as u64 * METADATA_SIZE,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.as_ref().unwrap().arena,
+            (self.buffers.as_ref().unwrap().capacity as u64 * 2 + self.order_base as u64)
+                * METADATA_SIZE,
+            &staging,
+            order_offset,
+            self.count as u64 * 4,
+        );
         queue.submit([encoder.finish()]);
         staging
             .slice(..)
             .map_async(MapMode::Read, |result| result.unwrap());
         device.poll(PollType::wait_indefinitely()).unwrap();
-        let floats: Vec<f32> = staging
+        let bytes = staging
             .slice(..)
             .get_mapped_range()
-            .expect("GPU flock readback is mapped after polling")
-            .as_chunks::<4>()
+            .expect("GPU flock readback is mapped after polling");
+        bytes[..state_size as usize]
+            .as_chunks::<{ BOID_SIZE as usize }>()
             .0
             .iter()
-            .map(|bytes| f32::from_le_bytes(*bytes))
-            .collect();
-        floats
-            .as_chunks::<16>()
-            .0
-            .iter()
-            .map(|f| {
-                [
-                    Vec4::new(f[0], f[1], f[2], f[3]),
-                    Vec4::new(f[4], f[5], f[6], f[7]),
-                    Vec4::new(f[8], f[9], f[10], f[11]),
-                    Vec4::new(f[12], f[13], f[14], f[15]),
-                ]
+            .enumerate()
+            .map(|(index, record)| {
+                let word =
+                    |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let state = std::array::from_fn(|i| {
+                    Vec4::from_array(std::array::from_fn(|axis| {
+                        f32::from_bits(word(i * 4 + axis))
+                    }))
+                });
+                let offset = order_offset as usize + index * 4;
+                let record_index =
+                    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                assert!(
+                    record_index < self.count as usize,
+                    "invalid GPU metadata order map"
+                );
+                BoidData {
+                    state,
+                    metadata: UVec4::from_array(std::array::from_fn(|axis| {
+                        let offset =
+                            state_size as usize + record_index * METADATA_SIZE as usize + axis * 4;
+                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+                    })),
+                }
             })
             .collect()
     }
@@ -752,12 +947,25 @@ mod tests {
             target_position: Vec3::new(29.0, 30.0, 31.0),
             attractor_position_radius: Vec4::new(32.0, 33.0, 34.0, 35.0),
             attractor_strength: Vec4::new(36.0, 37.0, 38.0, 39.0),
+            groups: UVec4::new(2, 100, 101, 102),
+            group_targets: std::array::from_fn(|i| Vec4::splat((40 + i) as f32)),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 176);
-        assert_eq!(bytes.len(), 176);
+        assert_eq!(GpuParams::min_size().get(), 320);
+        assert_eq!(bytes.len(), 320);
+        assert_eq!(size_of::<BoidData>(), 80);
+        assert_eq!(BOID_SIZE, 64);
+        for (axis, value) in [2_u32, 100, 101, 102].into_iter().enumerate() {
+            assert_eq!(&bytes[176 + axis * 4..180 + axis * 4], &value.to_le_bytes());
+        }
+        for i in 0..8 {
+            for axis in 0..4 {
+                let offset = 192 + i * 16 + axis * 4;
+                assert_eq!(&bytes[offset..offset + 4], &((40 + i) as f32).to_le_bytes());
+            }
+        }
         for i in 0..7 {
             assert_eq!(&bytes[i * 4..i * 4 + 4], &(i as u32 + 1).to_le_bytes());
         }

@@ -49,7 +49,12 @@ pub(crate) fn step_cpu(world: &mut World) {
 }
 
 #[derive(Component)]
+#[require(VehicleMetadata)]
 pub struct Vehicle;
+
+// x: spawn ID, y: group, z: formation slot, w: reserved. Travels with the vehicle.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct VehicleMetadata(UVec4);
 
 #[derive(Component, Default)]
 struct VehicleVelocity(pub Vector3<f32>);
@@ -66,6 +71,7 @@ struct VehicleWanderRotation {
 #[derive(Default, Resource)]
 struct VehicleSpawner {
     vehicle_count: usize,
+    next_id: u32,
 }
 
 impl Plugin for VehiclePlugin {
@@ -76,7 +82,13 @@ impl Plugin for VehiclePlugin {
             .add_systems(PostUpdate, crate::vehicle_appearance::update_shape)
             .add_systems(
                 Update,
-                (vehicle_spawner, vehicle_cleanup, step_cpu, sync_instances)
+                (
+                    vehicle_spawner,
+                    vehicle_cleanup,
+                    update_membership,
+                    step_cpu,
+                    sync_instances,
+                )
                     .chain()
                     .after(crate::target::input_controls),
             );
@@ -103,23 +115,25 @@ fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 fn sync_instances(
-    vehicles: Query<(Entity, &Transform, &VehicleVelocity), With<Vehicle>>,
+    vehicles: Query<(Entity, &Transform, &VehicleVelocity, &VehicleMetadata), With<Vehicle>>,
     mut flock: Single<&mut VehicleInstances>,
     state: Res<GlobalState>,
 ) {
     flock.0.clear();
-    flock
-        .0
-        .extend(vehicles.iter().map(|(entity, transform, velocity)| {
-            [
-                transform.translation.extend(pack_speed_group(
-                    velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
-                    0,
-                )),
-                Vec4::from(transform.rotation),
-                instance_phase(entity.to_bits()),
-            ]
-        }));
+    flock.0.extend(
+        vehicles
+            .iter()
+            .map(|(entity, transform, velocity, metadata)| {
+                [
+                    transform.translation.extend(pack_speed_group(
+                        velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
+                        state.groups.render_group(metadata.0.y),
+                    )),
+                    Vec4::from(transform.rotation),
+                    instance_phase(entity.to_bits()),
+                ]
+            }),
+    );
 }
 
 fn vehicle_spawner(
@@ -128,12 +142,20 @@ fn vehicle_spawner(
     state: Res<GlobalState>,
 ) {
     while cpu_vehicle_count(&state) > vehicle_spawner.vehicle_count {
+        let id = vehicle_spawner.next_id;
+        vehicle_spawner.next_id = id.checked_add(1).expect("CPU spawn ID exhausted");
         commands
             .spawn(Transform::from_translation(
                 (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
                     * spawn_size(state.vehicle_count),
             ))
             .insert(Vehicle)
+            .insert(VehicleMetadata(UVec4::new(
+                id,
+                state.groups.spawn_group(id),
+                0,
+                0,
+            )))
             .insert(VehicleVelocity(
                 random_direction().mul(state.vehicle_max_speed),
             ))
@@ -155,6 +177,7 @@ type SteeringQuery<'w, 's> = Query<
         &'static mut VehicleAcceleration,
         &'static mut Transform,
         &'static mut VehicleWanderRotation,
+        &'static VehicleMetadata,
     ),
     With<Vehicle>,
 >;
@@ -179,9 +202,8 @@ fn movement(
         flock(&mut vehicle_query, &state);
 
         // Seek
-        vehicle_query
-            .par_iter_mut()
-            .for_each(|(_, velocity, mut acceleration, transform, _)| {
+        vehicle_query.par_iter_mut().for_each(
+            |(_, velocity, mut acceleration, transform, _, _)| {
                 // Calculate force
                 let mut force: Vector3<f32> =
                     (target_transform.translation - transform.translation).into();
@@ -193,7 +215,8 @@ fn movement(
 
                 // Apply force
                 acceleration.apply_force(force, state.vehicle_mass);
-            });
+            },
+        );
     } else {
         let wander_delta = wander_step_bound(time.delta_secs());
 
@@ -205,7 +228,19 @@ fn movement(
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_iter_mut().for_each(
-            |(_, velocity, mut acceleration, transform, mut wander_rotation)| {
+            |(_, velocity, mut acceleration, transform, mut wander_rotation, metadata)| {
+                if let Some(target) = state.groups.target(metadata.0.y) {
+                    let mut force =
+                        normalize_or_zero(Vector3::from(target - transform.translation))
+                            * state.vehicle_max_speed
+                            - velocity.0;
+                    limit(
+                        &mut force,
+                        state.vehicle_max_speed * state.vehicle_seek_factor,
+                    );
+                    acceleration.apply_force(force, state.vehicle_mass);
+                    return;
+                }
                 // Check if in bounds
                 let fx = transform.translation.x < -walls.x || transform.translation.x > walls.x;
                 let fy = transform.translation.y < -walls.y || transform.translation.y > walls.y;
@@ -332,6 +367,29 @@ fn vehicle_cleanup(
             break;
         }
     }
+    if vehicle_spawner.vehicle_count == 0 {
+        vehicle_spawner.next_id = 0;
+    }
+}
+
+fn update_membership(
+    state: Res<GlobalState>,
+    mut previous: Local<Option<u32>>,
+    mut vehicles: Query<&mut VehicleMetadata, With<Vehicle>>,
+) {
+    if *previous == Some(state.groups.count) {
+        return;
+    }
+    *previous = Some(state.groups.count);
+    if state.groups.count == 0 {
+        return;
+    }
+    for mut metadata in &mut vehicles {
+        let group = state.groups.mapped_group(metadata.0.y);
+        if metadata.0.y != group {
+            metadata.0.y = group;
+        }
+    }
 }
 
 fn update(
@@ -390,16 +448,17 @@ struct OctreeData {
     pub entity: Entity,
     pub transform: Transform,
     pub velocity: Vector3<f32>,
+    pub group: u32,
 }
 
 fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
     if state.mode == SimulationMode::Octree {
-        let Some((_, _, _, first_transform, _)) = vehicle_query.iter().next() else {
+        let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
             return;
         };
         let mut min = first_transform.translation;
         let mut max = min;
-        for (_, _, _, transform, _) in vehicle_query.iter() {
+        for (_, _, _, transform, _, _) in vehicle_query.iter() {
             min = min.min(transform.translation);
             max = max.max(transform.translation);
         }
@@ -436,7 +495,7 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
             * state.vehicle_size;
 
         // Insert all vehicles into octree
-        for (entity, velocity, _, transform, _) in &mut vehicle_query.iter() {
+        for (entity, velocity, _, transform, _, metadata) in &mut vehicle_query.iter() {
             octree.insert(
                 Point {
                     x: transform.translation.x,
@@ -447,14 +506,15 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                     entity,
                     transform: transform.clone(),
                     velocity: velocity.0,
+                    group: metadata.0.y,
                 },
             );
         }
 
         // Find all neighbors for each vehicle
         vehicle_query.par_iter_mut().for_each(
-            |(entity, velocity, mut acceleration, transform, _)| {
-                let force = flocking_force(
+            |(entity, velocity, mut acceleration, transform, _, metadata)| {
+                let force = group_flocking_force(
                     transform.translation.into(),
                     velocity.0,
                     |visit| {
@@ -467,12 +527,17 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
                             radius,
                             |neighbor| {
                                 if neighbor.entity != entity {
-                                    visit(neighbor.transform.translation.into(), neighbor.velocity);
+                                    visit(
+                                        neighbor.transform.translation.into(),
+                                        neighbor.velocity,
+                                        neighbor.group,
+                                    );
                                 }
                             },
                         );
                     },
                     state,
+                    metadata.0.y,
                 );
                 acceleration.apply_force(force, state.vehicle_mass);
             },
@@ -483,33 +548,60 @@ fn flock(vehicle_query: &mut SteeringQuery, state: &Res<GlobalState>) {
 
     let others = vehicle_query
         .iter()
-        .map(|(entity, velocity, _, transform, _)| (entity.index(), velocity.0, transform.clone()))
+        .map(|(entity, velocity, _, transform, _, metadata)| {
+            (entity.index(), velocity.0, transform.clone(), metadata.0.y)
+        })
         .collect::<Vec<_>>();
 
-    vehicle_query
-        .par_iter_mut()
-        .for_each(|(entity, velocity, mut acceleration, transform, _)| {
-            let force = flocking_force(
+    vehicle_query.par_iter_mut().for_each(
+        |(entity, velocity, mut acceleration, transform, _, metadata)| {
+            let force = group_flocking_force(
                 transform.translation.into(),
                 velocity.0,
                 |visit| {
-                    for (other_index, other_velocity, other_transform) in &others {
+                    for (other_index, other_velocity, other_transform, other_group) in &others {
                         if entity.index() != *other_index {
-                            visit(other_transform.translation.into(), *other_velocity);
+                            visit(
+                                other_transform.translation.into(),
+                                *other_velocity,
+                                *other_group,
+                            );
                         }
                     }
                 },
                 state,
+                metadata.0.y,
             );
             acceleration.apply_force(force, state.vehicle_mass);
-        });
+        },
+    );
 }
 
+// Legacy fixtures use a single group; production and mixed fixtures share the kernel below.
+#[cfg(test)]
 fn flocking_force(
     position: Vector3<f32>,
     velocity: Vector3<f32>,
     neighbors: impl FnOnce(&mut dyn FnMut(Vector3<f32>, Vector3<f32>)),
     state: &GlobalState,
+) -> Vector3<f32> {
+    group_flocking_force(
+        position,
+        velocity,
+        |visit| {
+            neighbors(&mut |position, velocity| visit(position, velocity, 0));
+        },
+        state,
+        0,
+    )
+}
+
+fn group_flocking_force(
+    position: Vector3<f32>,
+    velocity: Vector3<f32>,
+    neighbors: impl FnOnce(&mut dyn FnMut(Vector3<f32>, Vector3<f32>, u32)),
+    state: &GlobalState,
+    group: u32,
 ) -> Vector3<f32> {
     let separate_radius = state.vehicle_size * state.vehicle_separation_distance;
     let dist_separate = separate_radius.powi(2);
@@ -521,7 +613,7 @@ fn flocking_force(
     let mut align_count = 0;
     let mut cohesion_count = 0;
 
-    neighbors(&mut |other_position, other_velocity| {
+    neighbors(&mut |other_position, other_velocity, other_group| {
         let diff = position - other_position;
         let distance_squared = diff.magnitude_squared();
 
@@ -531,6 +623,11 @@ fn flocking_force(
             let distance = distance_squared.sqrt();
             separate_sum +=
                 diff / distance * (separate_radius / distance - 1.0).min(MAX_SEPARATION_PUSH);
+        }
+        if state.groups.count != 0
+            && state.groups.mapped_group(group) != state.groups.mapped_group(other_group)
+        {
+            return;
         }
         if distance_squared < dist_align {
             align_sum += other_velocity;
@@ -1059,6 +1156,198 @@ mod tests {
     }
 
     #[test]
+    fn groups_filter_alignment_and_cohesion_but_keep_cross_group_separation() {
+        let mut state = flocking_state();
+        state.groups.count = 2;
+        let force = |state: &GlobalState, distance, group| {
+            group_flocking_force(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                |visit| visit(Vector3::x() * distance, Vector3::y() * 5.0, group),
+                state,
+                0,
+            )
+        };
+        // A foreign close neighbor still separates, but cannot align or cohere.
+        let foreign = force(&state, 1.0, 1);
+        assert_eq!(
+            foreign,
+            -Vector3::x() * state.vehicle_max_speed * state.vehicle_separation_factor * 3.0
+        );
+        assert_eq!(force(&state, 5.0, 1), Vector3::zeros());
+        let same = force(&state, 5.0, 0);
+        assert!(same.x > 0.0 && same.y > 0.0);
+        // Disabled groups ignore arbitrary carried group bits, including targets.
+        state.groups.count = 0;
+        assert_eq!(
+            force(&state, 5.0, 7).map(f32::to_bits),
+            same.map(f32::to_bits)
+        );
+    }
+
+    #[test]
+    fn cpu_metadata_survives_membership_edits_modes_shrink_and_growth() {
+        let mut app = App::new();
+        app.insert_resource(GlobalState {
+            mode: SimulationMode::Naive,
+            vehicle_count: 64,
+            ..default()
+        })
+        .init_resource::<VehicleSpawner>()
+        .add_systems(
+            Update,
+            (vehicle_spawner, vehicle_cleanup, update_membership).chain(),
+        );
+        app.update();
+        let snapshot = |world: &mut World| {
+            world
+                .query::<(Entity, &VehicleMetadata, &Transform)>()
+                .iter(world)
+                .map(|(e, m, t)| (e, (m.0, *t, instance_phase(e.to_bits()))))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let initial = snapshot(app.world_mut());
+        assert_eq!(
+            initial
+                .values()
+                .map(|v| v.0.x)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            64
+        );
+        assert!(initial.values().all(|v| v.0.y == v.0.x % 8));
+        for count in [2, 8, 0, 3] {
+            app.world_mut().resource_mut::<GlobalState>().groups.count = count;
+            app.update();
+            let current = snapshot(app.world_mut());
+            for (entity, (meta, transform, phase)) in &current {
+                let before = &initial[entity];
+                assert_eq!((meta.x, meta.z, meta.w), (before.0.x, 0, 0));
+                assert_eq!(*transform, before.1);
+                assert_eq!(*phase, before.2);
+                assert_eq!(meta.y, before.0.y % 2);
+            }
+        }
+        let retained = snapshot(app.world_mut());
+        app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Octree;
+        app.update();
+        assert_eq!(snapshot(app.world_mut()), retained);
+        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 10;
+        app.update();
+        let survivors = snapshot(app.world_mut());
+        app.world_mut().resource_mut::<GlobalState>().vehicle_count = 20;
+        app.update();
+        let grown = snapshot(app.world_mut());
+        for (entity, value) in &survivors {
+            assert_eq!(grown[entity], *value);
+        }
+        for (entity, value) in &grown {
+            if !survivors.contains_key(entity) {
+                assert!((64..74).contains(&value.0.x));
+                assert_eq!(value.0.y, value.0.x % 3);
+            }
+        }
+        app.update();
+        // Settled maintenance must not mark components or resources changed.
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<Entity, Changed<VehicleMetadata>>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Gpu;
+        app.update();
+        assert!(snapshot(app.world_mut()).is_empty());
+        app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Octree;
+        app.update();
+        assert_eq!(
+            snapshot(app.world_mut()).values().map(|v| v.0.x).min(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn group_seek_is_optional_global_follow_overrides_and_pause_freezes_it() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let mut app = crate::presentation::tests::clock_app();
+            let mut state = GlobalState {
+                mode,
+                vehicle_count: 2,
+                vehicle_wander_radius: 0.0,
+                ..default()
+            };
+            state.groups.count = 2;
+            state.groups.table[0].target = Some(Vec3::NEG_X * 100.0);
+            state.groups.table[1].target = Some(Vec3::X * 100.0);
+            app.insert_resource(state)
+                .add_systems(CpuStep, (movement, update).chain())
+                .add_systems(
+                    Update,
+                    step_cpu.after(crate::presentation::prepare_simulation),
+                );
+            let target = app
+                .world_mut()
+                .spawn((
+                    Target,
+                    TargetSelection(false),
+                    Transform::from_xyz(0.0, 100.0, 0.0),
+                ))
+                .id();
+            let entities: Vec<_> = (0..2)
+                .map(|group| {
+                    app.world_mut()
+                        .spawn((
+                            Vehicle,
+                            VehicleMetadata(UVec4::new(group, group, 0, 0)),
+                            VehicleVelocity::default(),
+                            VehicleAcceleration::default(),
+                            VehicleWanderRotation::default(),
+                            Transform::default(),
+                        ))
+                        .id()
+                })
+                .collect();
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = true;
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(16));
+            app.update();
+            assert!(entities
+                .iter()
+                .all(|e| app.world().get::<Transform>(*e).unwrap().translation == Vec3::ZERO));
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = false;
+            app.update();
+            assert!(app.world().get::<VehicleVelocity>(entities[0]).unwrap().0.x < 0.0);
+            assert!(app.world().get::<VehicleVelocity>(entities[1]).unwrap().0.x > 0.0);
+            for &entity in &entities {
+                app.world_mut()
+                    .get_mut::<Transform>(entity)
+                    .unwrap()
+                    .translation = Vec3::ZERO;
+                app.world_mut()
+                    .get_mut::<VehicleVelocity>(entity)
+                    .unwrap()
+                    .0 = Vector3::zeros();
+            }
+            app.world_mut()
+                .get_mut::<TargetSelection>(target)
+                .unwrap()
+                .0 = true;
+            app.update();
+            for &entity in &entities {
+                let velocity = app.world().get::<VehicleVelocity>(entity).unwrap().0;
+                assert_eq!(velocity.x, 0.0);
+                assert!(velocity.y > 0.0);
+            }
+        }
+    }
+
+    #[test]
     fn inactive_attractor_keeps_flocking_force_bits_unchanged() {
         use crate::swarm::{Attractor, AttractorMode};
         let force = |state: &GlobalState| {
@@ -1444,6 +1733,7 @@ mod tests {
                     Vec4::W,
                     Vec4::ZERO,
                 ]
+                .into()
             })
             .collect();
         let stats = gpu_bench_stats(&boids, Vec3::ZERO);
@@ -1462,6 +1752,7 @@ mod tests {
                     Vec4::W,
                     Vec4::ZERO,
                 ]
+                .into()
             })
             .collect();
         // Index 1000 is not sampled, but must still be considered as index 0's neighbor.
@@ -1495,18 +1786,29 @@ mod tests {
         let modes = gpu_bench_modes(
             &std::env::var("GPU_BENCH_MODES").unwrap_or_else(|_| "wander,follow".into()),
         );
+        let groups = std::env::var("GPU_BENCH_GROUPS").map_or(0, |value| {
+            value
+                .parse::<u32>()
+                .expect("GPU_BENCH_GROUPS must be 0 or 2..=8")
+        });
+        assert!(
+            groups == 0 || (2..=8).contains(&groups),
+            "GPU_BENCH_GROUPS must be 0 or 2..=8"
+        );
         let (device, queue) = gpu_device();
+        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
         for count in counts {
             for &following in &modes {
                 for &cap in &caps {
                     // Fresh state starts the shader's PCG spawn at frame 0 for every case.
                     let mut flock = GpuFlock::new(&device);
-                    let state = GlobalState {
+                    let mut state = GlobalState {
                         mode: SimulationMode::Gpu,
                         vehicle_count: count as usize,
                         gpu_max_neighbors: cap,
                         ..default()
                     };
+                    state.groups.count = groups;
                     let params = gpu_params(&state, Vec3::ZERO, following, DT);
                     let mut timings = Vec::with_capacity(STEPS);
                     let mut warmup_steps = 0;
@@ -1550,8 +1852,257 @@ mod tests {
 
     #[test]
     #[ignore = "needs a GPU"]
+    fn gpu_groups_match_cpu_reference_and_foreign_neighbors_do_not_consume_cap() {
+        use crate::{
+            gpu_flock::{gpu_params, BoidData, GpuFlock},
+            swarm::Groups,
+        };
+        let mut groups = Groups {
+            count: 3,
+            ..default()
+        };
+        groups.table[0].target = Some(Vec3::new(-100.0, 20.0, 30.0));
+        groups.table[1].target = Some(Vec3::new(100.0, -20.0, -30.0));
+        // The third group wanders; global follow must override both explicit targets.
+        for cap in [0, 512] {
+            gpu_steering_parity(256, cap, default(), groups);
+        }
+
+        let (device, queue) = gpu_device();
+        let mut state = GlobalState {
+            vehicle_count: 70,
+            gpu_max_neighbors: 1,
+            vehicle_separation_factor: 0.0,
+            vehicle_cohesion_factor: 0.0,
+            ..default()
+        };
+        state.groups.count = 2;
+        let center = Vec3::new(29.0, 1.0, 1.0);
+        let boids: Vec<BoidData> = (0..70)
+            .map(|id| {
+                // Foreign neighbors occupy the home cell; the only eligible neighbor is in +X.
+                let (position, velocity, group) = match id {
+                    0 => (center, Vec3::ZERO, 0),
+                    1 => (Vec3::new(31.0, 1.0, 1.0), Vec3::Y * 10.0, 0),
+                    _ => (
+                        Vec3::new(28.0 + id as f32 * 0.001, 1.0, 1.0),
+                        Vec3::NEG_Y * 10.0,
+                        1,
+                    ),
+                };
+                BoidData {
+                    state: [
+                        position.extend(0.0),
+                        velocity.extend(0.0),
+                        Vec4::W,
+                        Vec4::ZERO,
+                    ],
+                    metadata: UVec4::new(id, group, 0, 0),
+                }
+            })
+            .collect();
+        let mut flock = GpuFlock::new(&device);
+        flock.upload(&device, &queue, &boids);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, center, true, 1.0 / 60.0),
+        );
+        let actual = flock
+            .read_boids(&device, &queue)
+            .into_iter()
+            .find(|b| b.metadata.x == 0)
+            .unwrap();
+        assert!(
+            actual[1]
+                .truncate()
+                .distance(Vec3::Y * state.vehicle_max_speed / state.vehicle_mass)
+                < 1e-4
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_metadata_and_phase_survive_sort_remap_paused_growth_and_truncation() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        use crate::vehicle_appearance::unpack_speed_group;
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 128,
+            ..default()
+        };
+        state.groups.count = 8;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let mut initial = flock.read_boids(&device, &queue);
+        let pcg = |value: u32| {
+            let state = value.wrapping_mul(747796405).wrapping_add(2891336453);
+            let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277803737);
+            (word >> 22) ^ word
+        };
+        for boid in &mut initial {
+            let id = boid.metadata.x;
+            assert_eq!(boid.metadata, UVec4::new(id, id % 8, 0, 0));
+            // Exact Stage 7a spawn phase formula, independent of the added metadata lane.
+            let phase = (pcg(id ^ pcg(0xa511e9b3)) >> 8) as f32 / 16777216.0;
+            assert_eq!(boid[3].w.to_bits(), phase.to_bits());
+            boid.metadata.z = id * 3 + 123;
+            boid.metadata.w = 0xa511e9b3;
+        }
+        flock.upload(&device, &queue, &initial);
+        let by_id = |boids: Vec<BoidData>| {
+            boids
+                .into_iter()
+                .map(|b| (b.metadata.x, b))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let original = by_id(initial);
+        for cap in [0, 16] {
+            state.gpu_max_neighbors = cap;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 1.0 / 60.0),
+            );
+            for boid in flock.read_boids(&device, &queue) {
+                assert_eq!(boid.metadata, original[&boid.metadata.x].metadata);
+                assert_eq!(
+                    boid[3].w.to_bits(),
+                    original[&boid.metadata.x][3].w.to_bits()
+                );
+            }
+        }
+        let retained = flock.read_boids(&device, &queue);
+        let retained_instances = flock.read_instances(&device, &queue);
+        state.vehicle_count = 1025;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let grown = flock.read_boids(&device, &queue);
+        assert_eq!(&grown[..128], retained.as_slice());
+        assert_eq!(
+            &flock.read_instances(&device, &queue)[..128],
+            retained_instances.as_slice()
+        );
+        let identities: std::collections::HashSet<_> = grown.iter().map(|b| b.metadata.x).collect();
+        assert_eq!(identities.len(), 1025);
+        assert!(grown[128..]
+            .iter()
+            .all(|b| b.metadata == UVec4::new(b.metadata.x, b.metadata.x % 8, 0, 0)));
+        for count in [3, 0, 2, 8] {
+            let before = flock.read_boids(&device, &queue);
+            state.groups.count = count;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 0.0),
+            );
+            let after = flock.read_boids(&device, &queue);
+            let instances = flock.read_instances(&device, &queue);
+            for ((a, b), instance) in before.iter().zip(&after).zip(&instances) {
+                assert_eq!(a.state, b.state);
+                assert_eq!(
+                    (a.metadata.x, a.metadata.z, a.metadata.w),
+                    (b.metadata.x, b.metadata.z, b.metadata.w)
+                );
+                assert_eq!(
+                    b.metadata.y,
+                    if count == 0 {
+                        a.metadata.y
+                    } else {
+                        a.metadata.y % count
+                    }
+                );
+                assert_eq!(
+                    unpack_speed_group(instance[0].w).1,
+                    state.groups.render_group(b.metadata.y)
+                );
+                assert_eq!(instance[2].x.to_bits(), b[3].w.to_bits());
+            }
+        }
+        // Exercise disabled sorting followed by paused remapping and shrink/growth from a
+        // non-identity order map. Metadata table positions are not persistent spawn IDs.
+        let before_off = by_id(flock.read_boids(&device, &queue));
+        state.groups.count = 0;
+        state.gpu_max_neighbors = 0;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 1.0 / 60.0),
+        );
+        let sorted_off = flock.read_boids(&device, &queue);
+        for boid in &sorted_off {
+            let original = before_off[&boid.metadata.x];
+            assert_eq!(boid.metadata, original.metadata);
+            assert_eq!(boid[3].w.to_bits(), original[3].w.to_bits());
+        }
+        state.groups.count = 8;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        assert_eq!(flock.read_boids(&device, &queue), sorted_off);
+        state.vehicle_count = 70;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let survivors = flock.read_boids(&device, &queue);
+        state.vehicle_count = 2000;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let grown = flock.read_boids(&device, &queue);
+        assert_eq!(&grown[..70], survivors.as_slice());
+        assert!(grown[70..].iter().all(|b| b.metadata.x >= 1025));
+        assert_eq!(by_id(grown).len(), 2000);
+        state.vehicle_count = 0;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        state.vehicle_count = 2;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        assert_eq!(
+            flock
+                .read_boids(&device, &queue)
+                .iter()
+                .map(|b| b.metadata.x)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
     fn gpu_steering_matches_cpu_reference() {
-        gpu_steering_parity(3000, 0, default());
+        gpu_steering_parity(3000, 0, default(), default());
     }
 
     #[test]
@@ -1570,12 +2121,18 @@ mod tests {
                         scripted_point: Some(Vec3::new(20.0, 10.0, -5.0)),
                         ..default()
                     },
+                    default(),
                 );
             }
         }
     }
 
-    fn gpu_steering_parity(count: usize, cap: u32, attractor: crate::swarm::Attractor) {
+    fn gpu_steering_parity(
+        count: usize,
+        cap: u32,
+        attractor: crate::swarm::Attractor,
+        groups: crate::swarm::Groups,
+    ) {
         use crate::gpu_flock::{gpu_params, GpuFlock};
         let dt = 1.0 / 60.0;
         let target = Vec3::new(20.0, 30.0, -10.0);
@@ -1610,6 +2167,7 @@ mod tests {
                 vehicle_wander_radius: 0.0,
                 gpu_max_neighbors: cap,
                 attractor,
+                groups,
                 ..default()
             };
             let mut app = App::new();
@@ -1636,15 +2194,21 @@ mod tests {
                         // Exactly the alignment radius: strict distance tests must exclude it.
                         position = Vec3::new(300.0 + (id - 8) as f32 * 30.0, 0.0, 0.0);
                     }
-                    boids.push([
+                    let metadata =
+                        UVec4::new(id as u32, groups.spawn_group(id as u32), id as u32 + 17, 91);
+                    let mut boid: crate::gpu_flock::BoidData = [
                         position.extend(id as f32),
                         Vec3::from(velocity).extend(0.0),
                         Vec4::from(Quat::IDENTITY),
                         Vec4::ZERO,
-                    ]);
+                    ]
+                    .into();
+                    boid.metadata = metadata;
+                    boids.push(boid);
                     app.world_mut()
                         .spawn((
                             Vehicle,
+                            VehicleMetadata(metadata),
                             VehicleVelocity(velocity),
                             VehicleAcceleration::default(),
                             VehicleWanderRotation {
@@ -1695,23 +2259,11 @@ mod tests {
                 let mut worst = (0.0_f32, 0.0_f32);
                 for boid in &actual {
                     assert!(boid.iter().all(|v| v.is_finite()), "{boid:?}");
-                    let id = if following {
-                        // Seek leaves theta alone, so it carries identity through the sort.
-                        boid[0].w as usize
-                    } else {
-                        // Wander changes both angles; match its uniquely positioned outputs.
-                        expected
-                            .iter()
-                            .enumerate()
-                            .min_by(|(_, a), (_, b)| {
-                                boid[0]
-                                    .truncate()
-                                    .distance_squared(a.0)
-                                    .total_cmp(&boid[0].truncate().distance_squared(b.0))
-                            })
-                            .unwrap()
-                            .0
-                    };
+                    let id = boid.metadata.x as usize;
+                    assert_eq!(
+                        boid.metadata,
+                        UVec4::new(id as u32, groups.spawn_group(id as u32), id as u32 + 17, 91)
+                    );
                     assert!(!seen[id], "boid {id} appears twice");
                     seen[id] = true;
                     let (position, velocity, rotation) = expected[id];
@@ -1731,7 +2283,7 @@ mod tests {
         flock.upload(
             &device,
             &queue,
-            &[[Vec4::ZERO, Vec4::ZERO, rotation, Vec4::ZERO]],
+            &[[Vec4::ZERO, Vec4::ZERO, rotation, Vec4::ZERO].into()],
         );
         let state = GlobalState {
             mode: SimulationMode::Gpu,
@@ -1751,7 +2303,7 @@ mod tests {
             flock.upload(
                 &device,
                 &queue,
-                &[[Vec4::ZERO, direction.extend(0.0), rotation, Vec4::ZERO]],
+                &[[Vec4::ZERO, direction.extend(0.0), rotation, Vec4::ZERO].into()],
             );
             gpu_step(
                 &mut flock,
@@ -1790,7 +2342,9 @@ mod tests {
         let boids: Vec<_> = positions
             .iter()
             .enumerate()
-            .map(|(i, position)| [position.extend(i as f32), Vec4::ZERO, Vec4::W, Vec4::ZERO])
+            .map(|(i, position)| {
+                [position.extend(i as f32), Vec4::ZERO, Vec4::W, Vec4::ZERO].into()
+            })
             .collect();
         let (device, queue) = gpu_device();
         let mut flock = GpuFlock::new(&device);
@@ -1872,6 +2426,7 @@ mod tests {
                     Vec4::from(Quat::from_rotation_x(0.5)),
                     Vec4::ZERO,
                 ]
+                .into()
             })
             .collect();
         flock.upload(&device, &queue, &boids);

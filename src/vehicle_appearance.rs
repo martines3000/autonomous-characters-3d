@@ -89,14 +89,16 @@ pub enum ColorMode {
     Speed,
     Solid,
     ModelColors,
+    Group,
 }
 impl ColorMode {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Heading,
         Self::Altitude,
         Self::Speed,
         Self::Solid,
         Self::ModelColors,
+        Self::Group,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -105,6 +107,7 @@ impl ColorMode {
             Self::Speed => "Speed",
             Self::Solid => "Solid",
             Self::ModelColors => "Model colors",
+            Self::Group => "Group",
         }
     }
 }
@@ -147,6 +150,7 @@ pub fn ui(ui: &mut egui::Ui, appearance: &mut VehicleAppearance) {
                 ColorMode::Altitude => "Palette ramp from the bottom wall to the top wall, clamped outside the walls.",
                 ColorMode::Speed => "Palette ramp from zero speed to the simulation's configured maximum speed.",
                 ColorMode::Solid => "One user-chosen sRGB color for every vehicle.",
+                ColorMode::Group => "Color by carried group membership; edit group colors in Swarm.",
                 ColorMode::ModelColors => "Imported base color × COLOR_0 and material metallic/roughness; built-in meshes fall back to white.",
             });
         }
@@ -201,9 +205,9 @@ pub(crate) fn instance_phase(seed: u64) -> Vec4 {
     Vec4::new((hash >> 8) as f32 / 16777216.0, 0.0, 0.0, 0.0)
 }
 
-/// Stage 7 transport reservation, not group behavior: mantissa bits 16..22 hold group (0..127),
+/// Mantissa bits 16..22 hold group (0..127),
 /// bits 0..15 hold normalized speed (0..65535). Exponent 127 keeps the payload finite and normal.
-/// Both simulation backends currently write group zero. Keep this encoding in sync with WGSL.
+/// Both backends write zero while groups are off. Keep this encoding in sync with WGSL.
 pub(crate) fn pack_speed_group(speed: f32, group: u8) -> f32 {
     assert!(group < 128);
     let speed = if speed.is_finite() {

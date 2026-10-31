@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 97 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 102 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -132,7 +132,37 @@ Repulsion is its exact negative. The term adds to flocking and target seek (or w
 divided by mass, and uses the same simulated-time integration and final speed clamp on CPU/GPU.
 Spatial falloff scales with count; the existing world-unit max speed stays unchanged.
 
-All mechanics are optional. Stage 7a implements this single field; groups, obstacles, formations
+**Groups** is Off by default. Enable 2–8 groups in Swarm, then select **Vehicles → Color → Group**
+to use the per-group sRGB colors. Separation sees every group; alignment and cohesion see only the
+same group. Each group can optionally seek a world-space target using the existing seek law instead
+of wander/walls. Selecting the global target overrides every group target; clearing global follow
+restores each group's target or normal wander. The cursor field affects all groups additively.
+
+Other-group neighbors do **not** consume GPU alignment/cohesion samples. Exact separation remains
+unfiltered. The configured follow cap applies during global following or whenever an enabled group
+has a target (including groups without targets in that scene). With no targets, wander queries stay
+unlimited. CPU queries remain exact; GPU capped samples depend on spatial traversal order.
+Filling a same-group quota can scan more foreign candidates, especially with rare groups.
+
+Membership uses a stable spawn ID and reserved formation slot in a separate 16-byte metadata table.
+GPU Boids stay **64 bytes**. Sorting carries a 32-bit table index; groups Off never reads metadata
+in steering. Two metadata tables (one maintenance scratch) and two order maps add 5 MiB at 100k
+capacity and 40 MiB at 1M capacity. They share the eighth storage binding with future scene data.
+Instance stride stays 48 bytes and the draw count stays one. Animation phase keeps its original bits
+and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headless Off step medians
+are within 5% of the original baseline in 100k/1M wander/follow. See the
+[swarm plan](plans/planned/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
+
+New vehicles use ID modulo the enabled count; while Off they retain dormant ID-modulo-eight
+membership. Enabling or changing the group count maps current membership modulo the new count.
+Off preserves membership while ignoring group targets/filtering and writing group zero to instances.
+Increasing the count preserves survivors and can leave new groups empty until vehicle growth;
+there is no automatic rebalancing or exact population quota. Shrinking retains surviving IDs/groups;
+regrowth uses fresh IDs, rather than sorted indices or reused count values. Zero count and CPU/GPU
+backend transitions start a new ID lifetime. Naive/Octree switches preserve membership. Group edits,
+colors and membership maintenance remain live while paused; motion still follows the simulation clock.
+
+All mechanics are optional. Stages 7a–7b implement the field and groups; obstacles, formations
 and predators remain planned. Disabled fields preserve original steering arithmetic. Attraction
 retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
 attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
@@ -338,7 +368,7 @@ Every vehicle has a stable phase offset. GPU spawn hashes index/frame without co
 RNG, stores the phase in the previously unused `separation.w`, and preserves it through both sorts
 and scratch resets; steering reads only xyz. CPU phases hash stable Entity bits. Draw instances grow
 from **32 to 48 bytes**: position/speed/group, quaternion, then phase in the third vec4's x (yzw reserved).
-The existing 16 speed bits and seven reserved group bits remain unchanged. Phases do not use the
+The existing 16 speed bits and seven group bits retain their encoding. Phases do not use the
 unstable sorted instance index. No per-vehicle entities or CPU pose updates are added.
 
 Additional generated original assets, under the repository's terms, authored +Z forward/+Y up:
@@ -374,6 +404,7 @@ src/
 ├── vehicle_animation.rs # background rigid/skin baking, interpolation and budgets
 ├── scene.rs         # styles, palettes, world grid, fog and framing
 ├── presentation.rs  # simulation clock, pause/speed, real-time orbit and camera presets
+├── swarm.rs         # optional cursor field, groups, metadata policy and UI
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
@@ -504,7 +535,7 @@ or nonfinite timestamps, and unpaired measurements fail with the file and line n
 Without the variable, no scenario resource or system is installed.
 
 Each line is `<seconds-since-start> <command> [args]`. Blank lines and `#` comments are ignored;
-`set solid_color #RRGGBB` treats its color token as a value rather than a comment.
+`set solid_color #RRGGBB` and `group_color 0 #RRGGBB` treat their color token as a value rather than a comment.
 Times are real elapsed seconds, nonnegative and nondecreasing. Equal-time commands retain file
 order. Names and enum values are lowercase; paths and labels are single whitespace-free tokens.
 Commands run on the first frame at or after their timestamp, so separate dependent screenshots
@@ -550,7 +581,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `set model_scale` | Render-only model multiplier, 0.1–5; axes/scale changes reload the current/pending model |
 | `set visual_size` | Render-only multiplier, 0.1–5; default 1 |
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
-| `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `model_colors` (alias `model`) |
+| `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `group`, `model_colors` (alias `model`) |
 | `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
 | `set msaa` | Developer measurement control: `4` (default) or `off`; changes the camera only |
 | `set flock_draw` | Developer measurement control: `on` (default) / `off`; skips only flock drawing, retains GPU simulation and scene |
@@ -567,6 +598,9 @@ pgrep -a autonomous   # no process should remain after exit
 | `set orbit_speed` | Degrees per real second, −45–45; default 10 |
 | `preset` | `front`, `side`, `top`, `overview`, `closeup`; smooth transition, waits for manual input release |
 | `follow` | `on` / `off`; uses the existing target selection |
+| `set groups` | `off` (default) or integer `2`–`8`; membership changes use modulo mapping |
+| `group_target` | `group x y z` sets a target, or `group off` clears it; group index 0–7, world coordinates within ±10,000,000 |
+| `group_color` | `group RRGGBB` or `group #RRGGBB`; group index 0–7; accepts inactive table entries |
 | `set attractor_mode` | `off` (default), `attract`, `repel`; additive with target following |
 | `set attractor_strength` | 0–20, default 4; dimensionless force multiplier |
 | `set attractor_radius` | 1–200 reference units, default 60; multiplied by world scale |
@@ -615,6 +649,7 @@ sandboxes.
 CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
 
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
+# Optional GPU_BENCH_GROUPS=0 (default) or 2..8; prints requested device storage limits.
 GPU_BENCH_COUNTS=20000,100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
 
 # CPU benchmark (the exact filter skips the GPU benchmark)

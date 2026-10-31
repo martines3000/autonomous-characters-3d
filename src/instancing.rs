@@ -126,6 +126,7 @@ struct AppearanceUniform {
     // width, length, width, altitude half-height.
     proportions: Vec4,
     solid_color: Vec4,
+    group_colors: [Vec4; crate::swarm::MAX_GROUPS],
 }
 
 impl AppearanceUniform {
@@ -152,6 +153,11 @@ impl AppearanceUniform {
                 appearance.vehicles.width,
                 vehicle::walls(state.vehicle_count).y,
             ),
+            group_colors: state.groups.table.map(|group| {
+                Color::srgb_u8(group.color[0], group.color[1], group.color[2])
+                    .to_linear()
+                    .to_vec4()
+            }),
             solid_color: Color::srgb_u8(
                 appearance.vehicles.solid_color[0],
                 appearance.vehicles.solid_color[1],
@@ -683,7 +689,31 @@ mod tests {
                 .x,
             0
         );
-        assert_eq!(AppearanceUniform::min_size().get(), 192);
+        assert_eq!(AppearanceUniform::min_size().get(), 320);
+    }
+
+    #[test]
+    fn group_colors_extend_uniform_without_changing_existing_modes() {
+        let appearance = Appearance::default();
+        let mut state = GlobalState::default();
+        let before = AppearanceUniform::from_settings(&appearance, &state);
+        state.groups.count = 2;
+        state.groups.table[1].color = [255, 0, 128];
+        let after = AppearanceUniform::from_settings(&appearance, &state);
+        assert_eq!(before.colors, after.colors);
+        assert_eq!(before.material, after.material);
+        assert_eq!(before.modes, after.modes);
+        assert_eq!(before.proportions, after.proportions);
+        let expected = Color::srgb_u8(255, 0, 128).to_linear().to_vec4();
+        assert_eq!(after.group_colors[1], expected);
+        let mut buffer =
+            bevy::render::render_resource::encase::UniformBuffer::new(Vec::<u8>::new());
+        buffer.write(&after).unwrap();
+        assert_eq!(buffer.as_ref().len(), 320);
+        for (axis, value) in expected.to_array().into_iter().enumerate() {
+            let offset = 192 + 16 + axis * 4;
+            assert_eq!(&buffer.as_ref()[offset..offset + 4], &value.to_le_bytes());
+        }
     }
 
     #[test]

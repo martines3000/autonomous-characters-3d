@@ -1,7 +1,7 @@
 # Add optional swarm mechanics with one CPU/GPU contract
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It designs all of Stage 7;
-this worker implements **7a only**. The orchestrator owns review, commits and authorization of
+Stage 7a is committed as `d657d5d`; the current worker implements **7b only**. The orchestrator owns review, commits and authorization of
 subsequent workers. Owner order: 7a attractor, 7b groups, 7c obstacles, 7d formations, 7e predators.
 
 ## Purpose
@@ -13,11 +13,15 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Progress
 
+- [x] (2026-10-31 21:50Z) Stage 7b review blocker: compared field-only loads, split/ping-pong metadata and packed order maps; restored 64-byte state and Off performance.
+- [x] (2026-10-31 21:50Z) Review blocker: four Off/two On measurements per case, seven device regressions under eight-binding limits and full gate pass.
+
 - [x] (2026-10-31 20:03Z) Read guidance, umbrella/presentation plans and implementation seams;
   write the shared design before code.
 - [x] (2026-10-31 20:12Z) Stage 7a: held cursor field, gizmo, controls, scenario commands and CPU/GPU tests.
 - [x] (2026-10-31 20:12Z) Stage 7a: sequential release gates, GPU regressions, desktop proof and repeated 100k timings.
-- [ ] Stage 7b: groups and persistent metadata (separate worker).
+- [x] (2026-10-31 20:33Z) Stage 7b implementation and tests written; 102 CPU tests pass. Device regressions and desktop checks remain below.
+- [x] (2026-10-31 20:46Z) Stage 7b: repeated before/after CPU/GPU benchmarks, rendered timings and desktop verification; 102 release tests and all seven device tests pass.
 - [ ] Stage 7c: bounded sphere obstacles (separate worker).
 - [ ] Stage 7d: formation slots and arrival (separate worker).
 - [ ] Stage 7e: bounded predator objects and fleeing (separate worker).
@@ -25,6 +29,14 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Surprises & Discoveries
 
+- Orchestrator review blocks the original 80-byte layout: optional groups must not impose the
+  measured 24–32% Off wander penalty. The previous acceptance decision is superseded. Candidate
+  investigation starts with explicit neighbor field loads, then 64-byte state plus split metadata
+  if needed. Target: Off 100k/1M wander/follow within roughly 3–5% of the 64-byte baseline.
+
+- Stage 7b measurement: carrying the 80-byte record costs about +24%/+32% in Off wander
+  at 100k/1M on this GPU. The explicit identity/phase contract is retained, with this cost exposed
+  for owner review. No hidden density approximation was introduced.
 - GPU boids are re-sorted every step, possibly twice. Array indices cannot identify a member.
   `separation.xyz` is scratch; `separation.w` already carries an independent 24-bit animation phase.
 - The pinned egui API names its hover check `is_pointer_over_egui`; a real egui Window is needed
@@ -45,7 +57,7 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
   Both egui keyboard focus and pointer hover block cursor application. Scenario placement is an
   explicit persistent override, cleared by `attractor mouse`; it intentionally requires no held input.
   Date: 2026-10-31.
-- Decision: add a 16-byte `vec4<u32>` metadata lane to Boid in **7b**, not 7a. Components are
+- Original decision (superseded by the performance review below): add a 16-byte `vec4<u32>` metadata lane to Boid in **7b**, not 7a. Components are
   persistent spawn ID, group, formation slot and reserved role. Keep phase untouched.
   Rationale: group packing into phase would lose phase precision or identity space. Neither wander
   angle nor scratch is free. Explicit metadata is easier to audit than float bit payloads. Allocate
@@ -56,6 +68,37 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
   Rationale: cap changes need a separate owner decision and parity contract. Keep exact separation;
   document that sustained attraction may approach quadratic neighbor work. 7d must benchmark dense
   assembly before claiming high-count practicality and seek owner approval for any sampling change.
+  Date: 2026-10-31.
+
+- Decision (7b): store the fixed eight-entry group table with its controls in `GlobalState::groups`.
+  Reserve `SwarmScene` for variable-length data in 7c. All entries and settings remain Copy.
+  Rationale: the table needs no independent lifecycle or extraction resource. Existing pure
+  `gpu_params` and CPU parity fixtures read exactly the same settings. UI edits and per-frame
+  maintenance write resources/components only when their values change.
+  Date: 2026-10-31.
+- Decision (7b): dormant spawn membership is spawn ID modulo eight. First enabling maps that
+  membership modulo the requested 2–8 count; subsequent count edits map current membership modulo
+  the new count. Off preserves stored membership but uses group zero for rendering and no filtering.
+  Growth assigns ID modulo current count (eight while off). Increasing a count does not rebalance
+  retained members: new groups can remain empty until growth. IDs are monotonic within a nonempty
+  backend lifetime; count zero/backend change starts a new lifetime. Slots/reserved initialize zero.
+  Rationale: preserve surviving records, avoid sorted-index identity and retain exact Off payloads.
+  Date: 2026-10-31.
+- Decision (7b): reject other groups after exact separation and before alignment/cohesion or sample
+  counting. The fine separation pass remains unfiltered. Follow caps apply when globally following
+  or any enabled group has a target; no-target group wander shares that cap in the latter case.
+  Without targets, wander remains unlimited. CPU stays exact, as with existing global following.
+  Rationale: one group comparison/early continue needs no extra grid or storage, and rejected
+  neighbors cannot exhaust the same-group quota. Filling that quota can scan more candidates,
+  especially for rare groups. Capped results remain order-dependent samples; dense eight-group
+  follow cost is not established by the two-group desktop measurements.
+  Date: 2026-10-31.
+- Decision (7b): group targets use the unchanged seek force instead of wander/wall steering for
+  members with a target. Global selected target overrides all group targets. An unset target leaves
+  normal wander/walls; groups Off ignores every group target. Explicit target positions are world
+  coordinates; UI provides a per-group enable switch and position editors. Targets can be cleared
+  with `group_target group off`. Group indices are zero-based (0–7).
+  Rationale: preserve the existing seek law and avoid simultaneously running two navigation goals.
   Date: 2026-10-31.
 
 ## Assumptions and Open Questions
@@ -75,7 +118,7 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Outcomes & Retrospective
 
-Design complete before implementation. Stage 7b–7e remain specifications, not delivered behavior.
+Design complete before implementation. Stage 7c–7e remain specifications, not delivered behavior. Stage 7b implementation and validation are recorded below.
 Stage 7a is implemented and ready for orchestrator review, without commits or dependency changes.
 Release suite: 97 passed, 7 ignored (eight new non-ignored tests and one new ignored GPU test).
 All five device tests pass, including existing baseline/animation/separation/lifecycle tests and
@@ -98,6 +141,38 @@ These timings include the flock becoming dense and the visible ring, rather than
 arithmetic. The existing exact wander query is intentionally retained. Dense 1M attraction and
 combinations with later formations/predators are unmeasured; subsequent workers must address density
 budgets explicitly, with owner approval before changing sampling or separation semantics.
+
+### Stage 7b handoff
+
+Stage 7a was reviewed and committed by the orchestrator as `d657d5d`, including cursor writes only
+when the point changes. Stage 7b now implements groups Off/2–8, fixed colors/targets, metadata and
+identity transport, and paused membership maintenance. The fixed table lives in `GlobalState`;
+variable-length `SwarmScene` storage remains deferred to 7c. Group colors reuse the one draw and
+48-byte instance stream. Off preserves baseline force arithmetic and zero render group bits.
+No Stage 7c–7e code or dependencies were added. The worker has not committed/pushed/merged/reset
+or discarded repository changes; HEAD remains `d657d5d` on the requested branch.
+
+Final gates pass: fmt check; 102 release tests (nine ignored, including benchmarks); warning-free
+release build; ten-second native smoke; diff check; Clippy seven pre-existing warnings (seven
+repeated for the test target). The ignored GPU suite was run once at the end: all seven passed.
+The new mixed fixture covers three groups, two explicit targets plus wander, global seek override,
+unlimited and nontruncating capped paths, and carried metadata identity. A deliberately adversarial
+cap=1 fixture puts foreign neighbors in the home cell and the only eligible peer in the next cell:
+foreign neighbors cannot consume the cap. New group parity worst position error is about 1.53e-5,
+velocity error below 1e-5. The metadata fixture covers both sorts, exact phase formula, typed upload,
+paused capacity growth, every paused membership mapping, rendering group bits, truncation,
+non-reused IDs on regrowth and count-zero lifetime reset. CPU tests cover force filtering,
+cross-group separation, membership/lifecycle, global override, paused group seek, and unchanged
+component ticks after maintenance settles. No new per-frame input writes were introduced.
+
+Seven desktop screenshots show 20k GPU groups at spawn and after 20 seconds (homogeneous cyan/orange
+clusters, without forcing two global islands), split group targets, both groups around the selected
+global target despite their still-enabled separate targets, attraction moving both groups to the
+cursor field, and 1,500 Octree members split around their targets. All five scripted apps reached
+`exit`; final process checks are empty. Eight groups share the same fixed table/pipeline, but dense
+8-group performance and exact population balancing remain unclaimed. Increasing group count can
+leave newly available groups empty until growth. CPU benchmarks retain their existing practical
+counts; 100k/1M measurements are GPU only. Later mechanics remain untouched.
 
 ## Context and Orientation
 
@@ -147,7 +222,8 @@ with three reserved lanes. An inactive field encodes signed strength zero and br
 force evaluation. No Boid/Instance layout changes in 7a, no storage buffers or per-boid field data.
 
 For 7b–7e, add scalar enable/strength/extent controls beside the attractor in `GlobalState`.
-A CPU `SwarmScene` resource owns the typed group table, obstacle vector, formation-slot vector and
+The fixed group table lives in `GlobalState::groups`; a CPU `SwarmScene` resource introduced in 7c
+owns the obstacle vector, formation-slot vector and
 predator objects/path state; extracted render data contains only the packed uniform/arena snapshot.
 CPU kernels read the same scene snapshot for each substep. If a moving obstacle/predator path changes
 between substeps, evaluate its simulated-time position analytically from the substep clock on both
@@ -157,18 +233,32 @@ same substep morph time. The disabled path never reads these collections.
 | Mechanic | CPU data | GPU data |
 | --- | --- | --- |
 | Attractor | `GlobalState::attractor`, no per-vehicle state | Two appended Vec4 uniforms; no storage or metadata |
-| Groups | `SwarmScene` fixed group table; carried ID/group/slot component | Uniform group table and enable/count; Boid metadata; Instance.w group bits |
+| Groups | `GlobalState::groups` fixed group table; carried ID/group/slot component | Uniform group table and enable/count; separate metadata table resolved through sorted order maps; Instance.w group bits |
 | Obstacles | `SwarmScene` bounded typed sphere vector and path state | Uniform count/arena offset/strength/clearance; sphere records in shared arena |
-| Formations | `SwarmScene` dense Vec<Vec4> slot targets and morph/path parameters; carried slot component | Uniform center/extent/arrival/morph/time and slot offset/count; slot targets in arena; carried Boid slot |
+| Formations | `SwarmScene` dense Vec<Vec4> slot targets and morph/path parameters; carried slot component | Uniform center/extent/arrival/morph/time and slot offset/count; slot targets and carried metadata slot in arena |
 | Predators | `SwarmScene` bounded control objects, group masks and simulated path state | Uniform count/offset/strength/path time; object records in arena; no prey-history buffer |
 
-7b adds CPU metadata components and the 80-byte GPU Boid (currently 64). Scatter, fine separation,
-steer, spawn, upload/readback and paused growth copies preserve every metadata lane. Copy group
-into the existing Instance.w bits with no instance stride growth (currently 48). ID allocator state
-is separate from random frame; spawn-only paused maintenance allocates IDs without advancing motion.
-Group count edits deterministically map existing membership modulo new group count on CPU/GPU;
-when disabled metadata persists but all vehicles behave as the original one group. Growth assigns
-new IDs and groups; sorted-prefix truncation keeps surviving metadata, with no exact quota promise.
+7b adds CPU metadata components but keeps the GPU Boid at 64 bytes. A persistent `vec4<u32>`
+metadata table stores spawn ID, group, formation slot and reserved role, independently of animation
+phase. Each state record carries an indirect table index in a parallel packed `u32` order map.
+Scatter copies that index alongside the state on every sort, including while groups are Off.
+The Off-specialized steering pipeline performs no metadata/order-map reads. Groups On resolves
+its own and candidate group lanes through the order map; separation remains state-only and exact.
+Steering/separation never copy metadata back. One sort toggles the current map; two sorts return
+to the original half. The host tracks this across capped/uncapped transitions and substeps.
+
+Count changes gather retained metadata into scratch, then compact it into the table in two distinct
+dispatches before spawn. This maintenance also runs while paused. Table row indices can change;
+spawn ID, membership, slot, reserved and phase do not. New rows initialize all metadata lanes;
+monotonic spawn IDs never reuse a survivor's ID. Capacity growth copies state, table, current order
+map and instances before compaction/spawn. Upload/readback fixtures resolve the same indirection.
+Future metadata consumers must resolve the order map, never treat a sorted index or table row as
+spawn identity. Copy group into existing Instance.w bits without changing the 48-byte stride.
+
+ID allocator state is separate from random frame; spawn-only paused maintenance allocates IDs
+without advancing motion. Group count edits map existing membership modulo the new count on both
+backends. Off preserves membership but ignores filtering/targets and renders group zero. Growth
+assigns new IDs/groups; sorted-prefix truncation preserves survivors, without exact population quotas.
 
 7d assigns dense unique slots after count changes by current record order, via an explicit maintenance
 pass, and retains them through subsequent sorts. ID survives slot reassignment. CPU does equivalent
@@ -177,21 +267,28 @@ count: truncated/grown lifetimes can have gaps and collisions. Paused count chan
 without moving existing vehicles. Unique-slot/sort/growth tests are mandatory.
 
 Keep small group tables and feature controls in appended uniform fields (every field gets an encase
-byte-offset assertion matching Naga's WGSL layout). For variable data, 7c introduces the eighth and
-final storage binding: a read-only `array<vec4<f32>>` shared scene-data arena. Uniform offsets/counts
-name disjoint obstacle, formation-slot and predator ranges. CPU keeps typed vectors and packs them
-on change; never upload per-boid state each frame. Sphere entries use center/radius plus clearance
-and parameters; slots use one Vec4 target each; predator entries include position/radius and a
-bitcast group mask in a separate lane. Later workers define and test exact record strides before
-binding them. Empty lists have a legal one-record dummy buffer and zero count. Validate ranges and
-actual adapter limits; do not add a ninth compute storage binding.
+byte-offset assertion matching Naga's WGSL layout). Binding 8 is the eighth and final compute storage
+binding: one read/write `array<vec4<u32>>` arena. For power-of-two capacity C (at least 512), ranges
+in vec4 units are metadata `[0,C)`, maintenance scratch `[C,2C)`, packed order A `[2C,9C/4)`,
+packed order B `[9C/4,5C/2)`. Each order map packs four independent scalar indices per vec4.
+`Params.groups.z` is the input map base relative to `2C` (0 or C/4); `.w` is C. No group setting
+or identity bits are packed into phase. Test/readback `BoidData` remains a logical 80-byte snapshot;
+it is not the physical storage stride.
 
-Calculated metadata cost, to measure in 7b: +16 bytes in each of two state arrays = +1 MiB at 20k
-(capacity 32,768), +32 MiB at 1M (capacity 1,048,576), plus 25% more bytes per boid state copy.
-An 80 MiB capacity-rounded state buffer remains below the default 128 MiB binding limit. One Vec4
-slot per capacity entry adds 0.5/16 MiB. Existing instance stride remains 48 bytes. Record actual
-adapter allocation/bandwidth/frame results before accepting this tradeoff; no speculative layout
-migration in 7a. Animation phase stays bit-identical and independent of group/slot/ID.
+7c–7e append shared scene records starting at `5C/2`, with uniform offsets/counts naming disjoint
+obstacle, formation-slot and predator ranges. Bitcast float payloads into the raw u32 lanes. CPU
+keeps typed vectors and packs/uploads scene changes; never upload boid metadata each frame.
+Capacity growth must relocate/reupload this scene tail when its base changes. Future workers define
+and test exact record strides and bounds before use. Empty scene lists have zero count; the metadata
+allocation already makes the binding legal. Do not add a ninth storage binding.
+
+Current arena costs 40 bytes per capacity entry (8 bytes more than the rejected two 80-byte
+state arrays added; this trades allocation size for less per-step bandwidth): +1.25 MiB at 20k, +5 MiB at 100k, +40 MiB at 1M.
+State bindings remain 64 MiB maximum; metadata arena is 40 MiB at 1M capacity. One Vec4 slot per
+entry would make the shared arena 56 MiB, below the default 128 MiB binding limit, with bounded
+obstacle/predator records still requiring explicit validation. Instance stride remains 48 bytes.
+Animation phase stays bit-identical and independent of ID/group/slot. Measured layout alternatives
+and the portable eight-binding limit are recorded below.
 
 ### Interaction matrix
 
@@ -229,7 +326,7 @@ Controls panel shows hold F, its selected mode and the plane rule. Scenario prop
 
 - 7a: `set attractor_mode off|attract|repel`, `set attractor_strength 0..20`,
   `set attractor_radius 1..200`, `attractor x y z` (persistent world override), `attractor mouse`.
-- 7b: `set groups off|2` (later up to eight), `group_target group x y z`, `group_color group RRGGBB`.
+- 7b: `set groups off|2..8`, `group_target group x y z` or `group_target group off`, `group_color group RRGGBB`; zero-based group indices 0–7.
 - 7c: `obstacle add x y z radius`, `obstacle clear`, `set obstacle_strength k`,
   `set obstacle_clearance r`; bounded list and reference radii validated before startup.
 - 7d: `set formation off|sphere|helix`, `formation_center x y z`, `set formation_extent r`,
@@ -237,7 +334,7 @@ Controls panel shows hold F, its selected mode and the plane rule. Scenario prop
 - 7e: `predator add x y z radius`, `predator clear`, `set predator_strength k`,
   `set predator_path off|orbit`, `set predator_groups mask`.
 
-Only 7a commands are implemented by this worker. Later command ranges and record layouts are
+Only 7a–7b commands are implemented so far. Later command ranges and record layouts are
 finalized in their stage checkpoints; parsing always rejects non-finite/out-of-budget data.
 
 ## Concrete Steps
@@ -302,12 +399,213 @@ No GPU timestamp instrumentation was enabled; these are whole-frame intervals, n
 | Off | 0.990 / 0.962 / 1.219 (4,039) | 1.005 / 0.964 / 1.268 (3,980) |
 | Attract | 12.605 / 11.062 / 21.961 (318) | 12.744 / 11.253 / 22.146 (315) |
 
+### Stage 7b original benchmark evidence (80-byte candidate rejected)
+
+Evidence root: `/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/stage7b/`.
+
+Before is committed `d657d5d` with 64-byte Boids; after is this uncommitted Stage 7b implementation
+with 80-byte Boids. Groups and attractor are Off in every headless case. No code or fixture tuning
+was used between the comparisons. Same AMD Ryzen 9 7900X / AMD Radeon RX 7900 XT (RADV NAVI31),
+Vulkan, Mesa 26.2.5-arch1.1, Linux 7.2.8-9-omarchy, pinned Rust, release profile. All commands ran
+sequentially with `CARGO_BUILD_JOBS=4`, no app or competing Cargo/rustc process, uptime checked before
+every run. GPU before load averages: 0.10/0.47/0.67 and 0.15/0.48/0.67; after:
+1.05/0.98/0.78 and 0.89/0.95/0.77. CPU before: 0.19/0.55/0.70 twice; after:
+0.95/0.92/0.74 and 1.20/0.97/0.76. Full logs and load snapshots are retained in the evidence root.
+
+GPU command (twice before and twice after):
+
+```sh
+GPU_BENCH_COUNTS=100000,1000000 GPU_BENCH_CAPS=16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_flocking_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Every case starts fresh at PCG spawn frame 0, uses simulated dt 1/60 s, 600 warmup steps, then 60
+encode/submit/blocking-completion samples, with readback/statistics excluded from timing. All cases
+completed every step; no 250 ms cutoff fired. Wander uses effective cap 0; follow cap 16 preserves
+complete separation. Scatter order and dense follow trajectories vary; these are end-to-end step
+costs, not isolated bandwidth microbenchmarks. Before/after density statistics remain in the logs.
+
+| Case | Before run 1 / run 2 median (p95), ms | After run 1 / run 2 median (p95), ms | Change in average of medians |
+| --- | --- | --- | --- |
+| 100,000 wander | 0.656 (0.706) / 0.684 (0.770) | 0.816 (0.880) / 0.846 (0.937) | +24.0% |
+| 100,000 follow | 3.244 (6.663) / 3.275 (4.692) | 3.249 (5.174) / 3.156 (4.789) | -1.7% |
+| 1,000,000 wander | 4.576 (4.755) / 4.594 (4.672) | 6.084 (6.225) / 6.006 (6.154) | +31.8% |
+| 1,000,000 follow | 7.838 (8.652) / 7.562 (8.718) | 9.031 (9.762) / 9.121 (10.075) | +17.9% |
+
+CPU command (twice before and twice after):
+
+```sh
+CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::flocking_benchmark -- --exact --ignored --nocapture --test-threads=1
+```
+
+The existing CPU fixture intentionally covers 200–10,000, below the 50k supported CPU UI ceiling;
+100k and 1M are GPU cases. No million-agent CPU promise or infeasible trillion-candidate Naive probe
+is introduced. Seed `0xB01D5`, dt 1/60 s, 24 compute threads, octree leaf size 100, 10 warmup steps,
+60 timed steps per case. Seed fixes the initial CPU fixtures; thread-local wander RNG is not replayed.
+Every case completed all 60; no CPU time cutoff fired.
+
+| Case | Before run 1 / run 2 median (p95), ms | After run 1 / run 2 median (p95), ms |
+| --- | --- | --- |
+| 200 naive | 0.094 (0.104) / 0.093 (0.103) | 0.089 (0.098) / 0.083 (0.110) |
+| 200 octree | 0.099 (0.111) / 0.099 (0.110) | 0.097 (0.109) / 0.071 (0.098) |
+| 1,000 naive | 0.340 (0.382) / 0.352 (0.388) | 0.354 (0.390) / 0.438 (0.481) |
+| 1,000 octree | 0.252 (0.270) / 0.256 (0.293) | 0.258 (0.297) / 0.235 (0.270) |
+| 2,000 naive | 0.817 (0.945) / 0.850 (1.019) | 0.937 (0.991) / 0.942 (1.076) |
+| 2,000 octree | 0.431 (0.493) / 0.417 (0.453) | 0.420 (0.448) / 0.418 (0.486) |
+| 5,000 naive | 3.941 (4.482) / 3.977 (4.627) | 4.032 (4.487) / 3.954 (4.633) |
+| 5,000 octree | 0.929 (1.116) / 0.920 (1.083) | 0.982 (1.144) / 0.984 (1.097) |
+| 10,000 naive | 14.555 (15.948) / 14.871 (15.884) | 14.488 (15.766) / 15.153 (16.830) |
+| 10,000 octree | 1.795 (2.113) / 1.795 (2.113) | 1.875 (2.125) / 1.822 (2.105) |
+
+Original decision, rejected by orchestrator review: retain the explicitly required 80-byte lane. It preserves the complete animation
+phase and gives groups and future formation slots explicit carried identity. This is not a free
+change: average Off wander medians increase about 24% at 100k and 32% at 1M (about 0.16/1.46 ms).
+Dense 1M follow rises about 18%; 100k follow variation is wider and provides no reliable speedup
+claim. CPU 10k medians change about +0.7% Naive / +3.0% Octree, with run variation. The owner can
+review the measured tradeoff before committing; no implicit phase packing, reduced precision or
+neighbor semantic change was used to hide the cost.
+
+Calculated buffer cost: two state arrays add 32 bytes per capacity entry, or +1 MiB at 20k,
++4 MiB at 100k and +32 MiB at 1M. The maximum individual Boid binding is 80 MiB; instance stride
+stays 48 bytes. Compute Params grows 176→320 bytes (groups at byte 176, target array at byte 192),
+appearance uniform 192→320 bytes (eight linear group colors at byte 192). Unit byte-offset tests
+cover both; the runtime shader passed startup validation. No extra compute storage binding or draw.
+
+### Stage 7b rendered and desktop evidence
+
+Same evidence root as Stage 7b headless measurements. `desktop.ac3d` and `desktop.log` retain the
+61-second scenario. Screenshots:
+
+- `gpu-groups-start.png`, `gpu-groups-20s.png`: GPU 20,000, groups 0/1, cyan/orange, no group targets.
+- `gpu-group-targets.png`: targets at (-350,0,0) and (350,0,0).
+- `gpu-global-follow-override.png`: green global target at origin; both group targets remain enabled.
+- `gpu-attractor-both-before.png`, `gpu-attractor-both-after.png`: group targets cleared, attractor
+  at (250,0,0), strength 8, reference radius 120, affecting both colored populations.
+- `octree-groups.png`: Octree 1,500, targets at (-130,0,0) and (130,0,0).
+
+Rendered timings use four fresh apps with `timing-{off,on}-{1,2}.ac3d` and matching logs, each ending
+with `exit`. Groups Off versus two groups, no group/global targets, attractor Off, Group color mode
+in both cases, Dart, neutral scales, Studio/Aurora, 100,000 GPU, 4× MSAA, 1776×1119, immediate
+presentation, camera yaw 0° / pitch 10° / distance 2,500, simulation 1×. PCG starts at spawn frame 0;
+real-time dt/scatter/evolved states vary. Three-second warmup, four-second measurement; no captures
+or timestamp instrumentation during measurements. Same hardware/driver as headless tests. Loads
+are in `timing-load.txt`; no competing build/test/app ran. Whole-frame intervals, not GPU durations.
+
+| Groups | Run 1 mean / p50 / p95 ms (frames) | Run 2 mean / p50 / p95 ms (frames) |
+| --- | --- | --- |
+| Off | 1.116 / 1.086 / 1.357 (3,585) | 1.097 / 1.077 / 1.299 (3,647) |
+| Two | 1.062 / 1.001 / 1.369 (3,766) | 1.050 / 1.021 / 1.298 (3,808) |
+
+Both sit near this scene's rendering/presentation floor. On changes the eligible neighbor set and
+motion; the small interval reduction is not a general speedup claim and does not erase the
+headless Off metadata cost. Final `tests.log`, `build.log`, `clippy.log`, `gpu.log`, `smoke.log`,
+`desktop.log` and `verification.txt` retain validation evidence.
+
+### Stage 7b Off-path performance review and final layout
+
+The orchestrator rejected the original 80-byte candidate. Final decision: restore the physical
+64-byte Boid, retain the complete four-lane metadata in a persistent arena table, and scatter only
+32-bit table indices in parallel order maps. Specialize the steering pipeline with a boolean WGSL
+override: Off removes metadata reads/filtering/group-target selection at compilation; On retains
+all approved group semantics. This preserves identity while Off without copying 16 metadata bytes
+on every sort or copying them back from separation/steer. Count edits pay two maintenance dispatches;
+normal frames do not. The detailed arena/identity contract above supersedes the original 80-byte
+proposal. CPU steering and rendering semantics are unchanged by this correction.
+
+Rejected options remain measured below. Field-only neighbor loads did not recover the 80-byte
+scatter cost. Splitting metadata but copying it through every pass retained material overhead.
+Full-metadata ping-pong improved this, but carrying four-byte indices avoids twelve extra bytes
+per sorted member and leaves the Off neighbor query state-only. Skipping identity transport while
+Off was rejected without implementation: it would scramble preserved membership and future slots.
+Two separate metadata bindings were rejected on portability grounds; the shared arena uses one.
+
+Bevy limits checked directly in pinned local primary sources:
+`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_render-0.20.1/src/settings.rs`
+lines 89–104 and 308 (`WgpuSettings::default`, automatic render creation), and `src/renderer/mod.rs`
+lines 319–355. Default priority is Functionality, which replaces initial default limits with
+`adapter.limits()` before requesting the device. Constraints can lower limits; WebGPU priority
+keeps default limits. This RX 7900 XT device requests 1,864,135 storage buffers per shader stage
+and a 2,147,483,644-byte storage binding limit. More than eight is therefore available here, but
+not guaranteed across supported settings/devices. Final layout requires exactly eight storage
+bindings; future scene records share binding 8. Seven final GPU regressions also pass with
+`WGPU_SETTINGS_PRIO=webgpu` (eight storage buffers, default 128 MiB storage binding limit).
+
+Evidence: `stage7b/perf-fix/` under the evidence root above. All candidate logs, uptime snapshots,
+source probes and gate logs are retained there. Same device, driver, fixed-step fixture, warmup,
+counts, caps, sample count and sequential process rules as the original comparison. Every case
+completed all 600 warmup and 60 timed steps. Numbers below are per-run median milliseconds, with
+all valid runs retained. Four final Off runs were collected because the 100k cases varied; no run
+was dropped. Final Off launch load averages were 0.11/0.12/0.16, 0.41/0.19/0.18,
+0.07/0.35/0.27 and 0.39/0.41/0.29. Final On launch loads were 0.05/0.13/0.19 and
+0.59/0.26/0.23. No competing Cargo, rustc or native app ran.
+
+| Layout / candidate | 100k wander | 100k follow | 1M wander | 1M follow |
+| --- | --- | --- | --- | --- |
+| Original 64 B | 0.656 / 0.684 | 3.244 / 3.275 | 4.576 / 4.594 | 7.838 / 7.562 |
+| First 80 B | 0.816 / 0.846 | 3.249 / 3.156 | 6.084 / 6.006 | 9.031 / 9.121 |
+| 80 B explicit neighbor fields | 0.784 / 0.802 | 3.717 / 3.738 | 5.613 / 5.588 | 9.006 / 9.256 |
+| 64 B full metadata scatter/copyback | 0.725 / 0.724 | 3.472 / 3.217 | 5.265 / 5.176 | 8.401 / 8.211 |
+| 64 B late metadata loads | 0.714 / 0.684 | 3.716 / 3.809 | 4.897 / 4.943 | 8.513 / 8.729 |
+| 64 B specialized Off/On | 0.715 / 0.742 | 3.456 / 3.493 | 4.793 / 4.746 | 8.363 / 8.244 |
+| 64 B metadata ping-pong, neighbor fields | 0.740 / 0.642 | 3.310 / 3.230 | 4.717 / 4.688 | 8.070 / 8.099 |
+| 64 B metadata ping-pong, whole neighbor | 0.734 / 0.681 | 2.929 / 2.977 | 4.712 / 4.683 | 8.084 / 7.912 |
+| Final 64 B + packed order maps, Off | 0.736 / 0.627 / 0.739 / 0.711 | 3.247 / 3.672 / 3.145 / 3.202 | 4.621 / 4.599 / 4.637 / 4.658 | 7.813 / 7.765 / 7.985 / 7.832 |
+| Fresh archived 64 B control | 0.692 / 0.701 | 3.177 / 3.137 | 4.602 / 4.607 | 7.442 / 7.535 |
+| Final packed order maps, two groups | 0.713 / 0.630 | 5.625 / 5.530 | 5.511 / 5.502 | 11.164 / 11.227 |
+
+Averages of all valid per-run medians for final Off versus the original 64-byte baseline:
+100k wander 0.70325 vs 0.670 ms (+4.96%); 100k follow 3.3165 vs 3.2595 ms (+1.75%);
+1M wander 4.62875 vs 4.585 ms (+0.95%); 1M follow 7.84875 vs 7.700 ms (+1.93%).
+These meet the requested roughly 3–5% threshold on this machine. This is not a cross-device guarantee.
+Two-group averages are 0.6715 / 5.5775 / 5.5065 / 11.1955 ms in the same case order.
+Group filtering changes trajectories; foreign neighbors never consume the same-group cap and can
+increase scans in dense following. These On measurements do not isolate metadata arithmetic cost.
+
+An additional contemporary baseline check archived exact committed `d657d5d` into
+`/home/martines/.cache/ac3d-stage7b-baseline64-src`, with its own target directory outside this
+checkout. Valid `baseline-rebuilt-{1,2}` logs show the old test inventory (103 filtered tests),
+confirming the baseline source rebuilt. Fresh baseline run averages are 0.6965 / 3.157 / 4.6045 /
+7.4885 ms: variation particularly affects dense follow. Against this contemporary control, final
+Off changes are +1.0% / +5.1% / +0.5% / +4.8%; 100k follow sits at the edge of the requested
+noise budget, rather than supporting a claim of zero overhead. Initial `baseline-recheck-{1,2}` probes
+incorrectly reused copied application fingerprints and executed the current test binary. They are
+explicitly invalid controls, retained for audit and excluded from every baseline calculation.
+Rebuilding touched archived source corrected this; the shared real target was never used by probes.
+
+Final rendered recheck uses the same four eight-second harness scenarios and scene settings as
+original 7b, on the final layout. All four apps reached their scripted `exit`; subsequent process
+checks found no app. No screenshots/timestamps ran during measurement. Full logs and uptime
+snapshots are `perf-fix/rendered-{off,on}-{1,2}.{log,load}`. Whole-frame intervals remain near the
+rendering/presentation floor; groups On changes trajectories and is not an isolated arithmetic test.
+
+| Groups | Run 1 mean / p50 / p95 ms (frames) | Run 2 mean / p50 / p95 ms (frames) |
+| --- | --- | --- |
+| Off | 1.002 / 0.964 / 1.256 (3990) | 1.035 / 0.983 / 1.319 (3867) |
+| Two | 1.012 / 0.987 / 1.218 (3954) | 1.034 / 1.002 / 1.256 (3869) |
+
+Final correction checks: fmt check; 102 release tests passed, nine ignored; release build without
+warnings; ten-second startup smoke passed; Clippy seven existing warnings, duplicated for the test
+target; diff check passed. Seven ignored GPU regressions passed under WebGPU device limits,
+including baseline CPU parity, attractor parity, mixed-group exact/cap filtering and metadata/phase
+survival. The metadata test now also sorts while groups are Off, re-enables while paused and
+shrinks/grows from the nonidentity order map. This exercises the corrected identity transport
+without creating an extra GPU test. Previous approved 7b screenshots remain in the parent directory;
+this correction changes storage/dispatch plumbing, not interaction or appearance semantics.
+
 ## Interfaces and Dependencies
 
 7a: new `src/swarm.rs` owns AttractorMode/settings, force kernel, cursor input, gizmo and UI.
 `GlobalState` gains the off-default attractor settings. CPU flocking adds a conditional term; GPU
 Params appends world point/radius and signed strength Vec4s, mirrored by WGSL. Scenario adds typed
-commands. No dependency, Boid stride, Instance stride or baseline simulation-setting changes.
+commands. No dependency, Boid stride, Instance stride or baseline simulation-setting changes in 7a.
+
+7b: `Groups`/`Group` fixed settings table, `VehicleMetadata(UVec4)`, monotonic CPU/GPU spawn counters,
+64-byte physical Boids, logical 80-byte test/readback `BoidData`, separate metadata/order arena,
+GPU group/count maintenance passes and order tracking. CPU production
+kernel is `group_flocking_force`; existing single-group fixtures use the `flocking_force` adapter.
+`ColorMode::Group` is appended at value 5, preserving previous mode values. Typed group scenario
+settings reuse startup validation. Compute and appearance uniform offsets are extended as recorded
+above; binding 8 holds metadata/order maps and reserves its tail for future scene records.
+No instance attribute is added.
 
 ---
 
@@ -316,3 +614,13 @@ Revision notes:
 - 2026-10-31: Initial Stage 7 contract and Stage 7a implementation/validation scope, written before code.
 
 - 2026-10-31: Stage 7a complete; recorded release/device checks, desktop pixel proof and repeated rendered frame timings. Later sub-stages remain open.
+
+- 2026-10-31: Stage 7b authorized; finalized cap, fixed table, dormant membership and paused maintenance policies before implementation.
+
+- 2026-10-31: Stage 7b CPU suite and repeated before/after headless measurements complete; recorded the measured 80-byte lane tradeoff before desktop/device acceptance.
+
+- 2026-10-31: Stage 7b complete and uncommitted; recorded final CPU/device gates, repeated rendered measurements, screenshots and remaining density/population limits.
+
+- 2026-10-31: Orchestrator rejected the Off-path regression; reopened layout/performance acceptance without changing group semantics.
+
+- 2026-10-31: Resolved the orchestrator performance blocker with 64-byte state, persistent metadata and packed sort indices; retained all rejected candidate measurements and portable binding-budget proof.

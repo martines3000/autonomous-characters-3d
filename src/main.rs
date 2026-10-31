@@ -155,6 +155,7 @@ impl SimulationMode {
 #[derive(Resource, Clone, Debug, PartialEq)]
 struct GlobalState {
     attractor: swarm::Attractor,
+    groups: swarm::Groups,
 
     // Basic info
     vehicle_count: usize,
@@ -190,6 +191,7 @@ impl Default for GlobalState {
     fn default() -> Self {
         Self {
             attractor: default(),
+            groups: default(),
             vehicle_count: 20_000,
             vehicle_size: 1.0,
             vehicle_mass: 60.0,
@@ -279,6 +281,10 @@ fn ui(
             });
             egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
                 swarm::ui(ui, &mut state.attractor);
+                ui.separator();
+                let mut groups = state.groups;
+                swarm::groups_ui(ui, &mut groups);
+                if groups != state.groups { state.groups = groups; }
             });
             egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");
@@ -386,7 +392,11 @@ fn ui(
                 ui.label("Vehicles follow the selected target.");
             } else {
                 ui.colored_label(egui::Color32::LIGHT_RED, "Follow: OFF (red target)");
-                ui.label("Vehicles wander freely.");
+                ui.label(if state.groups.has_targets() {
+                    "Vehicles use group targets where enabled."
+                } else {
+                    "Vehicles wander freely."
+                });
             }
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
@@ -411,6 +421,12 @@ fn ui(
                 }
             });
             ui.separator();
+            if state.groups.count > 0 {
+                ui.small(format!(
+                    "Groups: {} — edit targets/colors in Swarm",
+                    state.groups.count
+                ));
+            }
             ui.small("Target movement is relative to the camera.");
             ui.small(format!(
                 "Cursor field: {} — plane through orbit focus",

@@ -9,7 +9,8 @@
 // Neighbors are found with a hashed uniform grid: boids are counted per cell, the counts are
 // prefix-summed into cell starts, boids are scattered into cell order (`sorted`), and `steer`
 // visits the 27 cells around each boid. `steer` writes the next state back into `boids` in
-// sorted order (boid identity does not matter) and fills the instance buffer for drawing.
+// sorted order and fills the instance buffer for drawing. Identity/group/slot metadata travels
+// with each record; sorted index is never a persistent identity.
 
 struct Params {
     count: u32,
@@ -41,6 +42,8 @@ struct Params {
     target_position: vec3<f32>,
     attractor_position_radius: vec4<f32>,
     attractor_strength: vec4<f32>,
+    groups: vec4<u32>,
+    group_targets: array<vec4<f32>, 8>,
 };
 
 struct Boid {
@@ -72,6 +75,38 @@ struct Instance {
 // Exclusive prefix sum of the block totals.
 @group(0) @binding(6) var<storage, read_write> block_sums: array<u32>;
 @group(0) @binding(7) var<storage, read_write> instances: array<Instance>;
+// Persistent metadata table [0, capacity), maintenance scratch [capacity, 2*capacity),
+// then two packed u32 order maps (capacity/4 vec4s each). Sorts carry only table indices.
+// Group/slot/ID/reserved values stay in the table; z is the input order-map base, w capacity.
+// Future scene records begin at 5*capacity/2 and share this eighth binding.
+@group(0) @binding(8) var<storage, read_write> arena: array<vec4<u32>>;
+
+override GROUPS_ENABLED: bool = false;
+
+fn read_order(base: u32, index: u32) -> u32 {
+    return arena[2u * params.groups.w + base + index / 4u][index % 4u];
+}
+
+fn write_order(base: u32, index: u32, record: u32) {
+    arena[2u * params.groups.w + base + index / 4u][index % 4u] = record;
+}
+
+// Count edits compact retained metadata before spawning, making vacant records reusable without
+// reusing spawn IDs. Separate dispatches prevent in-place gather/write races.
+@compute @workgroup_size(256)
+fn gather_metadata(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x < params.spawn_from {
+        arena[params.groups.w + id.x] = arena[read_order(params.groups.z, id.x)];
+    }
+}
+
+@compute @workgroup_size(256)
+fn compact_metadata(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x < params.spawn_from {
+        arena[id.x] = arena[params.groups.w + id.x];
+        write_order(params.groups.z, id.x, id.x);
+    }
+}
 
 const WORKGROUP: u32 = 256u;
 const SCAN_BLOCK: u32 = 512u;
@@ -162,9 +197,28 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let radius = sqrt(max(1.0 - z * z, 0.0));
     let direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
     let phase = f32(pcg(index ^ pcg(params.frame ^ 0xa511e9b3u)) >> 8u) / 16777216.0;
+    let spawn_id = params.groups.y + id.x;
+    let group = spawn_id % select(params.groups.x, 8u, params.groups.x == 0u);
     boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
+    arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
+    write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
-    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu)), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
+    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
+}
+
+// Settings maintenance remains available while paused, without sorting or changing motion/phase.
+@compute @workgroup_size(256)
+fn update_groups(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    if index >= params.count { return; }
+    var group = 0u;
+    if params.groups.x != 0u {
+        let record = read_order(params.groups.z, index);
+        arena[record].y %= params.groups.x;
+        group = arena[record].y;
+    }
+    let speed = bitcast<u32>(instances[index].position_speed_group.w) & 0xffffu;
+    instances[index].position_speed_group.w = bitcast<f32>(0x3f800000u | speed | (group << 16u));
 }
 
 @compute @workgroup_size(256)
@@ -248,13 +302,29 @@ fn scan_block_sums(@builtin(local_invocation_id) local: vec3<u32>) {
     }
 }
 
+fn scatter_record(index: u32, source: u32) {
+    if index >= params.count { return; }
+    let slot = slots[index];
+    let destination = cell_start(slot.x) + slot.y;
+    sorted[destination] = boids[index];
+    write_order(params.groups.w / 4u - source, destination, read_order(source, index));
+}
+
+@compute @workgroup_size(256)
+fn scatter_fine(@builtin(global_invocation_id) id: vec3<u32>) {
+    scatter_record(id.x, params.groups.z);
+}
+
 @compute @workgroup_size(256)
 fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= params.count {
-        return;
-    }
-    let slot = slots[id.x];
-    sorted[cell_start(slot.x) + slot.y] = boids[id.x];
+    var source = params.groups.z;
+    if params.max_neighbors != 0u { source = params.groups.w / 4u - source; }
+    scatter_record(id.x, source);
+}
+
+// Two sorts return to the input half; one sort flips it. Matches GpuFlock::encode.
+fn stepped_order_base() -> u32 {
+    return select(params.groups.w / 4u - params.groups.z, params.groups.z, params.max_neighbors != 0u);
 }
 
 @compute @workgroup_size(256)
@@ -307,6 +377,8 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let me = sorted[index];
+    var group = 0u;
+    if GROUPS_ENABLED { group = arena[read_order(stepped_order_base(), index)].y; }
     let position = me.position;
     var velocity = me.velocity;
 
@@ -362,6 +434,9 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
                 let distance = sqrt(distance_squared);
                 separation += diff / distance * min(separation_radius / distance - 1.0, MAX_SEPARATION_PUSH);
             }
+            if GROUPS_ENABLED && group != arena[read_order(stepped_order_base(), k)].y {
+                continue;
+            }
             if distance_squared < alignment_squared {
                 alignment += other.velocity;
                 alignment_count++;
@@ -408,8 +483,15 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
 
     var theta = me.wander_theta;
     var phi = me.wander_phi;
-    if params.follow != 0u {
-        let seek = normalize_or_zero(params.target_position - position) * params.max_speed - velocity;
+    var seek_target = params.target_position;
+    var seeking = params.follow != 0u;
+    if !seeking && GROUPS_ENABLED {
+        let group_target = params.group_targets[group];
+        seeking = group_target.w != 0.0;
+        seek_target = group_target.xyz;
+    }
+    if seeking {
+        let seek = normalize_or_zero(seek_target - position) * params.max_speed - velocity;
         acceleration += limit(seek, params.max_speed * params.seek_factor) / params.mass;
     } else {
         let walls = params.walls;
@@ -439,6 +521,6 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0, 0.0, 0.0, me.separation.w));
     // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.
     let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
-    let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)); // group zero
+    let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)) | (group << 16u);
     instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
 }

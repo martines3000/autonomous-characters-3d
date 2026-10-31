@@ -74,6 +74,9 @@ enum Command {
 #[derive(Debug, PartialEq)]
 enum Setting {
     Count(usize),
+    Groups(u32),
+    GroupTarget(usize, Option<Vec3>),
+    GroupColor(usize, [u8; 3]),
     AttractorMode(AttractorMode),
     AttractorStrength(f32),
     AttractorRadius(f32),
@@ -168,6 +171,8 @@ fn switch(value: &str) -> Result<bool, String> {
 
 fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, String> {
     Ok(match (name, value) {
+        ("groups", "off") => Setting::Groups(0),
+        ("groups", _) => Setting::Groups(integer(value, 2, crate::swarm::MAX_GROUPS)? as u32),
         ("attractor_mode", "off") => Setting::AttractorMode(AttractorMode::Off),
         ("attractor_mode", "attract") => Setting::AttractorMode(AttractorMode::Attract),
         ("attractor_mode", "repel") => Setting::AttractorMode(AttractorMode::Repel),
@@ -199,6 +204,7 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("visual_size", _) => Setting::VisualSize(number(value, 0.1, 5.0)?),
         ("length", _) => Setting::Length(number(value, 0.25, 3.0)?),
         ("width", _) => Setting::Width(number(value, 0.25, 3.0)?),
+        ("color_mode", "group") => Setting::ColorMode(ColorMode::Group),
         ("color_mode", "heading") => Setting::ColorMode(ColorMode::Heading),
         ("color_mode", "altitude") => Setting::ColorMode(ColorMode::Altitude),
         ("color_mode", "speed") => Setting::ColorMode(ColorMode::Speed),
@@ -237,7 +243,7 @@ fn script_line(line: &str) -> &str {
         let prefix: Vec<_> = line[..hash].split_whitespace().collect();
         let tail = &line[hash + 1..];
         if prefix.len() == 3
-            && prefix[1..] == ["set", "solid_color"]
+            && (prefix[1..] == ["set", "solid_color"] || prefix[1] == "group_color")
             && tail.len() >= 6
             && tail.as_bytes()[..6].iter().all(u8::is_ascii_hexdigit)
             && tail.as_bytes().get(6).is_none_or(u8::is_ascii_whitespace)
@@ -298,6 +304,22 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     }
                     Command::Set(value)
                 }
+                ["group_target", group, "off"] => Command::Set(Setting::GroupTarget(
+                    integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
+                    None,
+                )),
+                ["group_target", group, x, y, z] => Command::Set(Setting::GroupTarget(
+                    integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
+                    Some(Vec3::new(
+                        number(x, -1e7, 1e7)?,
+                        number(y, -1e7, 1e7)?,
+                        number(z, -1e7, 1e7)?,
+                    )),
+                )),
+                ["group_color", group, color] => Command::Set(Setting::GroupColor(
+                    integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
+                    hex_color(color)?,
+                )),
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
@@ -532,6 +554,21 @@ fn apply_setting(world: &mut World, setting: Setting) {
         setting => {
             let mut state = world.resource_mut::<GlobalState>();
             match setting {
+                Setting::Groups(count) => {
+                    if state.groups.count != count {
+                        state.groups.count = count;
+                    }
+                }
+                Setting::GroupTarget(group, target) => {
+                    if state.groups.table[group].target != target {
+                        state.groups.table[group].target = target;
+                    }
+                }
+                Setting::GroupColor(group, color) => {
+                    if state.groups.table[group].color != color {
+                        state.groups.table[group].color = color;
+                    }
+                }
                 Setting::AttractorMode(value) => state.attractor.mode = value,
                 Setting::AttractorStrength(value) => state.attractor.strength = value,
                 Setting::AttractorRadius(value) => state.attractor.radius = value,
@@ -604,6 +641,44 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn group_commands_validate_and_keep_disabled_defaults() {
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        assert_eq!(world.resource::<GlobalState>().groups.count, 0);
+        let commands = parse("0 set groups 8\n0 group_target 0 -100 2 3\n0 group_target 7 off\n0 group_color 0 #1aBcD2 # comment\n0 group_color 7 ff7733\n0 set color_mode group\n1 set groups off").unwrap();
+        world.init_resource::<Appearance>();
+        for command in commands {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        let groups = &world.resource::<GlobalState>().groups;
+        assert_eq!(groups.count, 0);
+        assert_eq!(groups.table[0].target, Some(Vec3::new(-100.0, 2.0, 3.0)));
+        assert_eq!(groups.table[7].target, None);
+        assert_eq!(groups.table[0].color, [0x1a, 0xbc, 0xd2]);
+        assert_eq!(groups.table[7].color, [0xff, 0x77, 0x33]);
+        assert_eq!(
+            world.resource::<Appearance>().vehicles.color_mode,
+            ColorMode::Group
+        );
+        for bad in [
+            "set groups 1",
+            "set groups 9",
+            "set groups 0",
+            "group_target 8 0 0 0",
+            "group_target -1 off",
+            "group_target 0 NaN 0 0",
+            "group_target 0 1 2",
+            "group_color 8 ff7733",
+            "group_color 0 #xyzxyz",
+            "group_color 0 ff773",
+        ] {
+            assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn attractor_commands_validate_and_apply_without_changing_other_settings() {
         let commands = parse("0 set attractor_mode attract\n0 set attractor_strength 8\n0 set attractor_radius 70\n0 attractor 1 -2 3\n1 set attractor_mode repel\n2 attractor mouse\n3 set attractor_mode off").unwrap();

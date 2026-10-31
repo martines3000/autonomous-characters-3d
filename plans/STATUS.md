@@ -2,7 +2,7 @@
 
 ## Current work
 
-- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): Stage 7 design complete; 7a attractor/repulsor done. 97 release tests and 5 GPU tests pass; 100k attraction costs 12.6–12.7 ms versus about 1 ms off. Stages 7b–7e remain separate work.
+- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a done; 7b groups (Off/2–8), targets, colors and identity implemented, awaiting orchestrator review. Off-path performance blocker fixed with 64-byte Boids and a shared metadata/order arena: repeated 100k/1M wander/follow averages within 5% of the original baseline. 102 release tests and seven GPU tests pass; Clippy stays at seven existing warnings. Stages 7c–7e remain separate work.
 
 - [Presentation controls](planned/2026-10-31-presentation-controls.md): Stage 5 done: simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
 

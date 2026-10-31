@@ -12,6 +12,7 @@ struct Appearance {
     modes: vec4<u32>,
     proportions: vec4<f32>,
     solid_color: vec4<f32>,
+    group_colors: array<vec4<f32>, 8>,
 };
 @group(3) @binding(0) var<uniform> appearance: Appearance;
 
@@ -115,6 +116,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
             out.color = palette_ramp(speed);
         }
         case 3u: { out.color = appearance.solid_color.rgb; }
+        case 5u: {
+            let group = (bitcast<u32>(vertex.i_position_speed_group.w) >> 16u) & 0x7fu;
+            out.color = appearance.group_colors[min(group, 7u)].rgb;
+        }
         case 4u: {
             out.color = vec3<f32>(1.0);
             @if(VERTEX_COLORS) { out.color = vertex.color.rgb; }

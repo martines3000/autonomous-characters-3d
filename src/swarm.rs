@@ -80,6 +80,126 @@ impl Attractor {
     }
 }
 
+pub const MAX_GROUPS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Group {
+    pub target: Option<Vec3>,
+    pub color: [u8; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Groups {
+    // Zero disables group steering/render metadata while preserving stored membership.
+    pub count: u32,
+    pub table: [Group; MAX_GROUPS],
+}
+
+impl Default for Groups {
+    fn default() -> Self {
+        let colors = [
+            [35, 225, 255],
+            [255, 125, 45],
+            [185, 95, 255],
+            [100, 245, 120],
+            [255, 75, 160],
+            [255, 230, 65],
+            [105, 140, 255],
+            [245, 245, 235],
+        ];
+        Self {
+            count: 0,
+            table: colors.map(|color| Group {
+                target: None,
+                color,
+            }),
+        }
+    }
+}
+
+impl Groups {
+    pub fn spawn_group(&self, id: u32) -> u32 {
+        id % if self.count == 0 {
+            MAX_GROUPS as u32
+        } else {
+            self.count
+        }
+    }
+
+    pub fn mapped_group(&self, group: u32) -> u32 {
+        if self.count == 0 {
+            group
+        } else {
+            group % self.count
+        }
+    }
+
+    pub fn render_group(&self, group: u32) -> u8 {
+        if self.count == 0 {
+            0
+        } else {
+            self.mapped_group(group) as u8
+        }
+    }
+
+    pub fn target(&self, group: u32) -> Option<Vec3> {
+        if self.count == 0 {
+            None
+        } else {
+            self.table[self.mapped_group(group) as usize].target
+        }
+    }
+
+    pub fn has_targets(&self) -> bool {
+        self.table[..self.count as usize]
+            .iter()
+            .any(|group| group.target.is_some())
+    }
+}
+
+pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
+    egui::ComboBox::from_label("Groups")
+        .selected_text(if groups.count == 0 {
+            "Off".into()
+        } else {
+            groups.count.to_string()
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut groups.count, 0, "Off");
+            for count in 2..=MAX_GROUPS as u32 {
+                ui.selectable_value(&mut groups.count, count, count.to_string());
+            }
+        });
+    if groups.count == 0 {
+        return;
+    }
+    ui.small("All groups separate; alignment/cohesion stay within each group.");
+    ui.small("Increasing groups keeps survivors; new groups fill on vehicle growth.");
+    for (index, group) in groups.table[..groups.count as usize].iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("Group {index}"));
+            ui.color_edit_button_srgb(&mut group.color);
+            let mut enabled = group.target.is_some();
+            if ui.checkbox(&mut enabled, "Seek target").changed() {
+                group.target = enabled.then_some(Vec3::ZERO);
+            }
+        });
+        if let Some(target) = &mut group.target {
+            ui.horizontal(|ui| {
+                for (axis, value) in ["x", "y", "z"].into_iter().zip(target.as_mut()) {
+                    ui.add(
+                        egui::DragValue::new(value)
+                            .speed(1.0)
+                            .range(-1e7..=1e7)
+                            .prefix(format!("{axis}: ")),
+                    );
+                }
+            });
+        }
+    }
+    ui.small("Selected global target overrides group targets. Use Vehicles → Color → Group.");
+}
+
 pub struct SwarmPlugin;
 impl Plugin for SwarmPlugin {
     fn build(&self, app: &mut App) {
