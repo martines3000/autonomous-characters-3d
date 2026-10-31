@@ -1,17 +1,18 @@
-//! Bounded static glTF import. Background jobs never mutate the running simulation.
+//! Bounded static and baked glTF import. Background jobs never mutate the running simulation.
 use std::{
     collections::HashMap,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use bevy::{
     asset::RenderAssetUsages,
     gltf::gltf::{self, accessor::DataType, json::Value, mesh::Mode, Semantic},
-    mesh::Indices,
+    mesh::{Indices, MeshVertexAttribute},
     prelude::*,
-    render::render_resource::PrimitiveTopology,
+    render::render_resource::{PrimitiveTopology, VertexFormat},
     tasks::{futures::check_ready, IoTaskPool, Task},
 };
 use bevy_egui::egui;
@@ -20,6 +21,13 @@ use crate::{
     scene::Appearance,
     vehicle_appearance::{ColorMode, VehicleShape},
 };
+
+#[path = "vehicle_animation.rs"]
+mod animation;
+pub(crate) use animation::BakedAnimation;
+
+pub(crate) const ATTRIBUTE_MATERIAL: MeshVertexAttribute =
+    MeshVertexAttribute::new("ModelMaterial", 179_163_801, VertexFormat::Float32x2);
 
 const MAX_TRIANGLES: usize = 100_000;
 const MAX_VERTICES: usize = MAX_TRIANGLES * 3;
@@ -121,12 +129,21 @@ impl ModelSettings {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Normalization {
+    rotation: Mat3,
+    center: Vec3,
+    factor: f32,
+}
+
 #[derive(Debug)]
 struct ImportedModel {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     colors: Vec<[f32; 4]>,
     primitives: usize,
+    materials: Vec<[f32; 2]>,
+    sources: Vec<[u32; 3]>,
 }
 impl ImportedModel {
     fn bounds(&self) -> (Vec3, Vec3) {
@@ -135,7 +152,7 @@ impl ImportedModel {
             |(min, max), p| (min.min(Vec3::from_array(*p)), max.max(Vec3::from_array(*p))),
         )
     }
-    fn mesh(mut self, settings: ModelSettings) -> Result<Mesh, String> {
+    fn normalization(&self, settings: ModelSettings) -> Result<Normalization, String> {
         let rotation = settings.rotation()?;
         if !settings.scale.is_finite() || !(0.1..=5.0).contains(&settings.scale) {
             return Err("Invalid scale at model.scale; expected 0.1..=5".into());
@@ -149,33 +166,54 @@ impl ImportedModel {
             );
         }
         let center = min * 0.5 + max * 0.5;
+        Ok(Normalization {
+            rotation,
+            center,
+            factor,
+        })
+    }
+    fn normalize(&mut self, transform: Normalization) -> Result<(), String> {
         for position in &mut self.positions {
-            let value = (rotation * (Vec3::from_array(*position) - center)) * factor;
+            let value = (transform.rotation * (Vec3::from_array(*position) - transform.center))
+                * transform.factor;
             if !value.is_finite() {
                 return Err("Non-finite position at model.normalization".into());
             }
             *position = value.to_array();
         }
         for normal in &mut self.normals {
-            *normal = (rotation * Vec3::from_array(*normal)).to_array();
+            *normal = (transform.rotation * Vec3::from_array(*normal)).to_array();
         }
+        Ok(())
+    }
+    fn mesh(mut self, settings: ModelSettings) -> Result<Mesh, String> {
+        self.normalize(self.normalization(settings)?)?;
         Ok(self.indexed_mesh())
     }
 
     /// Share only exact shader inputs. Hard edges, material seams and triangle order stay intact.
     /// Include any future vertex attributes here before sharing vertices that carry them.
     fn indexed_mesh(self) -> Mesh {
-        let mut lookup = HashMap::<[u32; 10], u32>::with_capacity(self.positions.len());
+        self.indexed(false).0
+    }
+
+    fn indexed(self, animated: bool) -> (Mesh, Vec<usize>) {
+        let mut lookup = HashMap::<[u32; 15], u32>::with_capacity(self.positions.len());
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut colors = Vec::new();
+        let mut materials = Vec::new();
+        let mut retained = Vec::new();
         let mut indices = Vec::with_capacity(self.positions.len());
-        for ((position, normal), color) in self
+        for (expanded, (((position, normal), color), (material, source))) in self
             .positions
             .into_iter()
             .zip(self.normals)
             .zip(self.colors)
+            .zip(self.materials.into_iter().zip(self.sources))
+            .enumerate()
         {
+            let source = if animated { source } else { [0; 3] };
             let key = [
                 position[0].to_bits(),
                 position[1].to_bits(),
@@ -187,24 +225,35 @@ impl ImportedModel {
                 color[1].to_bits(),
                 color[2].to_bits(),
                 color[3].to_bits(),
+                material[0].to_bits(),
+                material[1].to_bits(),
+                source[0],
+                source[1],
+                source[2],
             ];
             let index = *lookup.entry(key).or_insert_with(|| {
                 let index = positions.len() as u32;
                 positions.push(position);
                 normals.push(normal);
                 colors.push(color);
+                materials.push(material);
+                retained.push(expanded);
                 index
             });
             indices.push(index);
         }
-        Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
+        (
+            Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            )
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+            .with_inserted_attribute(ATTRIBUTE_MATERIAL, materials)
+            .with_inserted_indices(Indices::U32(indices)),
+            retained,
         )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
-        .with_inserted_indices(Indices::U32(indices))
     }
 }
 
@@ -224,15 +273,6 @@ fn preflight(value: &Value) -> Result<(), String> {
             "extensionsRequired[0]",
             "no required extensions",
         ));
-    }
-    for (key, feature) in [("skins", "skins"), ("animations", "animations")] {
-        if value[key].as_array().is_some_and(|v| !v.is_empty()) {
-            return Err(unsupported(
-                feature,
-                &format!("{key}[0]"),
-                "static unskinned geometry (Stage 6 is deferred)",
-            ));
-        }
     }
     fn walk(value: &Value, path: &str, depth: usize) -> Result<(), String> {
         if depth > MAX_DEPTH {
@@ -267,21 +307,14 @@ fn preflight(value: &Value) -> Result<(), String> {
                             return Err(unsupported(
                                 "morph targets",
                                 &next,
-                                "static geometry (Stage 6 is deferred)",
+                                "geometry without morph targets",
                             ))
                         }
                         "weights" if path.starts_with("nodes[") || path.starts_with("meshes[") => {
                             return Err(unsupported("morph weights", &next, "static geometry"))
                         }
-                        "skin" if path.starts_with("nodes[") => {
-                            return Err(unsupported("skin", &next, "unskinned nodes"))
-                        }
                         key if path.starts_with("materials[") && key.ends_with("Texture") => {
-                            return Err(unsupported(
-                                "texture map",
-                                &next,
-                                "untextured materials (Stage 6 is deferred)",
-                            ))
+                            return Err(unsupported("texture map", &next, "untextured materials"))
                         }
                         "alphaMode" if child != "OPAQUE" => {
                             return Err(unsupported("alpha mode", &next, "OPAQUE"))
@@ -332,26 +365,46 @@ fn read_file(path: &Path, remaining: &mut usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn load(path: &Path, settings: ModelSettings) -> Result<(Mesh, usize, usize, usize), String> {
+#[derive(Debug)]
+struct LoadedModel {
+    mesh: Mesh,
+    vertices: usize,
+    triangles: usize,
+    primitives: usize,
+    animation: Option<Arc<BakedAnimation>>,
+    clips: Vec<String>,
+    selected_clip: usize,
+}
+
+#[cfg(test)]
+fn load(path: &Path, settings: ModelSettings) -> LoadResult {
+    load_clip(path, settings, "0")
+}
+fn load_clip(path: &Path, settings: ModelSettings, clip: &str) -> LoadResult {
     let mut remaining = MAX_BYTES;
     let bytes = read_file(path, &mut remaining)?;
-    let model = parse(&bytes, |uri| {
+    let (gltf, buffers) = read_document(&bytes, |uri| {
         read_file(
             &path.parent().unwrap_or(Path::new(".")).join(uri),
             &mut remaining,
         )
     })?;
-    let triangles = model.positions.len() / 3;
-    let primitives = model.primitives;
-    let mesh = model.mesh(settings)?;
-    let vertices = mesh.count_vertices();
-    Ok((mesh, vertices, triangles, primitives))
+    animation::load(&gltf, &buffers, settings, clip)
 }
 
+#[cfg(test)]
 fn parse(
     bytes: &[u8],
-    mut sidecar: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    sidecar: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Result<ImportedModel, String> {
+    let (gltf, buffers) = read_document(bytes, sidecar)?;
+    scene_model(&gltf, &buffers, None)
+}
+
+fn read_document(
+    bytes: &[u8],
+    mut sidecar: impl FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Result<(gltf::Gltf, Vec<Vec<u8>>), String> {
     if bytes.len() > MAX_BYTES {
         return Err("Limit exceeded at model; expected input <= 64 MiB".into());
     }
@@ -416,6 +469,21 @@ fn parse(
     }
     validate_accessors(&gltf, &buffers)?;
     validate_hierarchy(&gltf)?;
+    Ok((gltf, buffers))
+}
+
+fn scene_model(
+    gltf: &gltf::Gltf,
+    buffers: &[Vec<u8>],
+    globals: Option<&[Mat4]>,
+) -> Result<ImportedModel, String> {
+    let rest;
+    let globals = if let Some(globals) = globals {
+        globals
+    } else {
+        rest = animation::global_transforms(gltf, &[], 0.0)?;
+        &rest
+    };
     let scene = gltf
         .default_scene()
         .or_else(|| {
@@ -433,13 +501,12 @@ fn parse(
         normals: Vec::new(),
         colors: Vec::new(),
         primitives: 0,
+        materials: Vec::new(),
+        sources: Vec::new(),
     };
-    let mut pending: Vec<_> = scene
-        .nodes()
-        .map(|node| (node, Mat4::IDENTITY, 0))
-        .collect();
+    let mut pending: Vec<_> = scene.nodes().map(|node| (node, 0)).collect();
     let mut seen = vec![false; gltf.nodes().len()];
-    while let Some((node, parent, depth)) = pending.pop() {
+    while let Some((node, depth)) = pending.pop() {
         if depth > MAX_DEPTH {
             return Err(format!(
                 "Limit exceeded at nodes[{}]; expected hierarchy depth <= {MAX_DEPTH}",
@@ -453,7 +520,7 @@ fn parse(
             ));
         }
         seen[node.index()] = true;
-        let transform = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        let transform = globals[node.index()];
         let linear = Mat3::from_mat4(transform);
         let determinant = linear.determinant();
         if !transform.is_finite()
@@ -468,10 +535,18 @@ fn parse(
         }
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                append_primitive(&mut model, mesh.index(), primitive, transform, &buffers)?;
+                append_primitive(
+                    &mut model,
+                    mesh.index(),
+                    primitive,
+                    transform,
+                    buffers,
+                    &node,
+                    globals,
+                )?;
             }
         }
-        pending.extend(node.children().map(|child| (child, transform, depth + 1)));
+        pending.extend(node.children().map(|child| (child, depth + 1)));
     }
     if model.positions.is_empty() {
         return Err("Empty model at scenes; expected at least one triangle".into());
@@ -565,12 +640,15 @@ fn validate_hierarchy(gltf: &gltf::Gltf) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_primitive(
     model: &mut ImportedModel,
     mesh_index: usize,
     primitive: gltf::Primitive,
     transform: Mat4,
     buffers: &[Vec<u8>],
+    node: &gltf::Node,
+    globals: &[Mat4],
 ) -> Result<(), String> {
     let path = format!("meshes[{}].primitives[{}]", mesh_index, primitive.index());
     if primitive.mode() != Mode::Triangles {
@@ -596,6 +674,17 @@ fn append_primitive(
                         && accessor.normalized()))
             }
             Semantic::Tangents | Semantic::TexCoords(0) => true,
+            Semantic::Joints(0) => {
+                matches!(accessor.data_type(), DataType::U8 | DataType::U16)
+                    && accessor.dimensions() == gltf::accessor::Dimensions::Vec4
+                    && !accessor.normalized()
+            }
+            Semantic::Weights(0) => {
+                accessor.dimensions() == gltf::accessor::Dimensions::Vec4
+                    && ((accessor.data_type() == DataType::F32 && !accessor.normalized())
+                        || (matches!(accessor.data_type(), DataType::U8 | DataType::U16)
+                            && accessor.normalized()))
+            }
             _ => false,
         };
         if !supported {
@@ -603,7 +692,7 @@ fn append_primitive(
             return Err(unsupported(
                 &format!("attribute {semantic}"),
                 &format!("{path}.attributes.{semantic}"),
-                "float32 POSITION/NORMAL, optional COLOR_0; UV0/TANGENT ignored",
+                "float32 POSITION/NORMAL; optional COLOR_0, u8/u16 JOINTS_0 and four WEIGHTS_0; UV0/TANGENT ignored",
             ));
         }
     }
@@ -668,15 +757,31 @@ fn append_primitive(
             "Invalid base color at {path}.material; expected finite factors in 0..=1"
         ));
     }
+    let pbr = primitive.material().pbr_metallic_roughness();
+    let material = [pbr.metallic_factor(), pbr.roughness_factor()];
+    if material
+        .iter()
+        .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+    {
+        return Err(format!(
+            "Invalid material factors at {path}.material; expected metallic/roughness in 0..=1"
+        ));
+    }
+    let skin_matrices =
+        animation::skin_matrices(node, globals, buffers, &primitive, positions.len(), &path)?;
     let linear = Mat3::from_mat4(transform);
     let normal_matrix = linear.inverse().transpose();
-    for triangle in indices.as_chunks::<3>().0 {
+    for (face, triangle) in indices.as_chunks::<3>().0.iter().enumerate() {
         let mut triangle = *triangle;
         if linear.determinant() < 0.0 {
             triangle.swap(1, 2);
         }
-        let points =
-            triangle.map(|i| transform.transform_point3(Vec3::from_array(positions[i as usize])));
+        let matrices =
+            triangle.map(|i| skin_matrices.as_ref().map_or(transform, |m| m[i as usize]));
+        let points = std::array::from_fn::<_, 3, _>(|corner| {
+            matrices[corner]
+                .transform_point3(Vec3::from_array(positions[triangle[corner] as usize]))
+        });
         if points.iter().any(|p| !p.is_finite()) {
             return Err(format!(
                 "Non-finite transformed position at {path}.attributes.POSITION"
@@ -690,7 +795,12 @@ fn append_primitive(
         else {
             continue;
         };
-        for (i, point) in triangle.into_iter().zip(points) {
+        for (corner, (i, point)) in triangle.into_iter().zip(points).enumerate() {
+            let normal_matrix = if skin_matrices.is_some() {
+                Mat3::from_mat4(matrices[corner]).inverse().transpose()
+            } else {
+                normal_matrix
+            };
             let normal = if let Some(normals) = &normals {
                 (normal_matrix * Vec3::from_array(normals[i as usize])).try_normalize()
                     .filter(|n| n.is_finite()).ok_or_else(|| format!("Invalid normal at {path}.attributes.NORMAL; expected finite nonzero normals"))?
@@ -706,13 +816,23 @@ fn append_primitive(
             model.positions.push(point.to_array());
             model.normals.push(normal.to_array());
             model.colors.push((color * factor).to_array());
+            model.materials.push(material);
+            model.sources.push([
+                node.index() as u32,
+                primitive.index() as u32,
+                if normals.is_some() {
+                    i
+                } else {
+                    (face * 3 + corner) as u32
+                },
+            ]);
         }
     }
     model.primitives += 1;
     Ok(())
 }
 
-type LoadResult = Result<(Mesh, usize, usize, usize), String>;
+type LoadResult = Result<LoadedModel, String>;
 struct ModelJob {
     id: u64,
     path: PathBuf,
@@ -725,6 +845,11 @@ pub struct VehicleModels {
     pub path_input: String,
     pub status: String,
     pub current: Option<Handle<Mesh>>,
+    pub animation: Option<Arc<BakedAnimation>>,
+    pub animation_speed: f32,
+    pub clip: String,
+    pub clips: Vec<String>,
+    pub selected_clip: usize,
     current_path: Option<PathBuf>,
     paths: Vec<PathBuf>,
     scan: Option<Task<Result<Vec<PathBuf>, String>>>,
@@ -739,6 +864,11 @@ impl Default for VehicleModels {
             path_input: "assets/models/glider.glb".into(),
             status: "Choose a local GLB/glTF model.".into(),
             current: None,
+            animation: None,
+            animation_speed: 1.0,
+            clip: "0".into(),
+            clips: Vec::new(),
+            selected_clip: 0,
             current_path: None,
             paths: Vec::new(),
             scan: None,
@@ -758,13 +888,23 @@ impl VehicleModels {
         self.generation = self.generation.wrapping_add(1);
         self.path_input = path.display().to_string();
         let path = root().join(path);
+        let same_model = self
+            .pending
+            .as_ref()
+            .map(|job| &job.path)
+            .or(self.current_path.as_ref())
+            == Some(&path);
+        if !same_model {
+            self.clip = "0".into();
+        }
         let settings = self.settings;
+        let clip = self.clip.clone();
         self.status = format!("Loading {}…", path.display());
         let task_path = path.clone();
         self.pending = Some(ModelJob {
             id: self.generation,
             path,
-            task: IoTaskPool::get().spawn(async move { load(&task_path, settings) }),
+            task: IoTaskPool::get().spawn(async move { load_clip(&task_path, settings, &clip) }),
         });
     }
     pub fn cancel(&mut self) {
@@ -821,7 +961,19 @@ impl VehicleModels {
             return;
         }
         match result {
-            Ok((mesh, vertices, triangles, primitives)) => {
+            Ok(loaded) => {
+                let LoadedModel {
+                    mesh,
+                    vertices,
+                    triangles,
+                    primitives,
+                    animation,
+                    clips,
+                    selected_clip,
+                } = loaded;
+                self.animation = animation;
+                self.clips = clips;
+                self.selected_clip = selected_clip;
                 self.current = Some(meshes.add(mesh));
                 self.current_path = Some(path.clone());
                 appearance.vehicles.shape = VehicleShape::Custom;
@@ -966,6 +1118,33 @@ pub fn ui(
     if models.settings != before {
         models.reload();
     }
+    if !models.clips.is_empty() {
+        let mut chosen = None;
+        egui::ComboBox::from_label("Animation clip")
+            .selected_text(&models.clips[models.selected_clip])
+            .show_ui(ui, |ui| {
+                for (index, name) in models.clips.iter().enumerate() {
+                    if ui
+                        .selectable_label(models.selected_clip == index, name)
+                        .clicked()
+                    {
+                        chosen = Some(index);
+                    }
+                }
+            });
+        if let Some(index) = chosen {
+            models.clip = index.to_string();
+            models.reload();
+        }
+    }
+    if let Some(animation) = &models.animation {
+        ui.small(format!(
+            "{} frames at 30 Hz, {:.1} KiB baked",
+            animation.frame_count,
+            animation.data.len() as f64 * 32.0 / 1024.0
+        ));
+        ui.add(egui::Slider::new(&mut models.animation_speed, 0.1..=4.0).text("Animation speed"));
+    }
     if models.status.starts_with("Error:") {
         ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
     } else {
@@ -978,10 +1157,10 @@ mod tests {
     use super::*;
     use bevy::{mesh::VertexAttributeValues, render::render_resource::encase};
 
-    fn json(text: &str) -> Value {
+    pub(super) fn json(text: &str) -> Value {
         gltf::json::deserialize::from_str(text).unwrap()
     }
-    fn fixture() -> (Value, Vec<u8>) {
+    pub(super) fn fixture() -> (Value, Vec<u8>) {
         let value = json(
             r#"{
             "asset":{"version":"2.0"}, "scene":0, "scenes":[{"nodes":[0]}],
@@ -1056,6 +1235,9 @@ mod tests {
         assert_eq!(mesh.indices().unwrap().len(), 72);
         for (_, values) in mesh.attributes() {
             match values {
+                VertexAttributeValues::Float32x2(values) => {
+                    assert!(values.iter().flatten().all(|v| v.is_finite()))
+                }
                 VertexAttributeValues::Float32x3(values) => {
                     assert!(values.iter().flatten().all(|v| v.is_finite()))
                 }
@@ -1074,6 +1256,8 @@ mod tests {
             normals: vec![[0.0, 0.0, 1.0]; 15],
             colors: vec![[1.0, 0.5, 0.0, 1.0]; 15],
             primitives: 1,
+            materials: vec![[0.2, 0.4]; 15],
+            sources: vec![[0; 3]; 15],
         };
         input.normals[6..9].fill([1.0, 0.0, 0.0]);
         input.colors[9..12].fill([0.0, 0.5, 1.0, 1.0]);
@@ -1125,8 +1309,13 @@ mod tests {
 
     #[test]
     fn loaded_status_counts_indexed_vertices_and_retains_triangle_count() {
-        let (mesh, vertices, triangles, primitives) =
-            load(&root().join("assets/models/glider.glb"), default()).unwrap();
+        let LoadedModel {
+            mesh,
+            vertices,
+            triangles,
+            primitives,
+            ..
+        } = load(&root().join("assets/models/glider.glb"), default()).unwrap();
         assert_eq!((vertices, triangles, primitives), (62, 24, 2));
         assert_eq!(mesh.count_vertices(), vertices);
         assert_eq!(mesh.indices().unwrap().len(), triangles * 3);
@@ -1198,7 +1387,7 @@ mod tests {
             .all(|n| Vec3::from_array(*n).distance(normal) < 1e-6));
     }
 
-    fn add_accessor(
+    pub(super) fn add_accessor(
         value: &mut Value,
         bytes: &mut Vec<u8>,
         data: &[u8],
@@ -1325,8 +1514,6 @@ mod tests {
                 "required extension",
                 "extensionsRequired[0]",
             ),
-            ("skins", "[{}]", "skins", "skins[0]"),
-            ("animations", "[{}]", "animations", "animations[0]"),
         ];
         for (key, text, feature, path) in cases {
             let (mut value, bytes) = fixture();
@@ -1402,7 +1589,6 @@ mod tests {
             ("/meshes/0/primitives/0", "targets", "[{}]", "morph targets at meshes[0].primitives[0].targets"),
             ("/meshes/0/primitives/0", "extensions", r#"{"KHR_draco_mesh_compression":{}}"#, "extension KHR_draco_mesh_compression at meshes[0].primitives[0].extensions.KHR_draco_mesh_compression"),
             ("/bufferViews/0", "extensions", r#"{"EXT_meshopt_compression":{}}"#, "extension EXT_meshopt_compression at bufferViews[0].extensions.EXT_meshopt_compression"),
-            ("/nodes/0", "skin", "0", "skin at nodes[0].skin"),
             ("/nodes/0", "weights", "[1]", "morph weights at nodes[0].weights"),
             ("/meshes/0", "weights", "[1]", "morph weights at meshes[0].weights"),
         ] {
@@ -1627,7 +1813,7 @@ mod tests {
                 Transform::from_xyz(3.0, 5.0, 7.0),
             ))
             .id();
-        let instances = vec![[Vec4::ONE, Vec4::W]; 200];
+        let instances = vec![[Vec4::ONE, Vec4::W, Vec4::ZERO]; 200];
         let flock = app
             .world_mut()
             .spawn((VehicleInstances(instances.clone()), Transform::default()))
@@ -1656,6 +1842,12 @@ mod tests {
         };
         let loaded = || load(&root().join("assets/models/glider.glb"), default());
         complete(app.world_mut(), 0, loaded());
+        complete(
+            app.world_mut(),
+            0,
+            load(&root().join("assets/models/bird.glb"), default()),
+        );
+        assert!(app.world().resource::<VehicleModels>().animation.is_some());
         let previous = app
             .world()
             .resource::<VehicleModels>()
@@ -1906,5 +2098,30 @@ mod tests {
             VehicleShape::Fish
         );
         assert_eq!(app.world().resource::<VehicleModels>().current, previous);
+    }
+
+    #[test]
+    fn exact_indexing_keeps_material_seams_even_with_identical_colors() {
+        let (mut value, bytes) = fixture();
+        value["materials"] = json(
+            r#"[{"pbrMetallicRoughness":{"metallicFactor":0,"roughnessFactor":1}}, {"pbrMetallicRoughness":{"metallicFactor":1,"roughnessFactor":0.1}}]"#,
+        );
+        let mut second = value["meshes"][0]["primitives"][0].clone();
+        second["material"] = Value::from(1);
+        value["meshes"][0]["primitives"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        let mesh = from_fixture(&value, &bytes)
+            .unwrap()
+            .mesh(default())
+            .unwrap();
+        assert_eq!(mesh.count_vertices(), 6);
+        let VertexAttributeValues::Float32x2(values) = mesh.attribute(ATTRIBUTE_MATERIAL).unwrap()
+        else {
+            panic!("materials");
+        };
+        assert_eq!(&values[..3], &[[0.0, 1.0]; 3]);
+        assert_eq!(&values[3..], &[[1.0, 0.1]; 3]);
     }
 }

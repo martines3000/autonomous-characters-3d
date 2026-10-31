@@ -1,4 +1,4 @@
-//! Presentation controls use real time; only vehicle simulation advances the dedicated virtual clock.
+//! Presentation controls use real time; vehicle simulation and animation share the dedicated virtual clock.
 use std::time::Duration;
 
 use bevy::{
@@ -21,6 +21,11 @@ pub const MAX_SPEED: f32 = 4.0;
 
 #[derive(Resource, Default)]
 pub(crate) struct SimulationClock(Time<Virtual>);
+impl SimulationClock {
+    pub(crate) fn delta_secs_f64(&self) -> f64 {
+        self.0.delta_secs_f64()
+    }
+}
 
 /// A frame's simulated duration, split equally for CPU and GPU integration.
 #[derive(Resource, ExtractResource, Clone, Copy, Debug, Default)]

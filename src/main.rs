@@ -223,6 +223,9 @@ fn ui(
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
+            if models.status.starts_with("Error:") {
+                ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
+            }
             egui::CollapsingHeader::new("Presentation").default_open(true).show(ui, |ui| {
                 presentation::ui(ui, &mut presentation);
             });

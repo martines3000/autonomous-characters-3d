@@ -89,6 +89,8 @@ enum Setting {
     ModelForward(ModelAxis),
     ModelUp(ModelAxis),
     ModelScale(f32),
+    AnimationClip(String),
+    AnimationSpeed(f32),
     VisualSize(f32),
     Length(f32),
     Width(f32),
@@ -181,6 +183,8 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("model", _) => Setting::Model(PathBuf::from(value)),
         ("model_forward", _) => Setting::ModelForward(ModelAxis::parse(value)?),
         ("model_up", _) => Setting::ModelUp(ModelAxis::parse(value)?),
+        ("animation_clip", _) => Setting::AnimationClip(value.into()),
+        ("animation_speed", _) => Setting::AnimationSpeed(number(value, 0.1, 4.0)?),
         ("model_scale", _) => Setting::ModelScale(number(value, 0.1, 5.0)?),
         ("visual_size", _) => Setting::VisualSize(number(value, 0.1, 5.0)?),
         ("length", _) => Setting::Length(number(value, 0.25, 3.0)?),
@@ -484,6 +488,14 @@ fn apply_setting(world: &mut World, setting: Setting) {
             models.settings.up = axis;
             models.reload();
         }
+        Setting::AnimationClip(clip) => {
+            let mut models = world.resource_mut::<VehicleModels>();
+            models.clip = clip;
+            models.reload();
+        }
+        Setting::AnimationSpeed(speed) => {
+            world.resource_mut::<VehicleModels>().animation_speed = speed
+        }
         Setting::ModelScale(scale) => {
             let mut models = world.resource_mut::<VehicleModels>();
             models.settings.scale = scale;
@@ -773,5 +785,27 @@ mod tests {
         assert!(parse("0 set model_forward y\n0 set model_up -y")
             .unwrap_err()
             .contains("line 2: model_up must be perpendicular"));
+    }
+
+    #[test]
+    fn animation_commands_accept_clip_indices_names_and_bounded_speed() {
+        let commands =
+            parse("0 set animation_clip Flap\n0 set animation_clip 1\n0 set animation_speed 0.5")
+                .unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::Set(Setting::AnimationClip("Flap".into()))
+        );
+        assert_eq!(
+            commands[1].command,
+            Command::Set(Setting::AnimationClip("1".into()))
+        );
+        assert_eq!(
+            commands[2].command,
+            Command::Set(Setting::AnimationSpeed(0.5))
+        );
+        for speed in ["0", "4.1", "NaN", "inf"] {
+            assert!(parse(&format!("0 set animation_speed {speed}")).is_err());
+        }
     }
 }

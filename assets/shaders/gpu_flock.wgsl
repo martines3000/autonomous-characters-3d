@@ -48,6 +48,7 @@ struct Boid {
     wander_phi: f32,
     // Integration keeps the previous heading when velocity becomes zero, as on the CPU.
     rotation: vec4<f32>,
+    // xyz: separation scratch; w: stable spawn phase, preserved through sorting and scratch resets.
     separation: vec4<f32>,
 };
 
@@ -55,6 +56,7 @@ struct Instance {
     // xyz: position; w: speed/group payload (normal f32 mantissa), not physical size.
     position_speed_group: vec4<f32>,
     rotation: vec4<f32>,
+    phase: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -157,9 +159,10 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let angle = random(&seed) * 2.0 * PI;
     let radius = sqrt(max(1.0 - z * z, 0.0));
     let direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
-    boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0));
+    let phase = f32(pcg(index ^ pcg(params.frame ^ 0xa511e9b3u)) >> 8u) / 16777216.0;
+    boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
     // Spawn-only maintenance must be drawable while the simulation stays paused.
-    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu)), boids[index].rotation);
+    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu)), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
 }
 
 @compute @workgroup_size(256)
@@ -291,7 +294,7 @@ fn separate(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
     }
-    me.separation = vec4<f32>(separation, 0.0);
+    me.separation = vec4<f32>(separation, me.separation.w);
     boids[index] = me;
 }
 
@@ -423,9 +426,9 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(direction != vec3<f32>(0.0)) {
         rotation = heading_rotation(direction);
     }
-    boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0));
+    boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0, 0.0, 0.0, me.separation.w));
     // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.
     let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
     let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)); // group zero
-    instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation);
+    instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
 }

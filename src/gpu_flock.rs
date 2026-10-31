@@ -491,6 +491,57 @@ impl GpuFlock {
         self.count = count;
     }
 
+    /// Read the draw stream to verify stable phase transport after sorting and paused growth.
+    #[cfg(test)]
+    pub fn read_instances(
+        &self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> Vec<crate::instancing::InstanceData> {
+        if self.count == 0 {
+            return Vec::new();
+        }
+        let size = self.count as u64 * size_of::<crate::instancing::InstanceData>() as u64;
+        let staging = device.create_buffer(&BufferDescriptor {
+            label: Some("gpu_instance_readback"),
+            size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&default());
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.as_ref().unwrap().instances,
+            0,
+            &staging,
+            0,
+            size,
+        );
+        queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(MapMode::Read, |result| result.unwrap());
+        device.poll(PollType::wait_indefinitely()).unwrap();
+        let bytes = staging.slice(..).get_mapped_range().unwrap();
+        let floats: Vec<_> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| f32::from_le_bytes(*v))
+            .collect();
+        floats
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .map(|v| {
+                [
+                    Vec4::new(v[0], v[1], v[2], v[3]),
+                    Vec4::new(v[4], v[5], v[6], v[7]),
+                    Vec4::new(v[8], v[9], v[10], v[11]),
+                ]
+            })
+            .collect()
+    }
+
     /// Copies the first `count` boids back to the CPU (blocking).
     #[cfg(test)]
     pub fn read_boids(&self, device: &RenderDevice, queue: &RenderQueue) -> Vec<BoidData> {

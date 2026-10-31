@@ -18,7 +18,7 @@ use crate::{
     instancing::VehicleInstances,
     octree::{Octree, Point},
     target::{Target, TargetSelection},
-    vehicle_appearance::{pack_speed_group, VehicleMeshes},
+    vehicle_appearance::{instance_phase, pack_speed_group, VehicleMeshes},
     GlobalState, SimulationMode,
 };
 use na::Vector3;
@@ -103,20 +103,23 @@ fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 fn sync_instances(
-    vehicles: Query<(&Transform, &VehicleVelocity), With<Vehicle>>,
+    vehicles: Query<(Entity, &Transform, &VehicleVelocity), With<Vehicle>>,
     mut flock: Single<&mut VehicleInstances>,
     state: Res<GlobalState>,
 ) {
     flock.0.clear();
-    flock.0.extend(vehicles.iter().map(|(transform, velocity)| {
-        [
-            transform.translation.extend(pack_speed_group(
-                velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
-                0,
-            )),
-            Vec4::from(transform.rotation),
-        ]
-    }));
+    flock
+        .0
+        .extend(vehicles.iter().map(|(entity, transform, velocity)| {
+            [
+                transform.translation.extend(pack_speed_group(
+                    velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
+                    0,
+                )),
+                Vec4::from(transform.rotation),
+                instance_phase(entity.to_bits()),
+            ]
+        }));
 }
 
 fn vehicle_spawner(
@@ -2090,15 +2093,16 @@ mod tests {
             let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
             let expected: Vec<InstanceData> = app
                 .world_mut()
-                .query_filtered::<(&Transform, &VehicleVelocity), With<Vehicle>>()
+                .query_filtered::<(Entity, &Transform, &VehicleVelocity), With<Vehicle>>()
                 .iter(app.world())
-                .map(|(transform, velocity)| {
+                .map(|(entity, transform, velocity)| {
                     [
                         transform.translation.extend(pack_speed_group(
                             velocity.0.magnitude() / max_speed.max(f32::EPSILON),
                             0,
                         )),
                         Vec4::from(transform.rotation),
+                        instance_phase(entity.to_bits()),
                     ]
                 })
                 .collect();
@@ -2115,5 +2119,66 @@ mod tests {
                 .clone();
             assert_eq!(sorted(instances), sorted(expected));
         }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_animation_phase_survives_sorts_and_paused_growth_without_using_group_bits() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 128,
+            ..default()
+        };
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        let initial = flock.read_boids(&device, &queue);
+        let phases = |boids: &[crate::gpu_flock::BoidData]| {
+            boids
+                .iter()
+                .map(|boid| boid[3].w.to_bits())
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let expected = phases(&initial);
+        assert_eq!(expected.len(), 128);
+        for cap in [0, 1, 16] {
+            state.gpu_max_neighbors = cap;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::ZERO, true, 1.0 / 60.0),
+            );
+            let boids = flock.read_boids(&device, &queue);
+            assert_eq!(phases(&boids), expected);
+            let instances = flock.read_instances(&device, &queue);
+            for (boid, instance) in boids.iter().zip(instances) {
+                assert_eq!(instance[2].x, boid[3].w);
+                assert!((0.0..1.0).contains(&instance[2].x));
+                assert_eq!(
+                    crate::vehicle_appearance::unpack_speed_group(instance[0].w).1,
+                    0
+                );
+            }
+        }
+        let before = flock.read_boids(&device, &queue);
+        let draw = flock.read_instances(&device, &queue);
+        state.vehicle_count = 600;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, true, 0.0),
+        );
+        assert_eq!(&flock.read_boids(&device, &queue)[..128], before.as_slice());
+        assert_eq!(
+            &flock.read_instances(&device, &queue)[..128],
+            draw.as_slice()
+        );
     }
 }

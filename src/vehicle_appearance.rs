@@ -147,7 +147,7 @@ pub fn ui(ui: &mut egui::Ui, appearance: &mut VehicleAppearance) {
                 ColorMode::Altitude => "Palette ramp from the bottom wall to the top wall, clamped outside the walls.",
                 ColorMode::Speed => "Palette ramp from zero speed to the simulation's configured maximum speed.",
                 ColorMode::Solid => "One user-chosen sRGB color for every vehicle.",
-                ColorMode::ModelColors => "Imported linear base color factors × COLOR_0; built-in meshes fall back to white.",
+                ColorMode::ModelColors => "Imported base color × COLOR_0 and material metallic/roughness; built-in meshes fall back to white.",
             });
         }
     });
@@ -190,6 +190,15 @@ pub(crate) fn update_shape(
             mesh.0 = handle.clone();
         }
     }
+}
+
+/// Stable render-only phase. PCG diffusion matches the GPU hash without consuming steering RNG.
+pub(crate) fn instance_phase(seed: u64) -> Vec4 {
+    let seed = seed as u32 ^ (seed >> 32) as u32;
+    let state = seed.wrapping_mul(747796405).wrapping_add(2891336453);
+    let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277803737);
+    let hash = (word >> 22) ^ word;
+    Vec4::new((hash >> 8) as f32 / 16777216.0, 0.0, 0.0, 0.0)
 }
 
 /// Stage 7 transport reservation, not group behavior: mantissa bits 16..22 hold group (0..127),
@@ -341,8 +350,8 @@ mod tests {
     }
 
     #[test]
-    fn instance_speed_and_reserved_group_round_trip_without_stride_growth() {
-        assert_eq!(size_of::<crate::instancing::InstanceData>(), 32);
+    fn instance_speed_and_reserved_group_round_trip_with_stable_phase() {
+        assert_eq!(size_of::<crate::instancing::InstanceData>(), 48);
         for group in [0, 1, 7, 63, 127] {
             for speed in [0.0, 0.001, 0.1, 0.3, 0.5, 0.9999, 1.0] {
                 let packed = pack_speed_group(speed, group);
@@ -355,5 +364,26 @@ mod tests {
         assert_eq!(unpack_speed_group(pack_speed_group(-1.0, 0)).0, 0.0);
         assert_eq!(unpack_speed_group(pack_speed_group(2.0, 0)).0, 1.0);
         assert_eq!(unpack_speed_group(pack_speed_group(f32::NAN, 0)).0, 0.0);
+    }
+
+    #[test]
+    fn phase_transport_is_finite_stable_and_independent_of_speed_group_bits() {
+        let mut phases = std::collections::HashSet::new();
+        for seed in 0..100_u64 {
+            let phase = instance_phase(seed);
+            assert!(phase.x >= 0.0 && phase.x < 1.0 && phase.is_finite());
+            assert_eq!(Vec4::from_array(phase.to_array()), phase);
+            assert_eq!(instance_phase(seed), phase);
+            assert_eq!(Vec3::new(phase.y, phase.z, phase.w), Vec3::ZERO);
+            phases.insert(phase.x.to_bits());
+            let instance = [
+                Vec3::ZERO.extend(pack_speed_group(0.5, 127)),
+                Vec4::W,
+                phase,
+            ];
+            assert_eq!(unpack_speed_group(instance[0].w).1, 127);
+            assert_eq!(instance[2], phase);
+        }
+        assert_eq!(phases.len(), 100);
     }
 }

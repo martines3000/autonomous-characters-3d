@@ -6,7 +6,7 @@
 
 - [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
 
-- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 committed (`7e66fd3`); Stage 6 remains planned.
+- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 committed (`7e66fd3`); Stage 6 done: baked animation, stable phases and one-draw materials.
 
 - [Rendering optimization](planned/2026-10-31-rendering-optimization.md): Stage 4 done: 54 before / 32 after timings; exact import indexing halves heavy-model frame time.
 

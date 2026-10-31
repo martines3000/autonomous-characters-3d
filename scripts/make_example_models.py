@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the original, deterministic static glider (repository terms apply)."""
+"""Generate deterministic original static and skinned vehicles (repository terms apply)."""
 import argparse
 import json
 import math
@@ -104,14 +104,91 @@ def generate(subdivisions=1):
     return struct.pack('<4sII', b'glTF', 2, length) + struct.pack('<I4s', len(encoded), b'JSON') + encoded + struct.pack('<I4s', len(data), b'BIN\0') + data
 
 
+def unpack(blob):
+    length = struct.unpack_from('<I', blob, 12)[0]
+    return json.loads(blob[20:20 + length]), bytearray(blob[28 + length:])
+
+
+def pack(document, data):
+    document['buffers'] = [{'byteLength': len(data)}]
+    encoded = json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+    encoded += b' ' * (-len(encoded) % 4)
+    data = bytes(data) + b'\0' * (-len(data) % 4)
+    length = 12 + 8 + len(encoded) + 8 + len(data)
+    return struct.pack('<4sII', b'glTF', 2, length) + struct.pack('<I4s', len(encoded), b'JSON') + encoded + struct.pack('<I4s', len(data), b'BIN\0') + data
+
+
+def generate_materials():
+    """Original multipart glider: polished gold hull and matte blue wings."""
+    document, data = unpack(generate())
+    document['asset']['generator'] = 'Original AC3D material glider; scripts/make_example_models.py'
+    for material, metallic, roughness in zip(document['materials'], (1.0, 0.0), (0.12, 0.95)):
+        material['pbrMetallicRoughness'].update(metallicFactor=metallic, roughnessFactor=roughness)
+    return pack(document, data)
+
+
+def generate_bird():
+    """Original three-joint skinned bird, with Flap and Glide clips; +Z forward/+Y up."""
+    document, data = unpack(generate())
+    document['asset']['generator'] = 'Original AC3D skinned bird; scripts/make_example_models.py'
+
+    def accessor(values, dimensions, fmt='f', component=5126):
+        data.extend(b'\0' * (-len(data) % 4))
+        offset = len(data)
+        flattened = [x for value in values for x in value] if dimensions != 'SCALAR' else values
+        data.extend(struct.pack('<' + fmt * len(flattened), *flattened))
+        view = len(document['bufferViews'])
+        document['bufferViews'].append({'buffer': 0, 'byteOffset': offset, 'byteLength': len(data) - offset})
+        item = {'bufferView': view, 'componentType': component, 'count': len(values), 'type': dimensions}
+        if dimensions == 'SCALAR':
+            item.update(min=[min(values)], max=[max(values)])
+        document['accessors'].append(item)
+        return len(document['accessors']) - 1
+
+    for part, primitive in enumerate(document['meshes'][0]['primitives']):
+        count = document['accessors'][primitive['attributes']['POSITION']]['count']
+        joints = ([0] * count) if part == 0 else ([1] * (count // 2) + [2] * (count // 2))
+        primitive['attributes']['JOINTS_0'] = accessor([(j, 0, 0, 0) for j in joints], 'VEC4', 'B', 5121)
+        primitive['attributes']['WEIGHTS_0'] = accessor([(1.0, 0.0, 0.0, 0.0)] * count, 'VEC4')
+    document['nodes'] = [
+        {'name': 'Body joint', 'children': [1, 2, 3]},
+        {'name': 'Left wing joint', 'translation': [-0.12, 0, 0]},
+        {'name': 'Right wing joint', 'translation': [0.12, 0, 0]},
+        {'name': 'Bird mesh', 'mesh': 0, 'skin': 0},
+    ]
+    def inverse(x):
+        return (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1)
+    document['skins'] = [{'name': 'Bird skeleton', 'joints': [0, 1, 2], 'inverseBindMatrices': accessor([inverse(0), inverse(0.12), inverse(-0.12)], 'MAT4')}]
+    document['animations'] = []
+    for name, duration, degrees in [('Flap', 1.0, 55), ('Glide', 2.0, 12)]:
+        times = [duration * i / 4 for i in range(5)]
+        input_index = accessor(times, 'SCALAR')
+        samplers, channels = [], []
+        for node, sign in [(1, -1), (2, 1)]:
+            angles = [-degrees, 0, degrees, 0, -degrees]
+            rotations = [(0, 0, math.sin(math.radians(a * sign) / 2), math.cos(math.radians(a * sign) / 2)) for a in angles]
+            samplers.append({'input': input_index, 'output': accessor(rotations, 'VEC4'), 'interpolation': 'LINEAR'})
+            channels.append({'sampler': len(samplers) - 1, 'target': {'node': node, 'path': 'rotation'}})
+        samplers.append({'input': input_index, 'output': accessor([(0, y, 0) for y in (0, 0.04, 0, -0.04, 0)], 'VEC3'), 'interpolation': 'LINEAR'})
+        channels.append({'sampler': len(samplers) - 1, 'target': {'node': 0, 'path': 'translation'}})
+        document['animations'].append({'name': name, 'samplers': samplers, 'channels': channels})
+    for material in document['materials']:
+        material['pbrMetallicRoughness'].update(metallicFactor=0.0, roughnessFactor=0.8)
+    return pack(document, data)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=Path(__file__).resolve().parents[1] / 'assets/models/glider.glb')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--kind', choices=('glider', 'bird', 'materials'), default='glider')
     parser.add_argument('--subdivisions', type=int, choices=range(1, 17), default=1,
                         help='split each triangle into N*N coplanar triangles; 12 produces 3456 triangles')
     args = parser.parse_args()
-    path = args.output
+    path = args.output or Path(__file__).resolve().parents[1] / f'assets/models/{args.kind if args.kind != "materials" else "material-glider"}.glb'
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(generate(args.subdivisions))
+    if args.kind != 'glider' and args.subdivisions != 1:
+        parser.error('--subdivisions applies only to --kind glider')
+    content = generate(args.subdivisions) if args.kind == 'glider' else generate_bird() if args.kind == 'bird' else generate_materials()
+    path.write_bytes(content)
     triangles = 24 * args.subdivisions ** 2
     print(f'{path}: {path.stat().st_size} bytes; 2 primitives, {triangles * 3} vertices, {triangles} triangles')

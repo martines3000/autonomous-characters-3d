@@ -4,6 +4,8 @@
 //! One entity carries a mesh plus per-vehicle instance data; the render world uploads
 //! the data into a reused vertex buffer and draws the mesh once per vehicle.
 
+use std::sync::Arc;
+
 use bevy::{
     core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d},
     ecs::{
@@ -37,14 +39,17 @@ use bevy::{
 use crate::{
     gpu_flock::GpuParams,
     scene::{Appearance, HeadingPalette},
-    vehicle, GlobalState,
+    vehicle,
+    vehicle_model::{BakedAnimation, VehicleModels, ATTRIBUTE_MATERIAL},
+    GlobalState,
 };
 
 const SHADER_ASSET_PATH: &str = "shaders/vehicle_instancing.wesl";
 
 /// Per-vehicle data: `[position.xyz, packed speed/group]` and rotation `[x, y, z, w]`.
+/// Third Vec4 carries a stable phase in x; yzw are reserved.
 /// See `vehicle_appearance::pack_speed_group`; physical and render scale live in the uniform.
-pub type InstanceData = [Vec4; 2];
+pub type InstanceData = [Vec4; 3];
 
 /// Instance data for every vehicle, drawn with this entity's `Mesh3d`.
 #[derive(Component, Default, Clone)]
@@ -81,12 +86,14 @@ impl Plugin for InstancingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AppearanceUniform>()
             .init_resource::<FlockDraw>()
+            .init_resource::<AnimationRender>()
             .add_plugins((
                 ExtractComponentPlugin::<VehicleInstances>::default(),
                 ExtractResourcePlugin::<AppearanceUniform>::default(),
                 ExtractResourcePlugin::<FlockDraw>::default(),
+                ExtractResourcePlugin::<AnimationRender>::default(),
             ))
-            .add_systems(PostUpdate, update_appearance);
+            .add_systems(PostUpdate, (update_appearance, update_animation));
 
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawInstanced>()
@@ -166,33 +173,125 @@ fn update_appearance(
     }
 }
 
+#[derive(Resource, ExtractResource, Clone, Default)]
+#[extract_app(RenderApp)]
+struct AnimationRender {
+    mesh: Option<AssetId<Mesh>>,
+    frames: Option<Arc<BakedAnimation>>,
+    seconds: f64,
+}
+impl AnimationRender {
+    fn advance(&mut self, models: &VehicleModels, appearance: &Appearance, delta: f64) {
+        let same = match (&self.frames, &models.animation) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.seconds = 0.0;
+        } else if let Some(frames) = &self.frames {
+            self.seconds = (self.seconds + delta * models.animation_speed as f64)
+                .rem_euclid(frames.duration as f64);
+        }
+        self.frames = models.animation.clone();
+        self.mesh = if appearance.vehicles.shape == crate::vehicle_appearance::VehicleShape::Custom
+            && self.frames.is_some()
+        {
+            models.current.as_ref().map(Handle::id)
+        } else {
+            None
+        };
+    }
+}
+fn update_animation(
+    models: Res<VehicleModels>,
+    appearance: Res<Appearance>,
+    clock: Res<crate::presentation::SimulationClock>,
+    mut animation: ResMut<AnimationRender>,
+) {
+    animation.advance(&models, &appearance, clock.delta_secs_f64());
+}
+
+#[derive(ShaderType, Clone, Default)]
+struct AnimationUniform {
+    // time, duration, sample rate, reserved.
+    playback: Vec4,
+    // vertices per frame, frames, MeshAllocator base vertex, reserved.
+    geometry: UVec4,
+}
+
 #[derive(Resource)]
 struct AppearanceBinding {
     _buffer: UniformBuffer<AppearanceUniform>,
+    _animation: UniformBuffer<AnimationUniform>,
+    _frames: Buffer,
+    source: Option<Arc<BakedAnimation>>,
     bind_group: BindGroup,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_appearance(
     mut commands: Commands,
     uniform: Res<AppearanceUniform>,
+    animation: Res<AnimationRender>,
     existing: Option<Res<AppearanceBinding>>,
     pipeline: Res<InstancingPipeline>,
     cache: Res<PipelineCache>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
+    allocator: Res<MeshAllocator>,
 ) {
-    if existing.is_some() && !uniform.is_changed() {
+    let same = existing
+        .as_ref()
+        .is_some_and(|old| match (&old.source, &animation.frames) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        });
+    // Static meshes rebuild only on change; animated ones refresh time and base vertex each frame.
+    if same && !uniform.is_changed() && animation.frames.is_none() {
         return;
     }
+    let frames = if same {
+        existing.as_ref().unwrap()._frames.clone()
+    } else {
+        let mut buffer = RawBufferVec::new(BufferUsages::STORAGE);
+        if let Some(frames) = &animation.frames {
+            buffer.extend(frames.data.iter().copied());
+        } else {
+            buffer.push([Vec4::ZERO; 2]);
+        }
+        buffer.write_buffer(&device, &queue);
+        buffer.buffer().unwrap().clone()
+    };
     let mut buffer = UniformBuffer::from(uniform.clone());
     buffer.write_buffer(&device, &queue);
+    let base = animation
+        .mesh
+        .and_then(|mesh| allocator.mesh_vertex_slice(&mesh))
+        .map_or(0, |slice| slice.range.start);
+    let mut metadata = UniformBuffer::from(animation.frames.as_ref().map_or_else(
+        AnimationUniform::default,
+        |frames| AnimationUniform {
+            playback: Vec4::new(animation.seconds as f32, frames.duration, 30.0, 0.0),
+            geometry: UVec4::new(frames.vertices as u32, frames.frame_count as u32, base, 0),
+        },
+    ));
+    metadata.write_buffer(&device, &queue);
     let bind_group = device.create_bind_group(
         "vehicle_appearance",
         &cache.get_bind_group_layout(&pipeline.appearance_layout),
-        &BindGroupEntries::single(buffer.binding().unwrap()),
+        &BindGroupEntries::sequential((
+            buffer.binding().unwrap(),
+            frames.as_entire_binding(),
+            metadata.binding().unwrap(),
+        )),
     );
     commands.insert_resource(AppearanceBinding {
         _buffer: buffer,
+        _animation: metadata,
+        _frames: frames,
+        source: animation.frames.clone(),
         bind_group,
     });
 }
@@ -234,6 +333,7 @@ fn prepare_instance_buffer(
 #[allow(clippy::too_many_arguments)]
 fn queue_instanced(
     draw: Res<FlockDraw>,
+    animation: Res<AnimationRender>,
     draw_functions: Res<DrawFunctions<Transparent3d>>,
     pipeline: Res<InstancingPipeline>,
     mut pipelines: ResMut<SpecializedMeshPipelines<InstancingPipeline>>,
@@ -269,8 +369,12 @@ fn queue_instanced(
                     mesh.primitive_topology(),
                     mesh.index_format(),
                 );
-            let Ok(pipeline) = pipelines.specialize(&pipeline_cache, &pipeline, key, &mesh.layout)
-            else {
+            let Ok(pipeline) = pipelines.specialize(
+                &pipeline_cache,
+                &pipeline,
+                (key, animation.mesh == Some(mesh_instance.mesh_asset_id())),
+                &mesh.layout,
+            ) else {
                 continue;
             };
             // Queued every frame, so the item goes away with the flock entity.
@@ -310,23 +414,57 @@ fn init_pipeline(
         mesh_pipeline: mesh_pipeline.clone(),
         appearance_layout: BindGroupLayoutDescriptor::new(
             "vehicle_appearance",
-            &BindGroupLayoutEntries::single(
+            &BindGroupLayoutEntries::with_indices(
                 ShaderStages::VERTEX_FRAGMENT,
-                binding_types::uniform_buffer::<AppearanceUniform>(false),
+                (
+                    (0, binding_types::uniform_buffer::<AppearanceUniform>(false)),
+                    (
+                        1,
+                        binding_types::storage_buffer_read_only_sized(false, None),
+                    ),
+                    (2, binding_types::uniform_buffer::<AnimationUniform>(false)),
+                ),
             ),
         ),
     });
 }
 
+fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'static str> {
+    [(animated, "ANIMATED"), (material, "MODEL_MATERIALS")]
+        .into_iter()
+        .filter_map(|(enabled, name)| enabled.then_some(name))
+}
+
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = MeshPipelineKey;
+    type Key = (MeshPipelineKey, bool);
 
     fn specialize(
         &self,
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
-        let mut descriptor = self.mesh_pipeline.specialize(key, layout)?;
+        let mut descriptor = self.mesh_pipeline.specialize(key.0, layout)?;
+        let material = layout.0.contains(ATTRIBUTE_MATERIAL);
+        let mut attributes = vec![
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+        ];
+        if layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
+            attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
+        }
+        if material {
+            attributes.push(ATTRIBUTE_MATERIAL.at_shader_location(6));
+        }
+        descriptor.vertex.buffers[0] = layout.0.get_layout(&attributes)?;
+        for name in model_shader_defs(key.1, material) {
+            descriptor.vertex.shader_defs.push(name.into());
+            descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .shader_defs
+                .push(name.into());
+        }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
         descriptor.vertex.buffers.push(VertexBufferLayout {
@@ -343,6 +481,11 @@ impl SpecializedMeshPipeline for InstancingPipeline {
                     format: VertexFormat::Float32x4,
                     offset: VertexFormat::Float32x4.size(),
                     shader_location: 9,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 32,
+                    shader_location: 10,
                 },
             ],
         });
@@ -541,5 +684,73 @@ mod tests {
             0
         );
         assert_eq!(AppearanceUniform::min_size().get(), 192);
+    }
+
+    #[test]
+    fn animation_uses_simulation_delta_pause_speed_and_mesh_specific_specialization() {
+        use crate::{
+            presentation::{tests::clock_app, Presentation},
+            vehicle_appearance::VehicleShape,
+        };
+        use std::time::Duration;
+        let mut app = clock_app();
+        app.init_resource::<VehicleModels>()
+            .init_resource::<Appearance>()
+            .init_resource::<AnimationRender>()
+            .add_systems(PostUpdate, update_animation);
+        let frames = Arc::new(BakedAnimation {
+            data: vec![[Vec4::ZERO; 2]; 31],
+            vertices: 1,
+            frame_count: 31,
+            duration: 1.0,
+        });
+        {
+            let mut models = app.world_mut().resource_mut::<VehicleModels>();
+            models.current = Some(Handle::default());
+            models.animation = Some(frames);
+        }
+        app.world_mut().resource_mut::<Appearance>().vehicles.shape = VehicleShape::Custom;
+        app.update();
+        for (simulation_speed, animation_speed, expected) in
+            [(1.0, 1.0, 0.1), (0.5, 2.0, 0.1), (2.0, 0.5, 0.1)]
+        {
+            app.world_mut().resource_mut::<Presentation>().speed = simulation_speed;
+            app.world_mut()
+                .resource_mut::<VehicleModels>()
+                .animation_speed = animation_speed;
+            let before = app.world().resource::<AnimationRender>().seconds;
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+            let after = app.world().resource::<AnimationRender>();
+            assert!((after.seconds - before - expected).abs() < 1e-6);
+            assert!(after.mesh.is_some());
+        }
+        app.world_mut().resource_mut::<Presentation>().paused = true;
+        let before = app.world().resource::<AnimationRender>().seconds;
+        for _ in 0..4 {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_secs(2));
+            app.update();
+            assert_eq!(app.world().resource::<AnimationRender>().seconds, before);
+        }
+        app.world_mut().resource_mut::<Appearance>().vehicles.shape = VehicleShape::Dart;
+        app.update();
+        assert!(app.world().resource::<AnimationRender>().mesh.is_none());
+        app.world_mut().resource_mut::<VehicleModels>().animation = None;
+        app.world_mut().resource_mut::<Appearance>().vehicles.shape = VehicleShape::Custom;
+        app.update();
+        assert!(app.world().resource::<AnimationRender>().mesh.is_none());
+        assert!(model_shader_defs(false, false).next().is_none());
+        assert_eq!(
+            model_shader_defs(false, true).collect::<Vec<_>>(),
+            ["MODEL_MATERIALS"]
+        );
+        assert_eq!(
+            model_shader_defs(true, true).collect::<Vec<_>>(),
+            ["ANIMATED", "MODEL_MATERIALS"]
+        );
     }
 }

@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 76 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 89 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -188,7 +188,7 @@ Style changes preserve shape, multipliers, coloring mode and solid color. To rep
 look, select **Classic** style, **Dart**, render size/length/width **1**, **Heading**, and **Classic**
 palette. Appearance changes preserve count, positions, velocities, follow state and all physical settings.
 
-### Custom static vehicle models
+### Custom vehicle models
 
 In **Vehicles**, choose a scanned model in **Shape / model**, or enter a local `.glb` / `.gltf`
 path and press **Load**. Relative paths start at the repository root; absolute model paths work too.
@@ -209,8 +209,9 @@ stay unchanged. A zero forward extent is an error; choose a valid axis and retry
 Successful loads/reloads select **Model colors** by default. This mode uses each material's linear
 base color factor multiplied by optional linear `COLOR_0`. Other coloring modes remain available;
 choose one after loading completes. Built-in meshes have no vertex colors and use white in Model
-colors mode. Metallic/roughness, lighting, rim and emission remain global scene-style settings;
-imported metallic/roughness factors do not override them. Vertex/material alpha is ignored because
+colors mode. Imported metallic/roughness factors apply per vertex in Model colors; every other
+coloring mode keeps the scene style's global factors. Lighting, rim and Studio emission still apply.
+Vertex/material alpha is ignored because
 this renderer is opaque; alpha blend/mask materials are rejected.
 
 Supported subset:
@@ -225,13 +226,15 @@ Supported subset:
   per-vehicle entities. Float32 VEC3 POSITION; optional float32 VEC3 NORMAL. Missing normals become
   flat face normals. Optional RGB/RGBA COLOR_0 supports float32 or normalized u8/u16. Indices support
   u8/u16/u32 or no indices. UV0 and TANGENT are ignored. Import validates expanded triangles,
-  then shares bit-identical position/normal/color tuples through an index buffer. Hard edges,
+  then shares bit-identical position/normal/color/material tuples through an index buffer. Hard edges,
   material/color seams, triangle order and shader inputs stay unchanged; no approximate welding.
+  Animated sharing additionally preserves node/primitive/source-vertex identity, or face identity
+  for computed flat normals, so vertices with different deformation never merge.
 - Opaque single-sided base colors; no textures (base color, normal, metallic/roughness, occlusion,
-  emission or extension maps), nonzero material emission, double-sided materials, skins, animations,
-  morph targets/weights, UV1+, extra color sets, joint/weight attributes or sparse accessors.
-  All required and optional extensions are rejected, including Draco and meshopt. Stage 6 will
-  decide texture, material draw and animation support.
+  emission or extension maps), nonzero material emission, double-sided materials, morph targets/weights,
+  UV1+, extra color sets, JOINTS_1+/WEIGHTS_1+ or sparse accessors. Texture support remains deferred:
+  scalar materials fit one draw, while textures need UV/sampler/material ownership decisions.
+  All required and optional extension payloads are rejected, including Draco and meshopt.
 - Maximum **100,000 triangles / 300,000 expanded vertices** per selected scene, at most 300,000
   elements per accessor, a conservative **64 MiB combined source/buffer budget** (embedded bytes
   count again when resolved), 4,096 nodes and hierarchy depth 128. These are sanity limits;
@@ -257,6 +260,80 @@ python3 scripts/make_example_models.py
 python3 scripts/make_example_models.py --subdivisions 12 --output /tmp/ac3d-heavy.glb
 ```
 
+### Baked creature animation and multipart materials
+
+Static models retain indexed geometry and the non-animated shader path. Multipart materials remain
+in **one instanced draw**, sharing the existing flock buffer. Metallic and roughness join the exact
+vertex-sharing key; Model colors uses the imported factors (including glTF defaults of 1/1).
+Heading/Altitude/Speed/Solid retain the scene style's material factors. Built-ins retain their original
+geometry/shading; Model colors still falls back to white.
+
+Animated GLB/glTF import runs entirely on the I/O task pool. Supported animation:
+
+- Rigid node **translation, rotation and scale** channels, **LINEAR** or **STEP**. LINEAR rotations
+  use shortest-path quaternion slerp during baking. Key times must be nonnegative and strictly
+  increasing; one channel per node/property, float32 scalar times and float32 VEC3/VEC4 values.
+  Animated nodes must use TRS; static ancestor matrix transforms remain supported. Animated scale
+  keys must stay positive. Zero quaternions, singular transforms and non-finite values are errors.
+- Skins with **JOINTS_0** (u8/u16 VEC4), **WEIGHTS_0** (float32 or normalized u8/u16 VEC4), at most
+  **four influences per vertex** and **128 joints per skin**. Nonnegative weights normalize by their
+  positive finite sum. Inverse bind matrices are float32 MAT4, one per joint; absent matrices mean
+  identity. Positions use weighted joint-world × inverse-bind matrices. Normals use the weighted
+  transform's inverse transpose and normalize. Joint/weight attributes are stripped from the draw mesh.
+- The first clip loads by default when choosing another model. **Animation clip** selects a name
+  or index; selection reloads/bakes in the background. UI shows clip name, frame count, baked KiB and
+  **Animation speed** (0.1–4, default 1). Scroll the Vehicles section to see all controls. A clip/load
+  error keeps the previous model and clip; errors also appear at the top of the menu. Selecting a
+  valid clip, including the current one, retries after an invalid clip request.
+
+Bake rate is **30 Hz**, including the exact final endpoint: at most **240 frames** and **32 MiB**
+position/normal storage per selected clip, with at most **256 channels**. The endpoint counts toward
+that frame budget, so maximum duration is **239/30 seconds**. All frames use one normalization from
+the bind/rest pose; wing motion can extend outside those bounds without resizing or recentering.
+Empty/zero-duration clips fail. Animated triangle topology/winding must remain constant after the
+existing zero-area skip; a triangle becoming degenerate produces a clear error. Morph targets and
+**CUBICSPLINE** remain rejected. Long or detailed clips need offline reduction; budgets are sanity
+limits, not flock performance guarantees.
+
+The vertex shader fetches frame-major pairs of vec4 position/normal (32 bytes per vertex/sample)
+from storage next to the appearance uniform, correcting the MeshAllocator base vertex. It interpolates
+adjacent baked samples, including a shorter final interval. STEP keys are quantized to this sample
+grid (at most 1/30 second late); intervals crossing a STEP key hold the earlier geometry instead of
+blending toward the key early. Mixed LINEAR channels also hold during that one interval. Looping
+wraps at clip duration; author matching first/last poses for a seamless loop. Baked interpolation
+approximates curved/skinned motion between samples.
+
+Animation follows the **simulation clock**, freezing exactly on pause and scaling with simulation
+speed. Animation speed is a separate render-only multiplier, accumulated without a phase jump when
+changed. Model/clip changes restart that clip's playback accumulator. Camera, target and UI retain
+real time. Animation never changes physical size, separation, velocities or steering.
+
+Every vehicle has a stable phase offset. GPU spawn hashes index/frame without consuming steering
+RNG, stores the phase in the previously unused `separation.w`, and preserves it through both sorts
+and scratch resets; steering reads only xyz. CPU phases hash stable Entity bits. Draw instances grow
+from **32 to 48 bytes**: position/speed/group, quaternion, then phase in the third vec4's x (yzw reserved).
+The existing 16 speed bits and seven reserved group bits remain unchanged. Phases do not use the
+unstable sorted instance index. No per-vehicle entities or CPU pose updates are added.
+
+Additional generated original assets, under the repository's terms, authored +Z forward/+Y up:
+
+- `assets/models/bird.glb` (7,532 bytes): body and two wing joints, 24 triangles, 72 GPU vertices.
+  **Flap**: 1 second, 31 frames, 69.75 KiB baked. **Glide**: 2 seconds, 61 frames, 137.25 KiB baked.
+- `assets/models/material-glider.glb` (2,956 bytes): polished gold hull (metallic 1 / roughness 0.12)
+  and matte blue wings (0 / 0.95), two primitives and 24 triangles.
+
+```sh
+python3 scripts/make_example_models.py --kind bird
+python3 scripts/make_example_models.py --kind materials
+python3 scripts/test_make_example_models.py
+```
+
+Generation uses Python's standard library and reproduces the committed bytes. Existing glider and
+`--subdivisions` output are unchanged. Example errors include
+`Unsupported CUBICSPLINE at animations[0].samplers[0].interpolation; expected LINEAR or STEP`,
+`Limit exceeded at animations[0]; expected baked data <= 32 MiB`, and
+`Unknown animation clip 'missing' at animations; expected index or clip name`.
+
 ## How it works
 
 ```text
@@ -267,7 +344,8 @@ src/
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
 ├── instancing.rs    # one instanced draw and shared appearance uniform
 ├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
-├── vehicle_model.rs # bounded background static glTF import, axes and model choices
+├── vehicle_model.rs # bounded glTF import, axes, material factors and model choices
+├── vehicle_animation.rs # background rigid/skin baking, interpolation and budgets
 ├── scene.rs         # styles, palettes, world grid, fog and framing
 ├── presentation.rs  # simulation clock, pause/speed, real-time orbit and camera presets
 ├── scenario.rs      # optional timed developer scripts and frame logging
@@ -287,6 +365,27 @@ CPU modes run parallel queries and upload instance data each frame. Steering is 
 independent (tuned at 60 Hz). Separation pushes add up and grow stronger with closeness.
 
 ## Performance
+
+### RX 7900 XT, Stage 6 (2026-10-31)
+
+Animated `bird.glb`, first Flap clip, 72 GPU vertices / 24 triangles. Native release, Ryzen 9 7900X /
+RX 7900 XT (RADV/Vulkan, Mesa 26.2.5-arch1.1), exact 1280×720 floating window, immediate presentation,
+4× MSAA, Studio/Model colors, GPU wander, neutral scales/proportions, simulation/animation speed 1.
+Default Frame world distances 2851.546 at 20k / 4876.075 at 100k, yaw 0° / pitch 17.28°.
+Each run starts fresh, warms six seconds and samples twelve; focus/size/load/GPU contention monitored.
+
+| Animated vehicles | Run 1 mean / p50 / p95 ms | Run 2 mean / p50 / p95 ms |
+| ---: | ---: | ---: |
+| 20,000 | 1.032 / 0.984 / 1.313 | 1.025 / 0.974 / 1.323 |
+| 100,000 | 1.048 / 0.997 / 1.366 | 1.031 / 0.996 / 1.273 |
+
+A matching 100k static Dart control measures 1.005/0.998 ms before versus 1.010/0.999 ms after the
+32-to-48-byte instance change and added binding preparation: averages 1.0015 versus 1.0045 ms
+(+0.3%, smaller than run variation). These frame intervals include CPU/GPU/presentation overlap;
+they do not isolate animation GPU time or guarantee similar cost for heavy models. Existing PCG
+spawn starts at frame zero; real frame deltas and GPU scatter vary. No ignored benchmark was run.
+See the [model plan](plans/planned/2026-10-31-custom-vehicle-models.md) for complete evidence, limits
+and four explicitly rejected runs that accidentally selected the built-in Bird.
 
 ### RX 7900 XT, Stage 4 (2026-10-31)
 
@@ -420,6 +519,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set shape` | `dart`, `chevron` (alias `arrow`), `fish`, `bird` (alias `glider`) |
 | `set model` | Local model path, repository-relative or absolute; asynchronous, preserves selection on failure |
 | `set model_forward`, `set model_up` | `x`, `+x`, `-x`, `y`, `+y`, `-y`, `z`, `+z`, `-z`; up must be perpendicular to current forward |
+| `set animation_clip` | Clip index or whitespace-free name; asynchronous rebake; use an index for names with spaces |
+| `set animation_speed` | Render-only animation multiplier, 0.1–4; simulation pause/speed still apply |
 | `set model_scale` | Render-only model multiplier, 0.1–5; axes/scale changes reload the current/pending model |
 | `set visual_size` | Render-only multiplier, 0.1–5; default 1 |
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
@@ -463,17 +564,17 @@ settings at end, so keep settings, count, follow state, camera and window resolu
 a measurement. Keep the app focused: Bevy throttles unfocused updates to about 60 Hz even with
 `present immediate`. Warm up first, capture outside the window, check `uptime`, and repeat runs on
 an idle machine. Scripts do not seed or reset the simulation; GPU scatter and interactive frame deltas vary.
-Model loading is asynchronous: allow several frames after `set model` before screenshots or choosing a
-color mode. Put axis/scale commands before `set model` to avoid redundant reloads. Paths remain single
+Model/clip loading is asynchronous: allow several frames after `set model` or `set animation_clip` before screenshots or choosing a
+color mode. Set `animation_clip` after `set model` (same-time commands work). Put axis/scale commands before `set model` to avoid redundant reloads. Paths remain single
 whitespace-free tokens in scripts; the UI path field accepts spaces.
 The setting whitelist and ranges live together in `src/scenario.rs`; extend its typed settings for later stages.
 
-The instance stream stays 32 bytes: position plus packed speed/group in one Vec4, and rotation in
-another. The first Vec4's w is a normal finite f32 in [1,2): mantissa bits 0–15 encode normalized
-speed, bits 16–22 reserve a group id (0–127, currently always zero). Speed endpoints 0 and 1 are exact;
-maximum quantization error is half of 1/65535. No groups are implemented. CPU and GPU write the same
-encoding; render scale comes from the shared appearance uniform instead of w. No GPU readback is
-needed for Speed coloring.
+The instance stream is 48 bytes; the first two vec4 fields keep their existing layout. The first
+vec4's w is a normal finite f32 in [1,2): mantissa bits 0–15 encode normalized speed, bits 16–22
+reserve a group id (0–127, currently always zero). Speed endpoints 0 and 1 are exact; maximum
+quantization error is half of 1/65535. No groups are implemented. The third vec4 transports stable
+animation phase, independent of those bits. CPU and GPU share this encoding. Render scale remains
+in the appearance uniform. No simulation or animation readback is needed in the running app.
 
 
 GPU tests and benchmarks are `#[ignore]`d. They need a real GPU, and device creation can fail inside
