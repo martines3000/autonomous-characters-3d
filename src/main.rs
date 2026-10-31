@@ -4,6 +4,7 @@ mod octree;
 mod presentation;
 mod scenario;
 mod scene;
+mod swarm;
 mod target;
 mod vehicle;
 mod vehicle_appearance;
@@ -69,6 +70,7 @@ fn main() {
             vehicle_model::VehicleModelPlugin,
             scenario::ScenarioPlugin,
             presentation::PresentationPlugin,
+            swarm::SwarmPlugin,
         ))
         .add_systems(
             PreUpdate,
@@ -152,6 +154,8 @@ impl SimulationMode {
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 struct GlobalState {
+    attractor: swarm::Attractor,
+
     // Basic info
     vehicle_count: usize,
     vehicle_size: f32,
@@ -185,6 +189,7 @@ struct GlobalState {
 impl Default for GlobalState {
     fn default() -> Self {
         Self {
+            attractor: default(),
             vehicle_count: 20_000,
             vehicle_size: 1.0,
             vehicle_mass: 60.0,
@@ -271,6 +276,9 @@ fn ui(
                         .step_by(1.0),
                 );
             }
+            });
+            egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
+                swarm::ui(ui, &mut state.attractor);
             });
             egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");
@@ -383,6 +391,7 @@ fn ui(
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
                 for (input, action) in [
+                    ("Hold F", "Apply cursor field (Swarm)"),
                     ("P / O", "Pause / auto-orbit"),
                     (
                         "1 / 2 / 3 / 4 / 5",
@@ -403,6 +412,10 @@ fn ui(
             });
             ui.separator();
             ui.small("Target movement is relative to the camera.");
+            ui.small(format!(
+                "Cursor field: {} — plane through orbit focus",
+                state.attractor.mode.name()
+            ));
         });
     Ok(())
 }

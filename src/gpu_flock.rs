@@ -68,6 +68,9 @@ pub(crate) struct GpuParams {
     pub spawn_size: f32,
     pub walls: Vec3,
     pub target_position: Vec3,
+    pub attractor_position_radius: Vec4,
+    // x: signed strength (zero disables); yzw: reserved.
+    pub attractor_strength: Vec4,
 }
 
 impl GpuParams {
@@ -150,6 +153,19 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
         spawn_size: vehicle::spawn_size(state.vehicle_count),
         walls: vehicle::walls(state.vehicle_count),
         target_position: target,
+        attractor_position_radius: state.attractor.point().map_or(Vec4::ZERO, |point| {
+            point.extend(state.attractor.world_radius(state.vehicle_count))
+        }),
+        attractor_strength: Vec4::new(
+            if state.attractor.point().is_some() {
+                state.attractor.signed_strength()
+            } else {
+                0.0
+            },
+            0.0,
+            0.0,
+            0.0,
+        ),
         ..default()
     }
 }
@@ -670,8 +686,42 @@ mod tests {
     }
 
     #[test]
+    fn attractor_uniforms_share_cpu_point_scale_and_sign() {
+        use crate::swarm::AttractorMode;
+        let mut state = GlobalState::default();
+        let inactive = gpu_params(&state, Vec3::ZERO, false, 0.01);
+        assert_eq!(inactive.attractor_position_radius, Vec4::ZERO);
+        assert_eq!(inactive.attractor_strength, Vec4::ZERO);
+        state.attractor.scripted_point = Some(Vec3::new(30.0, -20.0, 10.0));
+        for count in [200, 20_000, 1_000_000] {
+            state.vehicle_count = count;
+            for mode in [AttractorMode::Attract, AttractorMode::Repel] {
+                state.attractor.mode = mode;
+                let params = gpu_params(&state, Vec3::ZERO, true, 0.01);
+                assert_eq!(
+                    params.attractor_position_radius.truncate(),
+                    state.attractor.point().unwrap()
+                );
+                assert_eq!(
+                    params.attractor_position_radius.w,
+                    state.attractor.world_radius(count)
+                );
+                assert_eq!(
+                    params.attractor_strength.x,
+                    state.attractor.signed_strength()
+                );
+                assert_eq!(params.max_neighbors, state.gpu_max_neighbors);
+            }
+        }
+        state.attractor.mode = AttractorMode::Off;
+        let inactive = gpu_params(&state, Vec3::ZERO, false, 0.01);
+        assert_eq!(inactive.attractor_position_radius, Vec4::ZERO);
+        assert_eq!(inactive.attractor_strength, Vec4::ZERO);
+    }
+
+    #[test]
     fn params_encode_with_wgsl_uniform_offsets() {
-        // Naga's Params layout: seven u32s, eighteen f32s, then vec3s at 112 and 128.
+        // Naga's Params layout: seven u32s, eighteen f32s, vec3s at 112/128, Vec4s at 144/160.
         let params = GpuParams {
             count: 1,
             spawn_from: 2,
@@ -700,12 +750,14 @@ mod tests {
             spawn_size: 25.0,
             walls: Vec3::new(26.0, 27.0, 28.0),
             target_position: Vec3::new(29.0, 30.0, 31.0),
+            attractor_position_radius: Vec4::new(32.0, 33.0, 34.0, 35.0),
+            attractor_strength: Vec4::new(36.0, 37.0, 38.0, 39.0),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 144);
-        assert_eq!(bytes.len(), 144);
+        assert_eq!(GpuParams::min_size().get(), 176);
+        assert_eq!(bytes.len(), 176);
         for i in 0..7 {
             assert_eq!(&bytes[i * 4..i * 4 + 4], &(i as u32 + 1).to_le_bytes());
         }
@@ -714,6 +766,7 @@ mod tests {
             .zip(8..26)
             .chain((112..124).step_by(4).zip(26..29))
             .chain((128..140).step_by(4).zip(29..32))
+            .chain((144..176).step_by(4).zip(32..40))
         {
             assert_eq!(&bytes[offset..offset + 4], &(value as f32).to_le_bytes());
         }

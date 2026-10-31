@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 89 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 97 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -70,6 +70,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
 | W A S D, Space, left Shift | Move the selected target (relative to the camera, real time) |
+| Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
 | P | Pause / resume vehicle simulation |
 | O | Toggle real-time auto-orbit |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
@@ -85,7 +86,7 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- The Menu groups controls under **Presentation**, **Simulation**, **Steering**, **Scene**, and **Vehicles**.
+- The Menu groups controls under **Presentation**, **Simulation**, **Swarm**, **Steering**, **Scene**, and **Vehicles**.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
@@ -111,6 +112,31 @@ menu when it has focus.
   grid scale with the world.
 - Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
   `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
+
+### Swarm mechanics
+
+**Swarm → Cursor field** selects **Off** (default), **Attract** or **Repel**. Hold **F** over the
+scene to apply the field under the cursor; release F to stop. Keyboard focus or pointer hover in
+egui blocks it. F leaves target picking, target movement and camera gestures available.
+
+The cursor ray intersects a camera-facing plane through the current orbit focus, including after
+pan/zoom. A cyan attractor or orange repulsor shows its center and influence-radius ring. The point
+and gizmo remain live while paused; vehicles respond only when simulation resumes. Strength is
+0–20 (default 4); radius is 1–200 reference-world units (default 60), multiplied by
+`vehicle::world_scale(count)`. Scenario positions are explicit world coordinates and do not rescale.
+
+For normalized offset `u = (point - position) / radius` and `q = length(u)`, attraction is
+`u * max_speed * strength * 6.75 * (1-q)^2` inside the radius, zero outside. It is finite at the
+center, reaches `max_speed * strength` at one-third radius and falls smoothly to zero at the edge.
+Repulsion is its exact negative. The term adds to flocking and target seek (or wander/walls), is
+divided by mass, and uses the same simulated-time integration and final speed clamp on CPU/GPU.
+Spatial falloff scales with count; the existing world-unit max speed stays unchanged.
+
+All mechanics are optional. Stage 7a implements this single field; groups, obstacles, formations
+and predators remain planned. Disabled fields preserve original steering arithmetic. Attraction
+retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
+attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
+are retuned.
 
 ### Presentation
 
@@ -541,6 +567,10 @@ pgrep -a autonomous   # no process should remain after exit
 | `set orbit_speed` | Degrees per real second, −45–45; default 10 |
 | `preset` | `front`, `side`, `top`, `overview`, `closeup`; smooth transition, waits for manual input release |
 | `follow` | `on` / `off`; uses the existing target selection |
+| `set attractor_mode` | `off` (default), `attract`, `repel`; additive with target following |
+| `set attractor_strength` | 0–20, default 4; dimensionless force multiplier |
+| `set attractor_radius` | 1–200 reference units, default 60; multiplied by world scale |
+| `attractor` | `x y z` sets a persistent point without held F (finite world coordinates within ±10,000,000); `mouse` clears the override and restores held F |
 | `target` | `x y z`, finite world coordinates, each within ±10,000,000 |
 | `camera` | `yaw_deg pitch_deg distance`; yaw ±360°, pitch ±89.9°, distance 1–10,000,000; looks at origin, positive pitch above it |
 | `frame` | Request Frame world, preserving orientation and anchor |

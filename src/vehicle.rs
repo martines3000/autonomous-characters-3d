@@ -563,7 +563,13 @@ fn flocking_force(
         );
     }
 
-    separate_sum + align_sum + cohesion_sum
+    let mut force = separate_sum + align_sum + cohesion_sum;
+    if state.attractor.point().is_some() && state.attractor.strength != 0.0 {
+        force += state
+            .attractor
+            .force(position, state.vehicle_count, state.vehicle_max_speed);
+    }
+    force
 }
 
 #[cfg(test)]
@@ -1053,6 +1059,94 @@ mod tests {
     }
 
     #[test]
+    fn inactive_attractor_keeps_flocking_force_bits_unchanged() {
+        use crate::swarm::{Attractor, AttractorMode};
+        let force = |state: &GlobalState| {
+            flocking_force(
+                Vector3::new(-0.0, 3.0, -8.0),
+                Vector3::new(7.0, -2.0, 0.0),
+                |visit| {
+                    visit(Vector3::new(1.0, 5.0, -9.0), Vector3::new(2.0, -3.0, 6.0));
+                    visit(Vector3::new(-6.0, 7.0, 2.0), Vector3::new(-4.0, 2.0, 1.0));
+                },
+                state,
+            )
+            .map(f32::to_bits)
+        };
+        let mut state = GlobalState::default();
+        let expected = force(&state);
+        state.attractor = Attractor {
+            mode: AttractorMode::Off,
+            scripted_point: Some(Vec3::new(3.0, 2.0, -1.0)),
+            strength: 20.0,
+            ..default()
+        };
+        assert_eq!(force(&state), expected);
+        state.attractor.mode = AttractorMode::Attract;
+        state.attractor.scripted_point = None;
+        assert_eq!(force(&state), expected);
+        state.attractor.scripted_point = Some(Vec3::ZERO);
+        state.attractor.strength = 0.0;
+        assert_eq!(force(&state), expected);
+    }
+
+    #[test]
+    fn attractor_respects_pause_speed_and_adds_to_seek_in_both_cpu_modes() {
+        use crate::{
+            presentation::Presentation,
+            swarm::{Attractor, AttractorMode},
+        };
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let mut results = Vec::new();
+            for speed in [0.5, 1.0, 2.0, 4.0] {
+                let (mut app, entity) = presentation_app(mode);
+                app.world_mut().resource_mut::<GlobalState>().attractor = Attractor {
+                    mode: AttractorMode::Attract,
+                    scripted_point: Some(Vec3::Y * 20.0),
+                    ..default()
+                };
+                app.world_mut().resource_mut::<Presentation>().paused = true;
+                app.world_mut().resource_mut::<Presentation>().speed = speed;
+                for _ in 0..3 {
+                    app.world_mut()
+                        .resource_mut::<Time<Real>>()
+                        .advance_by(Duration::from_secs_f32(1.0 / (60.0 * speed)));
+                    app.update();
+                    assert_eq!(
+                        app.world().get::<Transform>(entity).unwrap().translation,
+                        Vec3::ZERO
+                    );
+                    assert_eq!(
+                        app.world().get::<VehicleVelocity>(entity).unwrap().0,
+                        Vector3::zeros()
+                    );
+                }
+                app.world_mut().resource_mut::<Presentation>().paused = false;
+                // Four 1/240 s substeps per simulated 1/60 s gives matching integration at every speed.
+                let fps = 240.0 / speed.ceil();
+                for _ in 0..(60.0 / speed.ceil()) as usize {
+                    app.world_mut()
+                        .resource_mut::<Time<Real>>()
+                        .advance_by(Duration::from_secs_f32(1.0 / (fps * speed)));
+                    app.update();
+                }
+                let position = app.world().get::<Transform>(entity).unwrap().translation;
+                let velocity = app.world().get::<VehicleVelocity>(entity).unwrap().0;
+                assert!(
+                    position.x > 0.0 && position.y > 0.0,
+                    "seek and field both apply: {position:?}"
+                );
+                assert!(velocity.magnitude() <= 80.0 + 1e-4);
+                results.push((position, velocity));
+            }
+            for result in &results[1..] {
+                assert!(result.0.distance(results[0].0) < 1e-4);
+                assert!((result.1 - results[0].1).magnitude() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
     fn coincident_neighbor_gives_finite_force() {
         let force = flocking_force(
             Vector3::zeros(),
@@ -1457,8 +1551,32 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn gpu_steering_matches_cpu_reference() {
+        gpu_steering_parity(3000, 0, default());
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_attractor_matches_cpu_reference() {
+        use crate::swarm::{Attractor, AttractorMode};
+        for mode in [AttractorMode::Attract, AttractorMode::Repel] {
+            for cap in [0, 512] {
+                gpu_steering_parity(
+                    256,
+                    cap,
+                    Attractor {
+                        mode,
+                        strength: 8.0,
+                        radius: 80.0,
+                        scripted_point: Some(Vec3::new(20.0, 10.0, -5.0)),
+                        ..default()
+                    },
+                );
+            }
+        }
+    }
+
+    fn gpu_steering_parity(count: usize, cap: u32, attractor: crate::swarm::Attractor) {
         use crate::gpu_flock::{gpu_params, GpuFlock};
-        let count = 3000;
         let dt = 1.0 / 60.0;
         let target = Vec3::new(20.0, 30.0, -10.0);
         let mut rng = StdRng::seed_from_u64(0x6F0C);
@@ -1490,7 +1608,8 @@ mod tests {
                 vehicle_count: count,
                 // A zero radius makes wander deterministic without changing its force code.
                 vehicle_wander_radius: 0.0,
-                gpu_max_neighbors: 0,
+                gpu_max_neighbors: cap,
+                attractor,
                 ..default()
             };
             let mut app = App::new();
@@ -1540,6 +1659,13 @@ mod tests {
             let mut flock = GpuFlock::new(&device);
             flock.upload(&device, &queue, &boids);
             state.mode = SimulationMode::Gpu;
+            gpu_step(
+                &mut flock,
+                &device,
+                &queue,
+                &gpu_params(&state, target, following, 0.0),
+            );
+            assert_eq!(flock.read_boids(&device, &queue), boids);
             for step in 0..3 {
                 app.world_mut()
                     .resource_mut::<Time>()

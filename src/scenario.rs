@@ -12,6 +12,7 @@ use bevy::{
 use crate::{
     presentation::{CameraPreset, Presentation, MAX_SPEED, MIN_SPEED},
     scene::{Appearance, HeadingPalette, SceneStyle},
+    swarm::AttractorMode,
     target::{Target, TargetSelection},
     vehicle_appearance::{ColorMode, VehicleShape},
     vehicle_model::{ModelAxis, ModelSettings, VehicleModels},
@@ -60,6 +61,7 @@ enum Command {
     Pause(bool),
     Preset(CameraPreset),
     Target(Vec3),
+    Attractor(Option<Vec3>),
     Camera { yaw: f32, pitch: f32, distance: f32 },
     Frame,
     Present(bool),
@@ -72,6 +74,9 @@ enum Command {
 #[derive(Debug, PartialEq)]
 enum Setting {
     Count(usize),
+    AttractorMode(AttractorMode),
+    AttractorStrength(f32),
+    AttractorRadius(f32),
     Speed(f32),
     Orbit(bool),
     OrbitSpeed(f32),
@@ -163,6 +168,11 @@ fn switch(value: &str) -> Result<bool, String> {
 
 fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, String> {
     Ok(match (name, value) {
+        ("attractor_mode", "off") => Setting::AttractorMode(AttractorMode::Off),
+        ("attractor_mode", "attract") => Setting::AttractorMode(AttractorMode::Attract),
+        ("attractor_mode", "repel") => Setting::AttractorMode(AttractorMode::Repel),
+        ("attractor_strength", _) => Setting::AttractorStrength(number(value, 0.0, 20.0)?),
+        ("attractor_radius", _) => Setting::AttractorRadius(number(value, 1.0, 200.0)?),
         ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
         ("orbit", _) => Setting::Orbit(switch(value)?),
         ("orbit_speed", _) => Setting::OrbitSpeed(number(value, -45.0, 45.0)?),
@@ -292,6 +302,12 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
                 ["follow", value @ ("on" | "off")] => Command::Follow(switch(value)?),
+                ["attractor", "mouse"] => Command::Attractor(None),
+                ["attractor", x, y, z] => Command::Attractor(Some(Vec3::new(
+                    number(x, -1e7, 1e7)?,
+                    number(y, -1e7, 1e7)?,
+                    number(z, -1e7, 1e7)?,
+                ))),
                 ["target", x, y, z] => Command::Target(Vec3::new(
                     number(x, -1e7, 1e7)?,
                     number(y, -1e7, 1e7)?,
@@ -373,6 +389,9 @@ fn run_scenario(world: &mut World) {
                     {
                         selection.0 = follow;
                     }
+                }
+                Command::Attractor(point) => {
+                    world.resource_mut::<GlobalState>().attractor.scripted_point = point;
                 }
                 Command::Target(position) => {
                     for mut transform in world
@@ -513,6 +532,9 @@ fn apply_setting(world: &mut World, setting: Setting) {
         setting => {
             let mut state = world.resource_mut::<GlobalState>();
             match setting {
+                Setting::AttractorMode(value) => state.attractor.mode = value,
+                Setting::AttractorStrength(value) => state.attractor.strength = value,
+                Setting::AttractorRadius(value) => state.attractor.radius = value,
                 Setting::Count(value) => state.vehicle_count = value.min(state.mode.max_vehicles()),
                 Setting::Mode(value) => {
                     state.mode = value;
@@ -582,6 +604,43 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attractor_commands_validate_and_apply_without_changing_other_settings() {
+        let commands = parse("0 set attractor_mode attract\n0 set attractor_strength 8\n0 set attractor_radius 70\n0 attractor 1 -2 3\n1 set attractor_mode repel\n2 attractor mouse\n3 set attractor_mode off").unwrap();
+        assert_eq!(
+            commands[3].command,
+            Command::Attractor(Some(Vec3::new(1.0, -2.0, 3.0)))
+        );
+        assert_eq!(commands[5].command, Command::Attractor(None));
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        let before = world.resource::<GlobalState>().clone();
+        for command in commands {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        let mut after = world.resource::<GlobalState>().clone();
+        assert_eq!(after.attractor.mode, AttractorMode::Off);
+        assert_eq!(after.attractor.strength, 8.0);
+        assert_eq!(after.attractor.radius, 70.0);
+        after.attractor = before.attractor;
+        assert_eq!(after, before);
+        for bad in [
+            "set attractor_mode spin",
+            "set attractor_radius 0",
+            "set attractor_radius 201",
+            "set attractor_strength -1",
+            "set attractor_strength NaN",
+            "set attractor_strength 21",
+            "attractor 1 inf 3",
+            "attractor 1 2",
+            "attractor on",
+        ] {
+            assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn presentation_commands_validate_and_keep_equal_time_order() {
         let commands = parse("0 pause\n0 set speed 0.25\n0 set orbit on\n0 set orbit_speed -15\n0 preset closeup\n1 resume\n2 exit").unwrap();

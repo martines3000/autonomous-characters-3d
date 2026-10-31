@@ -39,6 +39,8 @@ struct Params {
     spawn_size: f32,
     walls: vec3<f32>,
     target_position: vec3<f32>,
+    attractor_position_radius: vec4<f32>,
+    attractor_strength: vec4<f32>,
 };
 
 struct Boid {
@@ -393,6 +395,14 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             normalize_or_zero(offset) * params.max_speed * min(distance / 10.0, 1.0) - velocity,
             params.max_speed * params.cohesion_factor,
         );
+    }
+    if params.attractor_strength.x != 0.0 {
+        let offset = (params.attractor_position_radius.xyz - position) / params.attractor_position_radius.w;
+        let q = length(offset);
+        if q < 1.0 {
+            // Mirrors Attractor::force: peak magnitude max_speed * strength at q=1/3.
+            force += offset * (params.max_speed * params.attractor_strength.x * 6.75 * (1.0 - q) * (1.0 - q));
+        }
     }
     var acceleration = force / params.mass;
 
