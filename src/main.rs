@@ -1,172 +1,233 @@
+mod gpu_flock;
+mod instancing;
 mod octree;
 mod target;
 mod vehicle;
 
 use bevy::{
-    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
+    app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
+    camera_controller::pan_orbit_camera::prelude::*,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    picking::{
+        mesh_picking::{MeshPickingCamera, MeshPickingSettings},
+        PickingSystems,
+    },
     prelude::*,
+    render::view::NoIndirectDrawing,
+    text::FontSize,
 };
-use bevy_mod_picking::*;
-use octree::*;
-use smooth_bevy_cameras::{
-    controllers::orbit::{OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin},
-    LookTransformPlugin,
-};
-
-use bevy_egui::{egui, EguiContext, EguiPlugin};
+use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use std::f32::consts::FRAC_PI_2;
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(Color::rgb(0.2, 0.2, 0.2)))
-        .insert_resource(Msaa { samples: 4 })
+        .insert_resource(ClearColor(BACKGROUND))
         .init_resource::<GlobalState>()
-        .init_resource::<RenderState>()
-        .add_startup_system_to_stage(StartupStage::PreStartup, load_assets)
-        .add_startup_system(setup_scene)
-        .add_startup_system(configure_global_state)
-        // .add_startup_system(test_octree_visualization)
-        // .add_system(bevy::window::close_on_esc)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            window: WindowDescriptor {
-                title: "Autonomous characters 3D".to_string(),
-                width: 1280.,
-                height: 720.,
-                canvas: Some("#bevy".to_owned()),
-                fit_canvas_to_parent: true,
-                ..default()
-            },
+        .insert_resource(MeshPickingSettings {
+            require_markers: true,
             ..default()
-        }))
-        .add_plugins(DefaultPickingPlugins)
-        .add_plugin(LookTransformPlugin)
-        .add_plugin(OrbitCameraPlugin::default())
-        .add_plugin(EguiPlugin)
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .add_plugin(vehicle::VehiclePlugin)
-        .add_plugin(target::TargetPlugin)
-        .add_system(fps_update_system)
-        .add_system(ui)
+        })
+        .add_plugins(
+            DefaultPlugins
+                .set(TaskPoolPlugin {
+                    // Assets and async work are negligible; simulation needs the cores.
+                    task_pool_options: TaskPoolOptions {
+                        io: TaskPoolThreadAssignmentPolicy {
+                            min_threads: 1,
+                            max_threads: 1,
+                            ..TaskPoolOptions::default().io
+                        },
+                        async_compute: TaskPoolThreadAssignmentPolicy {
+                            min_threads: 1,
+                            max_threads: 1,
+                            ..TaskPoolOptions::default().async_compute
+                        },
+                        ..default()
+                    },
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Autonomous characters 3D".to_string(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
+        .add_plugins((
+            MeshPickingPlugin,
+            DefaultPanOrbitCameraPlugins,
+            EguiPlugin::default(),
+            FrameTimeDiagnosticsPlugin::default(),
+            instancing::InstancingPlugin,
+            gpu_flock::GpuFlockPlugin,
+            vehicle::VehiclePlugin,
+            target::TargetPlugin,
+        ))
+        .add_systems(Startup, setup_scene)
+        .add_systems(
+            PreUpdate,
+            camera_input
+                .after(PickingSystems::Last)
+                .before(PanOrbitCamera::update_camera_positions),
+        )
+        .add_systems(Update, (fps_update_system, draw_world))
+        .add_systems(EguiPrimaryContextPass, ui)
         .run();
 }
 
-pub fn test_octree_visualization(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+// The built-in controller deliberately leaves input mapping to the application.
+fn camera_input(
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut contexts: EguiContexts,
+    mut cameras: Query<&mut PanOrbitCamera>,
+    mut previous_mode: Local<u8>,
 ) {
-    let mut octree: Octree<i32> = Octree::new(100);
-    octree.create_root(
-        Point {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        Point {
-            x: -50.0,
-            y: -50.0,
-            z: -50.0,
-        },
-        Point {
-            x: 50.0,
-            y: 50.0,
-            z: 50.0,
-        },
-    );
-
-    // Insert points
-    for i in 0..50000 {
-        let point = Point {
-            x: -50.0 + rand::random::<f32>() * 100.0,
-            y: -50.0 + rand::random::<f32>() * 100.0,
-            z: -50.0 + rand::random::<f32>() * 100.0,
-        };
-
-        octree.insert(point, i);
-    }
-
-    // Print nodes and their points
-    for (_, node) in octree.nodes.iter() {
-        println!("Bounds: {:?}", node.bounds);
-
-        for point_index in node.points.iter() {
-            let point = octree.points.get(*point_index).unwrap();
-            println!("Point: {:?}", point.point);
+    let blocked = contexts
+        .ctx_mut()
+        .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
+    let mode = if blocked {
+        0
+    } else if buttons.pressed(MouseButton::Right) {
+        1
+    } else if buttons.pressed(MouseButton::Middle) {
+        2
+    } else if scroll.delta.y != 0.0 {
+        3
+    } else {
+        0
+    };
+    for mut camera in &mut cameras {
+        if mode != *previous_mode {
+            camera.end_move();
+            match mode {
+                1 => camera.start_orbit(None),
+                2 => camera.start_pan(None),
+                3 => camera.start_zoom(None),
+                _ => (),
+            }
+        }
+        if mode == 1 || mode == 2 {
+            camera.send_screenspace_input(motion.delta);
+        }
+        if !blocked && scroll.delta.y != 0.0 {
+            let scale = if scroll.unit == MouseScrollUnit::Line {
+                150.0
+            } else {
+                1.0
+            };
+            camera.send_zoom_input(scroll.delta.y * scale);
         }
     }
-
-    // Draw nodes
-    for (_, node) in octree.nodes.iter() {
-        if node.children.len() > 0 {
-            continue;
-        }
-        let (center, min, max) = &node.bounds;
-
-        let mesh = meshes.add(Mesh::from(shape::Cube {
-            size: 8.0 * (max.x - min.x) / 10.0,
-        }));
-
-        commands.spawn(PbrBundle {
-            mesh,
-            material: materials.add(Color::rgb(0.0, 0.0, 1.0).into()),
-            transform: Transform::from_translation(Vec3::new(center.x, center.y, center.z)),
-            ..Default::default()
-        });
-    }
+    *previous_mode = mode;
 }
 
-fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // AMBIENT LIGHT
-    commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 1.0,
-    });
+const BACKGROUND: Color = Color::srgb(0.035, 0.045, 0.07);
+const WALL_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.3);
+const GRID_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.12);
+// Fog visibility as a multiple of the wall half-width, so it scales with the world.
+const FOG_VISIBILITY: f32 = 5.0;
 
-    // FPS TEXT
+fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>, state: Res<GlobalState>) {
+    commands.insert_resource(GlobalAmbientLight {
+        brightness: 400.0,
+        ..default()
+    });
     commands.spawn((
-        // Create a TextBundle that has a Text with a list of sections.
-        TextBundle::from_sections([
-            TextSection::new(
-                "FPS: ",
-                TextStyle {
-                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                    font_size: 60.0,
-                    color: Color::WHITE,
-                },
-            ),
-            TextSection::from_style(TextStyle {
-                font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 60.0,
-                color: Color::GOLD,
-            }),
-        ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            position: UiRect {
-                top: Val::Px(5.0),
-                left: Val::Px(5.0),
+        DirectionalLight {
+            illuminance: 6000.0,
+            ..default()
+        },
+        Transform::from_xyz(1.0, 2.0, 0.6).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    let font = TextFont {
+        font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
+        font_size: FontSize::Px(60.0),
+        ..default()
+    };
+    commands
+        .spawn((
+            Text::new("FPS: "),
+            font.clone(),
+            TextColor(Color::WHITE),
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(5),
+                right: px(5),
                 ..default()
             },
-            ..Default::default()
-        }),
-        FpsText,
-    ));
-
-    // ORBIT CAMERA
-    commands
-        .spawn(Camera3dBundle::default())
-        .insert(OrbitCameraBundle::new(
-            OrbitCameraController {
-                mouse_rotate_sensitivity: Vec2 { x: 0.5, y: 0.5 },
-                mouse_translate_sensitivity: Vec2 { x: 0.5, y: 0.5 },
-                ..Default::default()
-            },
-            Vec3::new(-2.0, 5.0, 5.0),
-            Vec3::new(0., 0., 0.),
         ))
-        .insert(PickingCameraBundle::default());
+        .with_child((
+            TextSpan::new(""),
+            font,
+            TextColor(Color::srgb(1.0, 0.84, 0.0)),
+            FpsText,
+        ));
+    // Far enough back to see the whole default world: flocks spread to the walls within seconds.
+    let scale = vehicle::world_scale(state.vehicle_count);
+    let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            far: PerspectiveProjection::default().far * scale,
+            ..default()
+        }),
+        Msaa::Sample4,
+        // The instanced flock draws directly, not through indirect draw buffers.
+        NoIndirectDrawing,
+        DistanceFog {
+            color: BACKGROUND,
+            ..default()
+        },
+        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
+        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+        MeshPickingCamera,
+    ));
 }
 
-#[derive(Default, Resource)]
+// Wall outline and a floor grid for orientation; fog follows the world size.
+fn draw_world(mut gizmos: Gizmos, state: Res<GlobalState>, mut fogs: Query<&mut DistanceFog>) {
+    let walls = vehicle::walls(state.vehicle_count);
+    gizmos.cube(Transform::from_scale(walls * 2.0), WALL_COLOR);
+    let cell = walls.z / 2.5;
+    gizmos.grid(
+        Isometry3d::new(
+            Vec3::new(0.0, -walls.y, 0.0),
+            Quat::from_rotation_x(FRAC_PI_2),
+        ),
+        UVec2::new((walls.x * 2.0 / cell) as u32, 5),
+        Vec2::splat(cell),
+        GRID_COLOR,
+    );
+    for mut fog in &mut fogs {
+        fog.falloff = FogFalloff::from_visibility(walls.x * FOG_VISIBILITY);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SimulationMode {
+    /// Every vehicle checks every other one on the CPU.
+    Naive,
+    /// CPU neighbor search through an octree.
+    Octree,
+    /// Compute shaders; vehicles exist only on the GPU (see `gpu_flock`).
+    Gpu,
+}
+
+impl SimulationMode {
+    // The CPU modes stall beyond this; the GPU mode is limited by GPU memory and time.
+    fn max_vehicles(self) -> usize {
+        match self {
+            SimulationMode::Naive | SimulationMode::Octree => 50_000,
+            SimulationMode::Gpu => 1_000_000,
+        }
+    }
+}
+
+#[derive(Resource)]
 struct GlobalState {
     // Basic info
     vehicle_count: usize,
@@ -178,7 +239,7 @@ struct GlobalState {
     vehicle_max_speed: f32,
 
     // Factors
-    vehicle_seperation_factor: f32,
+    vehicle_separation_factor: f32,
     vehicle_alignment_factor: f32,
     vehicle_cohesion_factor: f32,
     vehicle_wander_factor: f32,
@@ -186,82 +247,78 @@ struct GlobalState {
     vehicle_seek_factor: f32,
 
     // Distances
-    vehicle_seperation_distance: f32,
+    vehicle_separation_distance: f32,
     vehicle_alignment_distance: f32,
     vehicle_cohesion_distance: f32,
     vehicle_wander_distance: f32,
     vehicle_wander_radius: f32,
 
-    // Toggle mode
-    use_octree: bool,
+    mode: SimulationMode,
+    // GPU follow-mode alignment/cohesion samples; separation stays complete. Zero is unlimited.
+    gpu_max_neighbors: u32,
     octree_size: usize,
-    benchmark_mode: bool,
-    benchmark_step: usize,
-    benchmark_results: Vec<f32>,
-    benchmark_current_results: Vec<f32>,
 }
 
-fn configure_global_state(mut state: ResMut<GlobalState>) {
-    state.vehicle_count = 100;
-    state.vehicle_size = 1.0;
-    state.vehicle_mass = 60.0;
-    state.vehicle_wander_speed = 40.0;
-
-    state.vehicle_max_speed = 80.0;
-
-    state.vehicle_seperation_factor = 1.5;
-    state.vehicle_alignment_factor = 3.0;
-    state.vehicle_cohesion_factor = 4.0;
-    state.vehicle_wander_factor = 1.0;
-    state.vehicle_wall_avoid_factor = 1.5;
-    state.vehicle_seek_factor = 7.0;
-
-    state.vehicle_seperation_distance = 4.0;
-    state.vehicle_alignment_distance = 30.0;
-    state.vehicle_cohesion_distance = 20.0;
-
-    state.vehicle_wander_distance = 4.0;
-    state.vehicle_wander_radius = 1.5;
-
-    state.use_octree = false;
-    state.octree_size = 100;
-
-    state.benchmark_mode = false;
-    state.benchmark_step = 0;
-    state.benchmark_results = vec![];
-    state.benchmark_current_results = vec![];
+impl Default for GlobalState {
+    fn default() -> Self {
+        Self {
+            vehicle_count: 20_000,
+            vehicle_size: 1.0,
+            vehicle_mass: 60.0,
+            vehicle_wander_speed: 40.0,
+            vehicle_max_speed: 80.0,
+            vehicle_separation_factor: 1.5,
+            vehicle_alignment_factor: 3.0,
+            vehicle_cohesion_factor: 4.0,
+            vehicle_wander_factor: 1.0,
+            vehicle_wall_avoid_factor: 1.5,
+            vehicle_seek_factor: 7.0,
+            vehicle_separation_distance: 4.0,
+            vehicle_alignment_distance: 30.0,
+            vehicle_cohesion_distance: 20.0,
+            vehicle_wander_distance: 4.0,
+            vehicle_wander_radius: 1.5,
+            mode: SimulationMode::Gpu,
+            gpu_max_neighbors: 16,
+            octree_size: 100,
+        }
+    }
 }
 
-#[derive(Default, Resource)]
-struct RenderState {
-    mesh: Handle<Mesh>,
-    vehicle_material: Handle<StandardMaterial>,
-    vehicle_mesh: Handle<Mesh>,
-    vehicle_scene: Handle<Scene>,
-}
-
-fn load_assets(
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut render_state: ResMut<RenderState>,
-    asset_server: Res<AssetServer>,
-) {
-    render_state.vehicle_material = materials.add(StandardMaterial {
-        base_color: Color::rgba(0.0, 0.0, 1.0, 1.0).into(),
-        ..Default::default()
-    });
-
-    render_state.vehicle_mesh = meshes.add(Mesh::from(shape::Cube { size: 1.0 }));
-
-    render_state.vehicle_scene = asset_server.load("cone.glb#Scene0");
-}
-
-fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
+fn ui(
+    mut egui_context: EguiContexts,
+    mut state: ResMut<GlobalState>,
+    targets: Query<&target::TargetSelection, With<target::Target>>,
+) -> Result {
+    let ctx = egui_context.ctx_mut()?;
     egui::Window::new("Menu")
         .default_size([300.0, 100.0])
-        .show(egui_context.ctx_mut(), |ui| {
+        .show(ctx, |ui| {
+            ui.label("Simulation");
+            ui.horizontal(|ui| {
+                for (mode, label) in [
+                    (SimulationMode::Gpu, "GPU"),
+                    (SimulationMode::Octree, "Octree"),
+                    (SimulationMode::Naive, "Naive"),
+                ] {
+                    ui.radio_value(&mut state.mode, mode, label);
+                }
+            });
+            let max_vehicles = state.mode.max_vehicles();
+            state.vehicle_count = state.vehicle_count.min(max_vehicles);
             ui.label("Vehicle count");
-            ui.add(egui::Slider::new(&mut state.vehicle_count, 0..=50000).text("count"));
+            ui.add(
+                egui::Slider::new(&mut state.vehicle_count, 0..=max_vehicles)
+                    .logarithmic(true)
+                    .text("count"),
+            );
+            if state.mode == SimulationMode::Gpu {
+                ui.add(
+                    egui::Slider::new(&mut state.gpu_max_neighbors, 0..=512)
+                        .text("follow neighbor samples (0 = all)"),
+                )
+                .on_hover_text("Limits alignment and cohesion while following. Wander uses the full query; separation always checks every nearby vehicle.");
+            }
             ui.label("Vehicle mass");
             ui.add(egui::Slider::new(&mut state.vehicle_mass, 1.0..=1000.0).text("mass"));
             ui.label("Vehicle max speed");
@@ -271,9 +328,9 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
                 egui::Slider::new(&mut state.vehicle_wander_speed, 0.1..=100.0)
                     .text("wander speed"),
             );
-            ui.label("Vehicle seperation factor");
+            ui.label("Vehicle separation factor");
             ui.add(
-                egui::Slider::new(&mut state.vehicle_seperation_factor, 0.1..=10.0)
+                egui::Slider::new(&mut state.vehicle_separation_factor, 0.1..=10.0)
                     .text("separation")
                     .step_by(0.1),
             );
@@ -302,9 +359,9 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
                     .step_by(0.1),
             );
 
-            ui.label("Vehicle seperation distance");
+            ui.label("Vehicle separation distance");
             ui.add(
-                egui::Slider::new(&mut state.vehicle_seperation_distance, 1.0..=100.0)
+                egui::Slider::new(&mut state.vehicle_separation_distance, 1.0..=100.0)
                     .text("separation")
                     .step_by(1.0),
             );
@@ -333,29 +390,171 @@ fn ui(mut egui_context: ResMut<EguiContext>, mut state: ResMut<GlobalState>) {
                     .step_by(1.0),
             );
 
-            ui.separator();
-            ui.checkbox(&mut state.use_octree, "Use octree");
-            ui.add(
-                egui::Slider::new(&mut state.octree_size, 2..=500)
-                    .text("octree size")
-                    .step_by(1.0),
-            );
-
-            ui.separator();
-            ui.checkbox(&mut state.benchmark_mode, "Benchmark mode");
+            if state.mode == SimulationMode::Octree {
+                ui.separator();
+                ui.add(
+                    egui::Slider::new(&mut state.octree_size, 2..=500)
+                        .text("octree size")
+                        .step_by(1.0),
+                );
+            }
         });
+    let following = targets.iter().any(|selection| selection.0);
+    egui::Window::new("Controls")
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            if following {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "Follow: ON (green target)");
+                ui.label("Vehicles follow the selected target.");
+            } else {
+                ui.colored_label(egui::Color32::LIGHT_RED, "Follow: OFF (red target)");
+                ui.label("Vehicles wander freely.");
+            }
+            ui.separator();
+            egui::Grid::new("controls").show(ui, |ui| {
+                for (input, action) in [
+                    ("Left-click target", "Start following"),
+                    ("Left-click background", "Stop following"),
+                    ("Right-drag", "Orbit camera"),
+                    ("Middle-drag", "Pan camera"),
+                    ("Scroll", "Zoom camera"),
+                    ("W / A / S / D", "Move selected target"),
+                    ("Space / Left Shift", "Move target up / down"),
+                ] {
+                    ui.label(input);
+                    ui.label(action);
+                    ui.end_row();
+                }
+            });
+            ui.separator();
+            ui.small("Target movement is relative to the camera.");
+        });
+    Ok(())
 }
 
 #[derive(Component)]
 struct FpsText;
 
-fn fps_update_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text, With<FpsText>>) {
-    for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                // Update the value of the second section
-                text.sections[1].value = format!("{value:.2}");
-            }
+fn fps_update_system(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut TextSpan, With<FpsText>>,
+) {
+    if let Some(value) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+    {
+        for mut text in &mut query {
+            **text = format!("{value:.2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{
+        camera::{CameraProjection, ComputedCameraValues, RenderTargetInfo},
+        window::RequestRedraw,
+    };
+    use bevy_egui::EguiUserTextures;
+    use std::time::Duration;
+
+    #[test]
+    fn startup_camera_frames_the_default_world_without_culling_the_target() {
+        // Only assets and scene setup: no renderer, window plugin or native app runner.
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+            .init_asset::<bevy::text::Font>()
+            .init_asset_loader::<bevy::text::FontLoader>()
+            .init_resource::<GlobalState>()
+            .add_systems(Startup, setup_scene);
+        app.update();
+        let state = app.world().resource::<GlobalState>();
+        assert_eq!(state.mode, SimulationMode::Gpu);
+        assert_eq!(state.vehicle_count, 20_000);
+        assert_eq!(state.gpu_max_neighbors, 16);
+        let count = state.vehicle_count;
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<(&Transform, &Projection), With<Camera3d>>();
+        let (transform, projection) = cameras.single(app.world()).unwrap();
+        assert_eq!(
+            transform.translation,
+            Vec3::new(0.0, 140.0, 450.0) * vehicle::world_scale(count)
+        );
+        let Projection::Perspective(projection) = projection else {
+            panic!("expected perspective camera");
+        };
+        // The target and the far side of the world must stay within the culling distance.
+        assert!(projection.far > transform.translation.length() + vehicle::walls(count).length());
+        assert!(
+            (transform.rotation * Vec3::NEG_Z).dot(-transform.translation.normalize()) > 0.99999
+        );
+    }
+
+    #[test]
+    fn camera_mouse_adapter_applies_orbit_and_scroll() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<EguiUserTextures>()
+            .init_resource::<Time<Real>>()
+            .add_message::<RequestRedraw>()
+            .add_systems(
+                Update,
+                (camera_input, PanOrbitCamera::update_camera_positions).chain(),
+            );
+        let eye = Vec3::new(-2.0, 5.0, 5.0);
+        let original = Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y);
+        let projection = PerspectiveProjection {
+            aspect_ratio: 1280.0 / 720.0,
+            ..default()
+        };
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Camera {
+                    computed: ComputedCameraValues {
+                        clip_from_view: projection.get_clip_from_view(),
+                        target_info: Some(RenderTargetInfo {
+                            physical_size: UVec2::new(1280, 720),
+                            scale_factor: 1.0,
+                        }),
+                        ..default()
+                    },
+                    ..default()
+                },
+                Projection::Perspective(projection),
+                PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+                original,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(16));
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta
+            .y = 1.0;
+        app.update();
+        let zoomed = *app.world().get::<Transform>(camera).unwrap();
+        assert!(zoomed.translation.distance(original.translation) > 0.001);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::ZERO;
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(50.0, 25.0);
+        app.update();
+        let orbited = app.world().get::<Transform>(camera).unwrap();
+        assert!(orbited.rotation.angle_between(zoomed.rotation) > 0.001);
+        assert!(orbited.translation.is_finite());
     }
 }
