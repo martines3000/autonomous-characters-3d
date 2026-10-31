@@ -20,7 +20,7 @@ CI (finding F12) is not wanted by the owner.
 
 ## Original review findings
 
-`review-report.html` audited commit `e7a53d7`. Status against the current branch (`codex/native-modernization`), verified against source on 2026-10-30:
+`review-report.html` audited commit `e7a53d7`. Status against `master` (the native modernization was merged in `3f8813a`), verified against source on 2026-10-30:
 
 | ID | Finding | Status |
 | --- | --- | --- |

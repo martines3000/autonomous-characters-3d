@@ -89,15 +89,15 @@ Check `rustup --version`, `git --version`, `python3 --version`. If only `python`
 verify `python --version` is 3.x; substitute it below and report this.
 
 ```sh
-git clone --branch codex/native-modernization https://github.com/martines3000/autonomous-characters-3d
+git clone https://github.com/martines3000/autonomous-characters-3d
 cd autonomous-characters-3d
 git branch --show-current
 git rev-parse HEAD
 git status --short
 ```
 
-Require branch `codex/native-modernization` and a clean checkout; default `master` is not the
-requested branch. If cloning fails, report it and resolve access. Read `AGENTS.md`, `README.md`,
+Require branch `master` (the default branch) and a clean checkout, unless the owner names another
+branch. If cloning fails, report it and resolve access. Read `AGENTS.md`, `README.md`,
 `PLANS.md` and `plans/STATUS.md` before proceeding.
 
 ## 3. Check the pinned toolchain and Linux prerequisites
