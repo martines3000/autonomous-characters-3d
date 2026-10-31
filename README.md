@@ -4,6 +4,8 @@
 
 ## Local native development
 
+For a fresh clone on another machine, follow [new-machine setup](docs/new-machine-setup.md).
+
 Use `rustup` and run commands from the repository root. `rust-toolchain.toml`
 selects the tested Rust 1.99.1 toolchain, including formatting and lint tools.
 On macOS, Xcode command-line tools are also required. Run builds and tests
