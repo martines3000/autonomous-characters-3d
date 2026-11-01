@@ -13,6 +13,7 @@ struct Appearance {
     proportions: vec4<f32>,
     solid_color: vec4<f32>,
     group_colors: array<vec4<f32>, 8>,
+    motion: vec4<f32>,
 };
 @group(3) @binding(0) var<uniform> appearance: Appearance;
 
@@ -26,7 +27,7 @@ struct Vertex {
     @builtin(vertex_index) index: u32,
     @if(MODEL_MATERIALS)
     @location(6) material: vec2<f32>,
-    @if(ANIMATED)
+    @if(ANIMATED || PROCEDURAL)
     @location(10) phase: vec4<f32>,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -101,6 +102,33 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         position = mix(a.position.xyz, b.position.xyz, fraction);
         let mixed_normal = mix(a.normal.xyz, b.normal.xyz, fraction);
         normal = select(mixed_normal, a.normal.xyz, dot(mixed_normal, mixed_normal) < 1e-12);
+    }
+    @if(PROCEDURAL) {
+        let proc_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        let proc_phase = vertex.phase.x * 6.2831853;
+        let proc_time = appearance.motion.x;
+        let proc_amplitude = appearance.motion.y;
+        let proc_gain = appearance.motion.z;
+        if appearance.modes.w == 2u {
+            // Lateral swim wave: no displacement at the nose, maximum at the tail.
+            let swim_tail = clamp((1.25 - position.y) / 2.5, 0.0, 1.0);
+            // Half a wavelength over the body reads as a fish; more looks like a zigzag.
+            let swim_k = 3.1415927;
+            let swim_amplitude = proc_amplitude * 0.5;
+            let swim_angle = swim_k * swim_tail - 6.2831853 * (1.2 + 2.0 * proc_gain * proc_speed) * proc_time + proc_phase;
+            let swim_sin = sin(swim_angle);
+            let swim_derivative = -0.4 * swim_amplitude * (2.0 * swim_tail * swim_sin + swim_tail * swim_tail * swim_k * cos(swim_angle));
+            position.x += swim_amplitude * swim_tail * swim_tail * swim_sin;
+            normal.y -= swim_derivative * normal.x;
+        } else {
+            // Body stays fixed inside |x| <= 0.15. Chevron uses one quarter amplitude.
+            let flap_amount = proc_amplitude * select(1.0, 0.25, appearance.modes.w == 3u);
+            let flap_wave = sin(6.2831853 * (1.6 + 2.4 * proc_gain * proc_speed) * proc_time + proc_phase);
+            let flap_weight = max(abs(position.x) - 0.15, 0.0);
+            let flap_slope = select(0.0, sign(position.x) * flap_amount * flap_wave, abs(position.x) > 0.15);
+            position.z += flap_amount * flap_weight * flap_wave;
+            normal.x -= flap_slope * normal.z;
+        }
     }
     @if(GLOW) {
         let streak_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;

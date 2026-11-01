@@ -127,6 +127,8 @@ struct AppearanceUniform {
     proportions: Vec4,
     solid_color: Vec4,
     group_colors: [Vec4; crate::swarm::MAX_GROUPS],
+    // simulated seconds, procedural amplitude, speed-frequency gain, reserved.
+    motion: Vec4,
 }
 
 impl AppearanceUniform {
@@ -155,8 +157,13 @@ impl AppearanceUniform {
                 u32::from(appearance.palette != HeadingPalette::Classic),
                 appearance.vehicles.color_mode as u32,
                 u32::from(appearance.style == crate::scene::SceneStyle::Glow),
-                0,
+                state.motion.procedural_kind(appearance.vehicles.shape),
             ),
+            motion: if state.motion.procedural_kind(appearance.vehicles.shape) != 0 {
+                Vec4::new(0.0, state.motion.flap, state.motion.frequency, 0.0)
+            } else {
+                Vec4::ZERO
+            },
             proportions: Vec4::new(
                 appearance.vehicles.width,
                 appearance.vehicles.length,
@@ -183,9 +190,14 @@ fn update_appearance(
     appearance: Res<Appearance>,
     state: Res<GlobalState>,
     mut uniform: ResMut<AppearanceUniform>,
+    clock: Option<Res<crate::presentation::SimulationClock>>,
 ) {
-    if appearance.is_changed() || state.is_changed() {
-        uniform.set_if_neq(AppearanceUniform::from_settings(&appearance, &state));
+    if appearance.is_changed() || state.is_changed() || uniform.modes.w != 0 {
+        let mut next = AppearanceUniform::from_settings(&appearance, &state);
+        if next.modes.w != 0 {
+            next.motion.x = clock.as_ref().map_or(0.0, |c| c.elapsed_secs());
+        }
+        uniform.set_if_neq(next);
     }
 }
 
@@ -393,6 +405,7 @@ fn queue_instanced(
                     key,
                     animation.mesh == Some(mesh_instance.mesh_asset_id()),
                     appearance.modes.z != 0,
+                    appearance.modes.w != 0,
                 ),
                 &mesh.layout,
             ) else {
@@ -460,12 +473,13 @@ fn flock_pipeline_key(
     view: MeshPipelineKey,
     animated: bool,
     glow: bool,
-) -> (MeshPipelineKey, bool, bool) {
-    (view, animated, glow)
+    procedural: bool,
+) -> (MeshPipelineKey, bool, bool, bool) {
+    (view, animated, glow, procedural)
 }
 
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = (MeshPipelineKey, bool, bool);
+    type Key = (MeshPipelineKey, bool, bool, bool);
 
     fn specialize(
         &self,
@@ -502,6 +516,9 @@ impl SpecializedMeshPipeline for InstancingPipeline {
                 .unwrap()
                 .shader_defs
                 .push("GLOW".into());
+        }
+        if key.3 {
+            descriptor.vertex.shader_defs.push("PROCEDURAL".into());
         }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
@@ -648,7 +665,10 @@ mod tests {
                 Vec4::new(style.settings().emission, 0.0, 0.0, 0.0)
             );
             assert_eq!(uniform.modes.zw(), UVec2::ZERO);
-            assert_eq!(flock_pipeline_key(view, false, false), (view, false, false));
+            assert_eq!(
+                flock_pipeline_key(view, false, false, false),
+                (view, false, false, false)
+            );
             let adjusted = Appearance {
                 glow: 20.0,
                 streak: 3.0,
@@ -667,12 +687,64 @@ mod tests {
         let uniform = AppearanceUniform::from_settings(&appearance, &state);
         assert_eq!(uniform.modes.z, 1);
         assert_eq!(
-            flock_pipeline_key(hdr_view, true, true),
-            (hdr_view, true, true)
+            flock_pipeline_key(hdr_view, true, true, false),
+            (hdr_view, true, true, false)
         );
         assert_eq!(hdr_view.msaa_samples(), 4);
         assert_eq!(uniform.shading.y + uniform.shading.z, appearance.glow);
         assert!((uniform.shading.w - appearance.streak).abs() < 1e-6);
+    }
+
+    #[test]
+    fn procedural_pipeline_gating_and_clock_pause() {
+        use crate::vehicle_appearance::VehicleShape;
+        let mut state = GlobalState::default();
+        let mut appearance = Appearance::default();
+        for (shape, kind) in [
+            (VehicleShape::Dart, 0),
+            (VehicleShape::Bird, 1),
+            (VehicleShape::Fish, 2),
+            (VehicleShape::Chevron, 3),
+            (VehicleShape::Custom, 0),
+        ] {
+            appearance.vehicles.shape = shape;
+            let u = AppearanceUniform::from_settings(&appearance, &state);
+            assert_eq!(u.modes.w, kind);
+            assert_eq!(
+                flock_pipeline_key(MeshPipelineKey::empty(), false, true, kind != 0).3,
+                kind != 0
+            );
+        }
+        state.motion.flap = 0.0;
+        appearance.vehicles.shape = VehicleShape::Bird;
+        assert_eq!(
+            AppearanceUniform::from_settings(&appearance, &state).motion,
+            Vec4::ZERO
+        );
+        let mut app = crate::presentation::tests::clock_app();
+        app.init_resource::<GlobalState>()
+            .insert_resource(appearance)
+            .init_resource::<AppearanceUniform>()
+            .add_systems(
+                Update,
+                update_appearance.after(crate::presentation::prepare_simulation),
+            );
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(20));
+        app.update();
+        let time = app.world().resource::<AppearanceUniform>().motion.x;
+        assert!(time > 0.0);
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        for _ in 0..4 {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_secs(1));
+            app.update();
+            assert_eq!(app.world().resource::<AppearanceUniform>().motion.x, time);
+        }
     }
 
     #[test]
@@ -761,7 +833,7 @@ mod tests {
                 .x,
             0
         );
-        assert_eq!(AppearanceUniform::min_size().get(), 320);
+        assert_eq!(AppearanceUniform::min_size().get(), 336);
     }
 
     #[test]
@@ -781,7 +853,7 @@ mod tests {
         let mut buffer =
             bevy::render::render_resource::encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&after).unwrap();
-        assert_eq!(buffer.as_ref().len(), 320);
+        assert_eq!(buffer.as_ref().len(), 336);
         for (axis, value) in expected.to_array().into_iter().enumerate() {
             let offset = 192 + 16 + axis * 4;
             assert_eq!(&buffer.as_ref()[offset..offset + 4], &value.to_le_bytes());

@@ -130,6 +130,8 @@ pub(crate) struct GpuParams {
     pub predator_settings: Vec4,
     // mode (0 off, 1 spawn ID, 2 index), selector, simulated-time bits, arena tail offset.
     pub track: UVec4,
+    // bank strength, exact legacy flag, response rate, reserved. Render orientation only.
+    pub motion: Vec4,
 }
 
 impl GpuParams {
@@ -263,6 +265,12 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
                 .max(state.vehicle_alignment_distance)
                 .max(state.vehicle_cohesion_distance),
         size: state.vehicle_size,
+        motion: Vec4::new(
+            state.motion.bank,
+            u32::from(state.motion.classic_heading) as f32,
+            crate::motion::RESPONSE,
+            0.0,
+        ),
         mass: state.vehicle_mass,
         max_speed: state.vehicle_max_speed,
         wander_speed: state.vehicle_wander_speed,
@@ -1431,12 +1439,16 @@ mod tests {
             predators: UVec4::new(9001, 4, 3, 0),
             predator_settings: Vec4::new(60.0, 61.0, 62.0, 63.0),
             track: UVec4::new(2, 73, 74, 75),
+            motion: Vec4::new(0.7, 1.0, 8.0, 0.0),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 448);
-        assert_eq!(bytes.len(), 448);
+        assert_eq!(GpuParams::min_size().get(), 464);
+        assert_eq!(bytes.len(), 464);
+        for (axis, value) in [0.7_f32, 1.0, 8.0, 0.0].into_iter().enumerate() {
+            assert_eq!(&bytes[448 + axis * 4..452 + axis * 4], &value.to_le_bytes());
+        }
         for (axis, value) in [2_u32, 73, 74, 75].into_iter().enumerate() {
             assert_eq!(&bytes[432 + axis * 4..436 + axis * 4], &value.to_le_bytes());
         }

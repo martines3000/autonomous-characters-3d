@@ -52,6 +52,7 @@ struct Params {
     predators: vec4<u32>,
     predator_settings: vec4<f32>,
     track: vec4<u32>,
+    motion: vec4<f32>,
 };
 
 struct Boid {
@@ -255,6 +256,52 @@ fn heading_rotation(direction: vec3<f32>) -> vec4<f32> {
     return normalize(vec4<f32>(axis, 1.0 + d));
 }
 
+// CPU counterpart: src/motion.rs. Local +Y is forward, +Z is the back/up axis.
+fn rotate_motion(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+fn multiply_motion(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w*b.w - dot(a.xyz,b.xyz));
+}
+fn motion_tangent(v: vec3<f32>, h: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let projected = v - h * dot(v,h);
+    if dot(projected,projected) > 1e-12 { return normalize(projected); }
+    return fallback;
+}
+fn motion_angle(a: vec3<f32>, b: vec3<f32>, h: vec3<f32>) -> f32 {
+    let s = dot(h,cross(a,b)); let c = dot(a,b);
+    if abs(s) < 1e-6 && c < 0.0 { return PI; }
+    return atan2(s,c);
+}
+fn upright_target(previous: vec4<f32>, h: vec3<f32>, acceleration: vec3<f32>) -> vec4<f32> {
+    let arc = heading_rotation(h);
+    let arc_up = rotate_motion(arc,vec3<f32>(0.0,0.0,1.0));
+    let prior_up = motion_tangent(rotate_motion(previous,vec3<f32>(0.0,0.0,1.0)),h,arc_up);
+    let projected = vec3<f32>(0.0,1.0,0.0) - h*h.y;
+    var up = prior_up;
+    if dot(projected,projected) > 1e-12 { up = normalize(projected); }
+    let right = cross(h,up);
+    let lateral = acceleration - h*dot(acceleration,h);
+    let bank = clamp(atan2(dot(lateral,right),max(params.max_speed*0.35,1e-6))*params.motion.x,-PI/3.0,PI/3.0);
+    let old_roll = motion_angle(arc_up,prior_up,h);
+    let upright_roll = motion_angle(arc_up,up,h);
+    var delta = upright_roll+bank-old_roll;
+    if delta > PI { delta -= 2.0*PI; }
+    if delta <= -PI { delta += 2.0*PI; }
+    if abs(abs(delta)-PI) < 1e-5 { delta = PI; }
+    let t = clamp(dot(projected,projected)/0.1,0.0,1.0);
+    let roll = old_roll+delta*(t*t*(3.0-2.0*t));
+    let twist = vec4<f32>(h*sin(roll*0.5),cos(roll*0.5));
+    return normalize(multiply_motion(twist,arc));
+}
+fn smooth_motion(a: vec4<f32>, desired: vec4<f32>, amount: f32) -> vec4<f32> {
+    var b = desired; var cosine = dot(a,b);
+    if cosine < 0.0 { b = -b; cosine = -cosine; }
+    if cosine > 0.9995 { return normalize(mix(a,b,amount)); }
+    let angle = acos(clamp(cosine,0.0,1.0));
+    return normalize((a*sin((1.0-amount)*angle)+b*sin(amount*angle))/sin(angle));
+}
+
 @compute @workgroup_size(256)
 fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = params.spawn_from + id.x;
@@ -272,6 +319,7 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let spawn_id = params.groups.y + id.x;
     let group = spawn_id % select(params.groups.x, 8u, params.groups.x == 0u);
     boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
+    if params.motion.y == 0.0 { boids[index].rotation = upright_target(heading_rotation(direction),direction,vec3<f32>(0.0)); }
     arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
     write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
@@ -630,7 +678,12 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     let direction = normalize_or_zero(velocity);
     var rotation = me.rotation;
     if any(direction != vec3<f32>(0.0)) {
-        rotation = heading_rotation(direction);
+        if params.motion.y != 0.0 { rotation = heading_rotation(direction); }
+        else {
+            let render_acceleration = (velocity - me.velocity) / params.dt;
+            rotation = smooth_motion(me.rotation, upright_target(me.rotation,direction,render_acceleration),
+                1.0-exp(-params.motion.z*params.dt));
+        }
     }
     boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0, 0.0, 0.0, me.separation.w));
     // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.

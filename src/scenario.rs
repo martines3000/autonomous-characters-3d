@@ -113,6 +113,10 @@ enum Setting {
     Glow(f32),
     Streak(f32),
     Dof(bool),
+    Bank(f32),
+    Flap(f32),
+    FlapFrequency(f32),
+    ClassicHeading(bool),
     Palette(HeadingPalette),
     AutoFrame(bool),
     FlockDraw(bool),
@@ -237,6 +241,10 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("glow", _) => Setting::Glow(number(value, 0.0, 20.0)?),
         ("streak", _) => Setting::Streak(number(value, 0.0, 3.0)?),
         ("dof", _) => Setting::Dof(switch(value)?),
+        ("bank", _) => Setting::Bank(number(value, 0.0, 1.0)?),
+        ("flap", _) => Setting::Flap(number(value, 0.0, 1.5)?),
+        ("flap_frequency", _) => Setting::FlapFrequency(number(value, 0.0, 3.0)?),
+        ("legacy_heading", _) => Setting::ClassicHeading(switch(value)?),
         ("palette", "classic") => Setting::Palette(HeadingPalette::Classic),
         ("palette", "ocean") => Setting::Palette(HeadingPalette::Ocean),
         ("palette", "dusk") => Setting::Palette(HeadingPalette::Dusk),
@@ -723,6 +731,14 @@ fn apply_setting(world: &mut World, setting: Setting) {
         Setting::Glow(value) => world.resource_mut::<Appearance>().glow = value,
         Setting::Streak(value) => world.resource_mut::<Appearance>().streak = value,
         Setting::Dof(value) => world.resource_mut::<Presentation>().follow.dof = value,
+        Setting::Bank(value) => world.resource_mut::<GlobalState>().motion.bank = value,
+        Setting::Flap(value) => world.resource_mut::<GlobalState>().motion.flap = value,
+        Setting::FlapFrequency(value) => {
+            world.resource_mut::<GlobalState>().motion.frequency = value
+        }
+        Setting::ClassicHeading(value) => {
+            world.resource_mut::<GlobalState>().motion.classic_heading = value
+        }
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
         Setting::Shape(value) => {
@@ -1071,6 +1087,44 @@ mod tests {
         ] {
             assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn motion_commands_validate_and_change_only_presentation_settings() {
+        let parsed = parse(
+            "0 set bank 0.7\n0 set flap 0.45\n0 set flap_frequency 1\n0 set legacy_heading on",
+        )
+        .unwrap();
+        assert_eq!(parsed[0].command, Command::Set(Setting::Bank(0.7)));
+        assert_eq!(
+            parsed[3].command,
+            Command::Set(Setting::ClassicHeading(true))
+        );
+        for line in [
+            "0 set bank -1",
+            "0 set bank 1.1",
+            "0 set flap NaN",
+            "0 set flap 1.6",
+            "0 set flap_frequency -1",
+            "0 set flap_frequency 4",
+            "0 set legacy_heading maybe",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
+        }
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        let original = world.resource::<GlobalState>().clone();
+        for setting in [
+            Setting::Bank(0.0),
+            Setting::Flap(1.0),
+            Setting::FlapFrequency(2.0),
+            Setting::ClassicHeading(true),
+        ] {
+            apply_setting(&mut world, setting);
+        }
+        let mut actual = world.resource::<GlobalState>().clone();
+        actual.motion = original.motion;
+        assert_eq!(actual, original);
     }
 
     #[test]

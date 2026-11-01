@@ -2,7 +2,7 @@
 
 ## Current work
 
-No active plans.
+- AAA look track on `feat/boid-camera-and-fixes`: environment, opaque flock with shadows, hero models, cinematic camera (in progress).
 
 ## Prioritized future tasks
 
@@ -40,6 +40,7 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Natural vehicle motion](completed/2026-11-01-vehicle-motion.md) (2026-11-01): stable-up orientation, turn banking, procedural bird flap and fish swim on simulation time; positions and velocities stay bit-identical; Classic heading restores the old rotation exactly. Benchmarks deferred to an idle machine.
 - [Glow style and boid-camera depth of field](completed/2026-11-01-glow-style-and-dof.md) (2026-11-01): optional HDR/additive bloom, speed emission/streak, Gaussian DoF with live focus, a small chase marker and UI-free capture. Studio stays default; old shaders compile out Glow. At 1667×1390 on RX 7900 XT, Glow adds about 0.28 ms at 20k/100k; DoF full-frame differences are within noise; heavy 100k Glider averages 11.656 ms. 135 normal and 14 GPU tests pass.
 
 - [Boid follow camera](completed/2026-11-01-boid-follow-camera.md) (2026-11-01): optional Chase/First person, stable spawn IDs, asynchronous 80-byte GPU samples, direct CPU sampling, simulation-clock prediction and paused real-time orbit. B/N, scroll, UI and reproducible scenario controls; off adds no tracking dispatch/readback. 130 normal and 14 GPU tests pass. RX 7900 XT 1M wander tracking adds about 0.10 ms (2.2%); 20k app means 1.298 ms off / 1.328 ms chase at 881×1119.
