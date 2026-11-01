@@ -364,6 +364,7 @@ pub fn obstacles_ui(ui: &mut egui::Ui, scene: &mut SwarmScene) {
 
 #[derive(SystemParam)]
 pub(crate) struct SwarmUi<'w, 's> {
+    pub commands: Commands<'w, 's>,
     pub scene: ResMut<'w, SwarmScene>,
     pub formation: Res<'w, crate::formation::FormationFrame>,
     cameras: Query<'w, 's, (&'static Transform, &'static PanOrbitCamera), With<Camera3d>>,

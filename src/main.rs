@@ -10,6 +10,7 @@ mod predator;
 mod presentation;
 mod scenario;
 mod scene;
+mod showcase;
 mod swarm;
 mod target;
 mod vehicle;
@@ -261,6 +262,15 @@ fn ui(
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
+            egui::CollapsingHeader::new("Showcase").default_open(true).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for showcase in showcase::Showcase::ALL {
+                        if ui.button(showcase.name()).clicked() {
+                            swarm_ui.commands.queue(move |world: &mut World| showcase::apply(world, showcase));
+                        }
+                    }
+                });
+            });
             if models.status.starts_with("Error:") {
                 ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
             }

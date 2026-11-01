@@ -68,6 +68,10 @@ impl Default for Follow {
     }
 }
 impl Follow {
+    /// Preserve the readback generation boundary when replacing all presentation settings.
+    pub(crate) fn restart_after(&mut self, previous: &Self) {
+        self.revision = previous.revision.wrapping_add(1);
+    }
     pub(crate) fn next(&mut self) {
         self.id = None;
         self.revision = self.revision.wrapping_add(1);
@@ -518,6 +522,17 @@ fn followed_marker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_follow_settings_invalidates_previous_readback_generation() {
+        let mut previous = Follow::default();
+        previous.next();
+        let mut replacement = Follow::default();
+        replacement.restart_after(&previous);
+        assert_ne!(previous.revision, replacement.revision);
+        assert_eq!(replacement.mode, FollowMode::Off);
+        assert_eq!(replacement.id, None);
+    }
 
     #[test]
     fn depth_of_field_focus_tracks_actual_camera_and_looks_ahead_in_first_person() {

@@ -40,6 +40,8 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Showcase presets](completed/2026-11-01-showcase-presets.md) (2026-11-01): five live menu/script scenes, exact Calm defaults, order-independent settings, screenshot tuning and a 150-frame murmuration video; environment hook reserved. 159 normal and 15 GPU tests pass; no new Clippy warnings.
+
 - [Cinematic Director and fixed-step capture](completed/2026-11-01-director-capture.md) (2026-11-01): five tracked shots, C/UI/scenario controls, subject DoF, shake and reversible flyby ramp; serialized numbered PNG capture with fixed simulation/camera timing. 152 normal and 15 GPU tests pass; five Bird stills and a verified 90-frame/30-fps MP4 captured.
 
 - [Natural vehicle motion](completed/2026-11-01-vehicle-motion.md) (2026-11-01): stable-up orientation, turn banking, procedural bird flap and fish swim on simulation time; positions and velocities stay bit-identical; Classic heading restores the old rotation exactly. Benchmarks deferred to an idle machine.

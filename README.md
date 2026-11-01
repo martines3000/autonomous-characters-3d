@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 170 tests, including GPU parity tests and seeded benchmarks |
+| Tests | None | 177 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -86,6 +86,28 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
 
+### Showcase presets
+
+Open **Showcase** at the top of the menu for live, one-click scenes. Scenario command
+`showcase <name>` accepts `starling`, `fish`, `swallow`, `neon` or `calm` (also the full
+hyphenated names, such as `starling-murmuration`). Camera `preset` commands remain separate.
+
+- **Starling murmuration**: 40,000 banked, flapping Birds, Dusk colors and two orbiting flee
+  controls standing in for falcons. Director opens with a ten-second orbit shot.
+- **Fish school**: 20,000 swimming Fish in two ocean-colored groups, tighter cohesion and one
+  orbiting flee control standing in for a shark. Director opens in close chase.
+- **Swallow formation**: 8,000 Birds morph from Sphere toward Helix over 12.5 simulated seconds,
+  with a slowly orbiting camera and Studio shading.
+- **Neon swarm**: 200,000 Darts, Aurora colors, Glow and speed streaks; cursor attraction is off.
+- **Calm**: exact current simulation, appearance and presentation defaults. Startup remains unchanged.
+
+Each choice replaces the settings bundle, clears global target selection, cancels pending model
+loads and resets camera composition. Retained vehicles keep their positions; count/backend changes
+use the usual lifecycle. All settings remain editable. Showcase composition disables automatic
+count framing except in Calm. For clean captures, put `ui off` **after** `showcase <name>`.
+Environment identifiers are reserved but unset; no HDRI is selected yet.
+Predator debug rings are hidden in Starling and Fish; enable **Swarm → Predators → Show** to inspect them.
+
 ### Modes and settings
 
 - **GPU** (default) keeps every vehicle in GPU buffers. The count slider goes up to 1,000,000.
@@ -94,7 +116,7 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- The Menu groups controls under **Presentation**, **Simulation**, **Swarm**, **Steering**, **Scene**, and **Vehicles**.
+- The Menu starts with **Showcase**, then **Presentation**, **Simulation**, **Swarm**, **Steering**, **Scene**, and **Vehicles**.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
@@ -782,6 +804,7 @@ pgrep -a autonomous   # no process should remain after exit
 
 | Command | Arguments / behavior |
 | --- | --- |
+| `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |
