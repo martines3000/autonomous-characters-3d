@@ -3,6 +3,7 @@ use bevy::{camera_controller::pan_orbit_camera::prelude::*, prelude::*};
 
 use crate::{
     director::Shot,
+    environment::Environment,
     formation::{FormationFrame, FormationMode},
     predator::{PredatorFrame, PredatorPath},
     presentation::Presentation,
@@ -29,9 +30,6 @@ pub(crate) struct ShowcaseSettings {
     pub presentation: Presentation,
     pub swarm: SwarmScene,
     camera_distance_fraction: f32,
-    /// ENVIRONMENT INTEGRATION: optional environment asset identifier. Wire after merging
-    /// the Environment worker; every showcase deliberately leaves this unset for now.
-    pub environment: Option<&'static str>,
 }
 
 impl Showcase {
@@ -73,7 +71,6 @@ impl Showcase {
             presentation: default(),
             swarm: default(),
             camera_distance_fraction: 1.0,
-            environment: None,
         };
         if self == Self::Calm {
             return settings;
@@ -104,6 +101,7 @@ impl Showcase {
                 appearance.vehicles.shape = VehicleShape::Bird;
                 appearance.vehicles.visual_size = 1.6;
                 appearance.palette = HeadingPalette::Dusk;
+                appearance.environment = Environment::Sunset;
                 swarm.predators.add(Vec3::ZERO, 70.0);
                 swarm.predators.add(Vec3::ZERO, 70.0);
                 swarm.predators.path = PredatorPath::Orbit;
@@ -131,6 +129,9 @@ impl Showcase {
                 appearance.vehicles.visual_size = 1.8;
                 appearance.vehicles.color_mode = ColorMode::Group;
                 appearance.palette = HeadingPalette::Ocean;
+                appearance.environment = Environment::Underwater;
+                // The sand floor is visible underwater, so the school's shadows read on it.
+                appearance.shadows = true;
                 swarm.predators.add(Vec3::ZERO, 85.0);
                 swarm.predators.path = PredatorPath::Orbit;
                 swarm.predators.path_radius = 35.0;
@@ -150,6 +151,7 @@ impl Showcase {
                 appearance.vehicles.shape = VehicleShape::Bird;
                 appearance.vehicles.visual_size = 1.8;
                 appearance.palette = HeadingPalette::Dusk;
+                appearance.environment = Environment::Midday;
                 swarm.formation.mode = FormationMode::Sphere;
                 swarm.formation.morph = 1.0;
                 swarm.formation.morph_speed = 0.08;
@@ -223,8 +225,6 @@ pub(crate) fn apply(world: &mut World, showcase: Showcase) {
         orbit.current_motion = default();
         orbit.last_anchor_depth = -(distance as f64);
     }
-    // ENVIRONMENT INTEGRATION: pass this identifier to Environment after the merge.
-    let _environment = settings.environment;
     world.insert_resource(settings.state);
     world.insert_resource(settings.appearance);
     world.insert_resource(settings.presentation);
@@ -317,9 +317,9 @@ mod tests {
             assert_eq!(state.mode, SimulationMode::Gpu);
             assert_eq!(state.attractor.mode, AttractorMode::Off);
             assert_eq!(state.attractor.scripted_point, None);
-            assert!(preset.settings().environment.is_none());
             match preset {
                 Showcase::Starling => {
+                    assert_eq!(appearance.environment, Environment::Sunset);
                     assert_eq!(state.vehicle_count, 40_000);
                     assert_eq!(appearance.vehicles.shape, VehicleShape::Bird);
                     assert_eq!(appearance.palette, HeadingPalette::Dusk);
@@ -336,6 +336,8 @@ mod tests {
                     assert_eq!(presentation.director.shot, Shot::Orbit);
                 }
                 Showcase::Fish => {
+                    assert_eq!(appearance.environment, Environment::Underwater);
+                    assert!(appearance.shadows);
                     assert_eq!(state.vehicle_count, 20_000);
                     assert_eq!(appearance.vehicles.shape, VehicleShape::Fish);
                     assert_eq!(appearance.palette, HeadingPalette::Ocean);
@@ -355,6 +357,7 @@ mod tests {
                     assert!(presentation.director.enabled);
                 }
                 Showcase::Swallow => {
+                    assert_eq!(appearance.environment, Environment::Midday);
                     assert_eq!(appearance.vehicles.shape, VehicleShape::Bird);
                     assert_eq!(appearance.style, SceneStyle::Studio);
                     assert_eq!(swarm.formation.mode, FormationMode::Sphere);
@@ -364,6 +367,7 @@ mod tests {
                     assert!(world.resource::<FormationFrame>().settings.enabled());
                 }
                 Showcase::Neon => {
+                    assert_eq!(appearance.environment, Environment::Off);
                     assert_eq!(state.vehicle_count, 200_000);
                     assert_eq!(appearance.vehicles.shape, VehicleShape::Dart);
                     assert_eq!(appearance.style, SceneStyle::Glow);
@@ -397,7 +401,6 @@ mod tests {
             presentation: Presentation::default(),
             swarm: SwarmScene::default(),
             camera_distance_fraction: 1.0,
-            environment: None,
         };
         assert_settings(&world, &defaults);
         assert!(!world.get::<TargetSelection>(target).unwrap().0);

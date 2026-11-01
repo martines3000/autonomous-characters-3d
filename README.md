@@ -93,11 +93,11 @@ Open **Showcase** at the top of the menu for live, one-click scenes. Scenario co
 hyphenated names, such as `starling-murmuration`). Camera `preset` commands remain separate.
 
 - **Starling murmuration**: 40,000 banked, flapping Birds, Dusk colors and two orbiting flee
-  controls standing in for falcons. Director opens with a ten-second orbit shot.
+  controls standing in for falcons, against the **Sunset** sky. Director opens with a ten-second orbit shot.
 - **Fish school**: 20,000 swimming Fish in two ocean-colored groups, tighter cohesion and one
-  orbiting flee control standing in for a shark. Director opens in close chase.
+  orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
 - **Swallow formation**: 8,000 Birds morph from Sphere toward Helix over 12.5 simulated seconds,
-  with a slowly orbiting camera and Studio shading.
+  with a slowly orbiting camera under the **Midday** sky.
 - **Neon swarm**: 200,000 Darts, Aurora colors, Glow and speed streaks; cursor attraction is off.
 - **Calm**: exact current simulation, appearance and presentation defaults. Startup remains unchanged.
 
@@ -105,7 +105,7 @@ Each choice replaces the settings bundle, clears global target selection, cancel
 loads and resets camera composition. Retained vehicles keep their positions; count/backend changes
 use the usual lifecycle. All settings remain editable. Showcase composition disables automatic
 count framing except in Calm. For clean captures, put `ui off` **after** `showcase <name>`.
-Environment identifiers are reserved but unset; no HDRI is selected yet.
+Neon swarm and Calm use Environment **Off**.
 Predator debug rings are hidden in Starling and Fish; enable **Swarm → Predators → Show** to inspect them.
 
 ### Modes and settings
