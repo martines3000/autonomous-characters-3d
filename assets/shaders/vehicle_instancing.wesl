@@ -43,6 +43,8 @@ struct VertexOutput {
     @location(0) world_position: vec4<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @if(GLOW)
+    @location(4) glow_emission: f32,
     @if(MODEL_MATERIALS)
     @location(3) material: vec2<f32>,
 };
@@ -100,9 +102,19 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         let mixed_normal = mix(a.normal.xyz, b.normal.xyz, fraction);
         normal = select(mixed_normal, a.normal.xyz, dot(mixed_normal, mixed_normal) < 1e-12);
     }
+    @if(GLOW) {
+        let streak_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        let stretch = 1.0 + appearance.shading.w * streak_speed;
+        position.y *= stretch;
+        normal.y /= stretch;
+    }
     let q = vertex.i_rotation;
     let world = rotate(q, position * appearance.proportions.xyz * appearance.material.w) + vertex.i_position_speed_group.xyz;
     var out: VertexOutput;
+    @if(GLOW) {
+        let glow_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        out.glow_emission = appearance.shading.y + appearance.shading.z * glow_speed * glow_speed;
+    }
     @if(MODEL_MATERIALS) { out.material = vertex.material; }
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
@@ -150,5 +162,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var lit = apply_pbr_lighting(pbr_input);
     let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
+    @if(GLOW) { lit = vec4<f32>(lit.rgb + in.color * in.glow_emission, lit.a); }
     return main_pass_post_lighting_processing(pbr_input, lit);
 }

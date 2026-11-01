@@ -135,6 +135,16 @@ impl Default for VehicleAppearance {
     }
 }
 
+/// Reference response used to encode the Glow curve endpoints in the appearance uniform.
+pub(crate) fn emissive_curve(speed01: f32, strength: f32) -> f32 {
+    let speed = speed01.clamp(0.0, 1.0);
+    strength * (0.25 + 0.75 * speed * speed)
+}
+
+pub(crate) fn streak_scale(speed01: f32, strength: f32) -> f32 {
+    1.0 + strength * speed01.clamp(0.0, 1.0)
+}
+
 pub fn ui(ui: &mut egui::Ui, appearance: &mut VehicleAppearance) {
     ui.add(egui::Slider::new(&mut appearance.visual_size, 0.1..=5.0).text("Render size"))
         .on_hover_text("Render-only multiplier. Does not change GlobalState::vehicle_size, neighbor radii, separation or steering.");
@@ -295,6 +305,22 @@ impl Faces {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn glow_response_and_streak_are_bounded_monotonic_and_disable_cleanly() {
+        use super::*;
+        for speed in [0.0, 0.25, 0.5, 1.0] {
+            assert_eq!(emissive_curve(speed, 0.0), 0.0);
+            assert_eq!(streak_scale(speed, 0.0), 1.0);
+        }
+        assert_eq!(emissive_curve(0.0, 4.0), 1.0);
+        assert_eq!(emissive_curve(0.5, 4.0), 1.75);
+        assert_eq!(emissive_curve(1.0, 4.0), 4.0);
+        assert_eq!(emissive_curve(2.0, 4.0), 4.0);
+        assert_eq!(streak_scale(-1.0, 0.8), 1.0);
+        assert_eq!(streak_scale(0.5, 0.8), 1.4);
+        assert_eq!(streak_scale(1.0, 0.8), 1.8);
+    }
+
     use super::*;
     use bevy::mesh::VertexAttributeValues;
 

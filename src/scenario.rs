@@ -58,6 +58,7 @@ struct TimedCommand {
 enum Command {
     Set(Setting),
     Follow(bool),
+    Ui(bool),
     BoidFollow(crate::follow::FollowMode),
     FollowNext,
     FollowId(u32),
@@ -109,6 +110,9 @@ enum Setting {
     OrbitSpeed(f32),
     Mode(SimulationMode),
     Style(SceneStyle),
+    Glow(f32),
+    Streak(f32),
+    Dof(bool),
     Palette(HeadingPalette),
     AutoFrame(bool),
     FlockDraw(bool),
@@ -229,6 +233,10 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("mode", "naive") => Setting::Mode(SimulationMode::Naive),
         ("style", "studio") => Setting::Style(SceneStyle::Studio),
         ("style", "classic") => Setting::Style(SceneStyle::Classic),
+        ("style", "glow") => Setting::Style(SceneStyle::Glow),
+        ("glow", _) => Setting::Glow(number(value, 0.0, 20.0)?),
+        ("streak", _) => Setting::Streak(number(value, 0.0, 3.0)?),
+        ("dof", _) => Setting::Dof(switch(value)?),
         ("palette", "classic") => Setting::Palette(HeadingPalette::Classic),
         ("palette", "ocean") => Setting::Palette(HeadingPalette::Ocean),
         ("palette", "dusk") => Setting::Palette(HeadingPalette::Dusk),
@@ -410,6 +418,7 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
                     hex_color(color)?,
                 )),
+                ["ui", value] => Command::Ui(switch(value)?),
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
@@ -497,6 +506,7 @@ fn run_scenario(world: &mut World) {
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
+                Command::Ui(visible) => world.resource_mut::<Presentation>().ui_visible = visible,
                 Command::Pause(paused) => world.resource_mut::<Presentation>().paused = paused,
                 Command::Preset(preset) => {
                     let mut presentation = world.resource_mut::<Presentation>();
@@ -710,6 +720,9 @@ fn apply_setting(world: &mut World, setting: Setting) {
             }
         }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
+        Setting::Glow(value) => world.resource_mut::<Appearance>().glow = value,
+        Setting::Streak(value) => world.resource_mut::<Appearance>().streak = value,
+        Setting::Dof(value) => world.resource_mut::<Presentation>().follow.dof = value,
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
         Setting::Shape(value) => {
@@ -818,6 +831,15 @@ fn report(world: &mut World, mut measurement: Measurement) {
         transform.translation,
         msaa.samples(),
         draw
+    );
+    let presentation = world.resource::<Presentation>();
+    info!(
+        "AC3D_EFFECTS boidcam={} dof={} aperture={} glow={} streak={}",
+        presentation.follow.mode.name(),
+        presentation.follow.enabled() && presentation.follow.dof,
+        presentation.follow.aperture,
+        world.resource::<Appearance>().glow,
+        world.resource::<Appearance>().streak
     );
     let state = world.resource::<GlobalState>();
     let appearance = world.resource::<Appearance>();
@@ -1049,6 +1071,48 @@ mod tests {
         ] {
             assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn glow_dof_and_ui_commands_validate_and_keep_simulation_unchanged() {
+        let commands = parse(
+            "0 set style glow\n0 set glow 20\n0 set streak 3\n0 set dof off\n0 ui off\n1 ui on",
+        )
+        .unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::Set(Setting::Style(SceneStyle::Glow))
+        );
+        assert_eq!(commands[4].command, Command::Ui(false));
+        assert_eq!(commands[5].command, Command::Ui(true));
+        for line in [
+            "0 set glow -1",
+            "0 set glow 21",
+            "0 set glow NaN",
+            "0 set streak 3.1",
+            "0 set streak -0.1",
+            "0 set dof maybe",
+            "0 ui maybe",
+            "0 set style neon",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
+        }
+        let mut world = World::new();
+        world.init_resource::<Presentation>();
+        world.init_resource::<Appearance>();
+        world.init_resource::<GlobalState>();
+        let before = world.resource::<GlobalState>().clone();
+        for setting in [
+            Setting::Style(SceneStyle::Glow),
+            Setting::Glow(8.0),
+            Setting::Streak(1.0),
+            Setting::Dof(false),
+        ] {
+            apply_setting(&mut world, setting);
+        }
+        assert_eq!(world.resource::<GlobalState>(), &before);
+        assert_eq!(world.resource::<Appearance>().glow, 8.0);
+        assert!(!world.resource::<Presentation>().follow.dof);
     }
 
     #[test]

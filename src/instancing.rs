@@ -119,9 +119,9 @@ struct AppearanceUniform {
     colors: [Vec4; 7],
     // roughness, metallic, rim strength, render-only scale.
     material: Vec4,
-    // emission strength, reserved for later shading parameters.
+    // Base emission, Glow minimum/additional emission, Glow forward stretch coefficient.
     shading: Vec4,
-    // palette (0 = original HSV), color mode (0 = heading), reserved, reserved.
+    // palette (0 = original HSV), color mode (0 = heading), Glow specialization flag, reserved.
     modes: UVec4,
     // width, length, width, altitude half-height.
     proportions: Vec4,
@@ -140,11 +140,21 @@ impl AppearanceUniform {
                 look.rim,
                 state.vehicle_size * appearance.vehicles.visual_size,
             ),
-            shading: Vec4::new(look.emission, 0.0, 0.0, 0.0),
+            shading: if appearance.style == crate::scene::SceneStyle::Glow {
+                let floor = crate::vehicle_appearance::emissive_curve(0.0, appearance.glow);
+                Vec4::new(
+                    look.emission,
+                    floor,
+                    crate::vehicle_appearance::emissive_curve(1.0, appearance.glow) - floor,
+                    crate::vehicle_appearance::streak_scale(1.0, appearance.streak) - 1.0,
+                )
+            } else {
+                Vec4::new(look.emission, 0.0, 0.0, 0.0)
+            },
             modes: UVec4::new(
                 u32::from(appearance.palette != HeadingPalette::Classic),
                 appearance.vehicles.color_mode as u32,
-                0,
+                u32::from(appearance.style == crate::scene::SceneStyle::Glow),
                 0,
             ),
             proportions: Vec4::new(
@@ -350,6 +360,7 @@ fn queue_instanced(
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<&ExtractedView>,
     view_key_cache: Res<ViewKeyCache>,
+    appearance: Res<AppearanceUniform>,
 ) {
     if !draw.0 {
         return;
@@ -378,7 +389,11 @@ fn queue_instanced(
             let Ok(pipeline) = pipelines.specialize(
                 &pipeline_cache,
                 &pipeline,
-                (key, animation.mesh == Some(mesh_instance.mesh_asset_id())),
+                flock_pipeline_key(
+                    key,
+                    animation.mesh == Some(mesh_instance.mesh_asset_id()),
+                    appearance.modes.z != 0,
+                ),
                 &mesh.layout,
             ) else {
                 continue;
@@ -441,8 +456,16 @@ fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'s
         .filter_map(|(enabled, name)| enabled.then_some(name))
 }
 
+fn flock_pipeline_key(
+    view: MeshPipelineKey,
+    animated: bool,
+    glow: bool,
+) -> (MeshPipelineKey, bool, bool) {
+    (view, animated, glow)
+}
+
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = (MeshPipelineKey, bool);
+    type Key = (MeshPipelineKey, bool, bool);
 
     fn specialize(
         &self,
@@ -470,6 +493,15 @@ impl SpecializedMeshPipeline for InstancingPipeline {
                 .unwrap()
                 .shader_defs
                 .push(name.into());
+        }
+        if key.2 {
+            descriptor.vertex.shader_defs.push("GLOW".into());
+            descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .shader_defs
+                .push("GLOW".into());
         }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
@@ -602,6 +634,46 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 mod tests {
     use super::*;
     use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn glow_keeps_old_uniforms_and_view_keys_and_uses_hdr_msaa_specialization() {
+        let state = GlobalState::default();
+        let view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba8UnormSrgb);
+        for style in [SceneStyle::Studio, SceneStyle::Classic] {
+            let appearance = Appearance { style, ..default() };
+            let uniform = AppearanceUniform::from_settings(&appearance, &state);
+            assert_eq!(
+                uniform.shading,
+                Vec4::new(style.settings().emission, 0.0, 0.0, 0.0)
+            );
+            assert_eq!(uniform.modes.zw(), UVec2::ZERO);
+            assert_eq!(flock_pipeline_key(view, false, false), (view, false, false));
+            let adjusted = Appearance {
+                glow: 20.0,
+                streak: 3.0,
+                ..appearance
+            };
+            assert_eq!(uniform, AppearanceUniform::from_settings(&adjusted, &state));
+        }
+        let hdr_view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba16Float);
+        assert_eq!(hdr_view.target_format(), TextureFormat::Rgba16Float);
+        assert_ne!(hdr_view, view);
+        let appearance = Appearance {
+            style: SceneStyle::Glow,
+            ..default()
+        };
+        let uniform = AppearanceUniform::from_settings(&appearance, &state);
+        assert_eq!(uniform.modes.z, 1);
+        assert_eq!(
+            flock_pipeline_key(hdr_view, true, true),
+            (hdr_view, true, true)
+        );
+        assert_eq!(hdr_view.msaa_samples(), 4);
+        assert_eq!(uniform.shading.y + uniform.shading.z, appearance.glow);
+        assert!((uniform.shading.w - appearance.streak).abs() < 1e-6);
+    }
 
     #[test]
     fn vehicle_appearance_changes_preserve_every_simulation_field_and_gpu_parameter() {

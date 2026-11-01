@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 147 tests, including GPU parity tests and seeded benchmarks |
+| Tests | None | 152 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -77,6 +77,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | O | Toggle real-time auto-orbit |
 | B | Boid camera: Off → Chase → First person → Off |
 | N | Pick a random boid for the camera |
+| Presentation → Depth of field | Toggle boid-camera blur; aperture controls strength |
 | Scroll while riding | Change chase distance |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
 
@@ -95,9 +96,17 @@ menu when it has focus.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
-  walls, stays inside the far plane and ignores fog/picking. No bloom or per-vehicle lights are used.
+  walls, stays inside the far plane and ignores fog/picking. Studio and Classic use no bloom or per-vehicle lights.
 - **Classic** retains the original flat background, box/grid colors and layout, lighting, material
   roughness and HSV heading palette. It hides the Studio sky and floor.
+- **Glow** is optional: a darker Studio environment with speed-based vehicle emission, additive
+  HDR bloom and a forward speed streak. It keeps TonyMcMapface tonemapping and 4× MSAA. Vehicle
+  color modes, built-in shapes, imported materials and baked animation all share the same effect.
+  **Vehicles → glow** (0–20, default 4) controls emission; **streak** (0–3, default 0.8) controls
+  maximum forward stretch. For normalized speed s, emission is `glow * (0.25 + 0.75*s*s)` and
+  stretch is `1 + streak*s`. Normals receive the inverse stretch before rotation. These settings
+  do not change physical size, separation or steering. Glow-only shader code compiles out of
+  Studio/Classic; leaving Glow removes Hdr and Bloom.
 - Heading palettes are independent of scene style. Six distinct stops plus a repeated first stop
   make the new palettes continuous around the heading wheel:
   **Ocean** (deep blue, cyan, seafoam, sand, coral, violet), **Dusk** (indigo, magenta, orange, gold,
@@ -106,7 +115,7 @@ menu when it has focus.
   **Classic** keeps the original HSV function unchanged.
   Changing style keeps the selected palette; choose Classic style **and** Classic palette for the
   original presentation. Studio adds 15% base-color emission alongside its restrained rim term to
-  keep distant darts visible. Both styles retain the opaque red/green target and a screen marker
+  keep distant darts visible. All styles retain the opaque red/green target and a screen marker
   that remains visible inside dense flocks; click the sphere itself to select it.
 - **Auto-frame on count change** defaults on. It waits until the count slider stops changing for
   0.35 seconds and is released, then changes orbit distance while preserving orientation and the
@@ -125,6 +134,12 @@ brake wandering vehicles. Global/group seek and formation wall gating remain unc
 steer softly rather than clamp positions, so a vehicle may briefly overshoot. Default speeds and
 force weights are unchanged; visual speed tuning remains an owner decision. See
 [containment measurements](plans/completed/2026-11-01-wall-containment.md).
+
+| Scene style | Lighting/environment | Vehicle effects | Camera effects |
+| --- | --- | --- | --- |
+| Studio (default) | Navy gradient, warm/cool lighting, rough floor | Restrained rim and 15% emission | No bloom; optional boid-camera DoF |
+| Classic | Original flat background, box/grid and material | Original shading | No bloom; optional boid-camera DoF |
+| Glow | Dark tinted Studio sky/floor/fog | Speed emission and forward streak | HDR, additive bloom; optional boid-camera DoF |
 
 ### Swarm mechanics
 
@@ -302,7 +317,7 @@ Manual pan/zoom remains available afterwards.
 
 ### Ride a boid
 
-**Presentation → Follow** offers Off (default), Chase and First person. **B** cycles these modes;
+**Presentation → Boid camera** offers Off (default), Chase and First person. **B** cycles these modes;
 **N** / **Next boid** picks a random living vehicle. The UI displays its stable spawn ID. Scroll
 or the chase-distance slider adjusts the chase view. A right/middle drag or preset **1–5** exits
 follow; leaving First person restores the prior FOV and near plane. Automatic count framing and
@@ -310,7 +325,7 @@ Frame world are skipped while follow is on. Chase distance and height scale with
 and `world_scale(count)`; first-person placement scales with physical body size.
 
 Chase follows a smoothed velocity heading with a critically damped spring and looks a quarter
-simulated second ahead. First person sits two physical size units ahead of the vehicle center,
+simulated second ahead. First person sits two physical size units ahead of the vehicle center (Glow also accounts for rendered length and streak),
 uses a 75° vertical FOV. Both follow modes use a near plane of `0.05 * vehicle_size`. Render-only proportions and
 custom model extents can put unusually long/wide models into view. GPU samples arrive through
 an asynchronous 80-byte Bevy readback (typically a few frames late); prediction uses the simulation
@@ -321,6 +336,17 @@ Zero count holds the view until vehicles return.
 Auto-orbit yaws the chase offset in real time, including while paused for bullet-time shots.
 First person ignores auto-orbit. The boid camera never changes vehicle steering. With it off,
 there is no tracking dispatch, buffer copy or readback entity; the simulation passes stay unchanged.
+
+The boid-camera **Depth of field** checkbox defaults on; the boid camera itself remains off.
+Gaussian blur focuses at the current camera-to-boid distance in Chase. First person focuses ten
+physical size units ahead of the eye (four normal body lengths). The aperture slider uses f-stops:
+lower values give stronger blur, default 2.8. The virtual sensor scales with body size so the effect
+is visible in this large-unit world; blur diameter is capped at 12 pixels. DoF works in all styles
+with 4× MSAA and is removed when disabled or when the boid camera exits. A small gold ring marks
+the predicted followed position in Chase; first person omits it.
+
+See the [Glow/DoF measurements](plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
+verification and screenshot evidence.
 
 ### Vehicle appearance
 
@@ -683,7 +709,11 @@ pgrep -a autonomous   # no process should remain after exit
 | --- | --- |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
-| `set style` | `studio`, `classic` |
+| `set style` | `studio` (default), `classic`, `glow` |
+| `set glow` | Emission strength 0–20, default 4; Glow only |
+| `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
+| `set dof` | `on` (default) / `off`; applies only while the boid camera is active |
+| `ui` | `off` / `on`; hides/restores Menu, Controls and FPS text for capture |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
 | `set shape` | `dart`, `chevron` (alias `arrow`), `fish`, `bird` (alias `glider`) |
 | `set model` | Local model path, repository-relative or absolute; asynchronous, preserves selection on failure |

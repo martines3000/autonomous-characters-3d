@@ -40,6 +40,8 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Glow style and boid-camera depth of field](completed/2026-11-01-glow-style-and-dof.md) (2026-11-01): optional HDR/additive bloom, speed emission/streak, Gaussian DoF with live focus, a small chase marker and UI-free capture. Studio stays default; old shaders compile out Glow. At 1667×1390 on RX 7900 XT, Glow adds about 0.28 ms at 20k/100k; DoF full-frame differences are within noise; heavy 100k Glider averages 11.656 ms. 135 normal and 14 GPU tests pass.
+
 - [Boid follow camera](completed/2026-11-01-boid-follow-camera.md) (2026-11-01): optional Chase/First person, stable spawn IDs, asynchronous 80-byte GPU samples, direct CPU sampling, simulation-clock prediction and paused real-time orbit. B/N, scroll, UI and reproducible scenario controls; off adds no tracking dispatch/readback. 130 normal and 14 GPU tests pass. RX 7900 XT 1M wander tracking adds about 0.10 ms (2.2%); 20k app means 1.298 ms off / 1.328 ms chase at 881×1119.
 
 - [Outside-only wall containment and group rebalance](completed/2026-11-01-wall-containment.md) (2026-11-01): 20k settled wander speed rises from roughly 29.3 to 39.2 units/s; maximum measured GPU overshoot is 23.399 units and the existing <50 assertion passes. Group-count edits spread existing members by spawn ID; Off handling and carried metadata remain intact.

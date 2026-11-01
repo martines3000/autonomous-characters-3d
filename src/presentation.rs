@@ -147,6 +147,7 @@ pub struct Presentation {
     pub orbit: bool,
     pub orbit_speed: f32,
     pub preset: Option<CameraPreset>,
+    pub(crate) ui_visible: bool,
     pub(crate) follow: crate::follow::Follow,
     manual_camera: bool,
     transition: Option<CameraTransition>,
@@ -160,6 +161,7 @@ impl Default for Presentation {
             orbit: false,
             orbit_speed: 10.0,
             preset: None,
+            ui_visible: true,
             follow: default(),
             manual_camera: false,
             transition: None,
@@ -369,6 +371,15 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
         if ui.button("Next boid (N)").clicked() {
             presentation.follow.next();
         }
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut presentation.follow.dof, "Depth of field");
+        ui.add(
+            egui::Slider::new(&mut presentation.follow.aperture, 0.7..=16.0)
+                .logarithmic(true)
+                .text("aperture f-stop"),
+        )
+        .on_hover_text("Lower f-stop gives stronger blur; applies only in the boid camera.");
     });
     if previous_follow != presentation.follow.mode {
         presentation.transition = None;

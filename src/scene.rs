@@ -3,10 +3,11 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::NoFrustumCulling,
+    camera::{visibility::NoFrustumCulling, Hdr},
     camera_controller::pan_orbit_camera::prelude::*,
     light::{NotShadowCaster, NotShadowReceiver},
     mesh::VertexAttributeValues,
+    post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
     prelude::*,
     render::{
         render_resource::{Face, PrimitiveTopology},
@@ -31,14 +32,16 @@ pub enum SceneStyle {
     #[default]
     Studio,
     Classic,
+    Glow,
 }
 
 impl SceneStyle {
-    pub const ALL: [Self; 2] = [Self::Studio, Self::Classic];
+    pub const ALL: [Self; 3] = [Self::Studio, Self::Classic, Self::Glow];
     pub fn name(self) -> &'static str {
         match self {
             Self::Studio => "Studio",
             Self::Classic => "Classic",
+            Self::Glow => "Glow",
         }
     }
     pub fn settings(self) -> SceneSettings {
@@ -54,6 +57,19 @@ impl SceneStyle {
                 roughness: 0.6,
                 metallic: 0.0,
                 rim: 0.0,
+                emission: 0.0,
+            },
+            Self::Glow => SceneSettings {
+                background: Color::srgb(0.008, 0.012, 0.024),
+                wall: Color::srgba(0.15, 0.24, 0.38, 0.08),
+                grid: Color::srgba(0.08, 0.12, 0.20, 0.1),
+                ambient: 180.0,
+                key: 2500.0,
+                key_color: Color::srgb(0.75, 0.85, 1.0),
+                fill: 800.0,
+                roughness: 0.42,
+                metallic: 0.12,
+                rim: 0.1,
                 emission: 0.0,
             },
             Self::Studio => SceneSettings {
@@ -152,6 +168,8 @@ pub struct Appearance {
     pub auto_frame: bool,
     pub frame_requested: bool,
     pub count_editing: bool,
+    pub glow: f32,
+    pub streak: f32,
 }
 
 impl Default for Appearance {
@@ -163,6 +181,8 @@ impl Default for Appearance {
             auto_frame: true,
             frame_requested: false,
             count_editing: false,
+            glow: 4.0,
+            streak: 0.8,
         }
     }
 }
@@ -174,10 +194,42 @@ impl Plugin for ScenePlugin {
             .add_systems(Startup, (setup_scene, setup_studio).chain())
             .add_systems(
                 PostUpdate,
+                sync_glow_camera.before(bevy::camera::CameraUpdateSystems),
+            )
+            .add_systems(
+                PostUpdate,
                 (frame_world, draw_world, update_studio)
                     .chain()
                     .before(TransformSystems::Propagate),
             );
+    }
+}
+
+pub(crate) fn sync_glow_camera(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    cameras: Query<(Entity, Has<Hdr>, Has<Bloom>), With<Camera3d>>,
+) {
+    for (entity, hdr, bloom) in &cameras {
+        if appearance.style == SceneStyle::Glow {
+            if !hdr || !bloom {
+                commands.entity(entity).insert((
+                    Hdr,
+                    Bloom {
+                        intensity: 0.18,
+                        low_frequency_boost: 0.2,
+                        composite_mode: BloomCompositeMode::Additive,
+                        prefilter: BloomPrefilter {
+                            threshold: 1.0,
+                            threshold_softness: 0.2,
+                        },
+                        ..default()
+                    },
+                ));
+            }
+        } else if hdr || bloom {
+            commands.entity(entity).remove::<(Bloom, Hdr)>();
+        }
     }
 }
 
@@ -399,7 +451,13 @@ fn update_studio(
     state: Res<GlobalState>,
     appearance: Res<Appearance>,
     cameras: Query<&Transform, (With<Camera3d>, Without<StudioSurface>)>,
-    mut surfaces: Query<(&StudioSurface, &mut Transform, &mut Visibility)>,
+    mut surfaces: Query<(
+        &StudioSurface,
+        &mut Transform,
+        &mut Visibility,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     targets: Query<&Transform, (With<Target>, Without<StudioSurface>)>,
 ) {
     let Ok(camera) = cameras.single() else {
@@ -407,8 +465,21 @@ fn update_studio(
     };
     let walls = vehicle::walls(state.vehicle_count);
     let target_far = far_target_distance(camera.translation, targets.iter());
-    for (surface, mut transform, mut visibility) in &mut surfaces {
-        *visibility = if appearance.style == SceneStyle::Studio {
+    for (surface, mut transform, mut visibility, handle) in &mut surfaces {
+        if appearance.is_changed() {
+            let tint = if appearance.style == SceneStyle::Glow {
+                Color::srgb(0.25, 0.25, 0.32)
+            } else {
+                Color::WHITE
+            };
+            if materials
+                .get(&handle.0)
+                .is_some_and(|m| m.base_color != tint)
+            {
+                materials.get_mut(&handle.0).unwrap().base_color = tint;
+            }
+        }
+        *visibility = if appearance.style != SceneStyle::Classic {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -586,6 +657,41 @@ fn draw_world(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glow_camera_components_are_optional_and_msaa_is_preserved() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .add_systems(Update, sync_glow_camera);
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample4))
+            .id();
+        for style in [
+            SceneStyle::Studio,
+            SceneStyle::Glow,
+            SceneStyle::Classic,
+            SceneStyle::Glow,
+            SceneStyle::Studio,
+        ] {
+            app.world_mut().resource_mut::<Appearance>().style = style;
+            app.update();
+            assert_eq!(
+                app.world().get::<Hdr>(camera).is_some(),
+                style == SceneStyle::Glow
+            );
+            assert_eq!(
+                app.world().get::<Bloom>(camera).is_some(),
+                style == SceneStyle::Glow
+            );
+            assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), Msaa::Sample4);
+            if let Some(bloom) = app.world().get::<Bloom>(camera) {
+                assert_eq!(bloom.composite_mode, BloomCompositeMode::Additive);
+                assert_eq!(bloom.prefilter.threshold, 1.0);
+            }
+        }
+        assert_eq!(SceneStyle::default(), SceneStyle::Studio);
+    }
 
     #[test]
     fn classic_preserves_original_scene_constants() {

@@ -2,6 +2,8 @@
 //! CPU modes sample the live entity. Neither path changes vehicle integration.
 use bevy::{
     camera_controller::pan_orbit_camera::prelude::*,
+    ecs::system::SystemParam,
+    post_process::dof::{DepthOfField, DepthOfFieldMode},
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -49,6 +51,8 @@ pub(crate) struct Follow {
     pub mode: FollowMode,
     pub id: Option<u32>,
     pub distance: f32,
+    pub dof: bool,
+    pub aperture: f32,
     revision: u64,
 }
 impl Default for Follow {
@@ -57,6 +61,8 @@ impl Default for Follow {
             mode: FollowMode::Off,
             id: None,
             distance: 6.0,
+            dof: true,
+            aperture: 2.8,
             revision: 0,
         }
     }
@@ -125,7 +131,8 @@ impl Plugin for FollowPlugin {
             )
             .add_systems(
                 PostUpdate,
-                follow_camera
+                (follow_camera, followed_marker)
+                    .chain()
                     .before(crate::presentation::animate_camera)
                     .before(bevy::camera::CameraUpdateSystems),
             );
@@ -289,20 +296,54 @@ fn receive_sample(
     runtime.invalid_samples = 0;
 }
 
+fn focus_distance(mode: FollowMode, eye: Vec3, boid: Vec3, size: f32) -> Option<f32> {
+    match mode {
+        FollowMode::Off => None,
+        FollowMode::Chase => Some(eye.distance(boid).max(size * 0.1)),
+        FollowMode::FirstPerson => Some(size * 10.0),
+    }
+}
+
+type FollowCameras<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Transform,
+        &'static mut Projection,
+        &'static mut PanOrbitCamera,
+        Option<&'static mut DepthOfField>,
+    ),
+    With<Camera3d>,
+>;
+
+#[derive(SystemParam)]
+struct FollowScene<'w> {
+    state: Res<'w, GlobalState>,
+    appearance: Res<'w, crate::scene::Appearance>,
+}
+
 fn follow_camera(
+    mut commands: Commands,
     presentation: Res<Presentation>,
     mut runtime: ResMut<FollowRuntime>,
     clock: Res<SimulationClock>,
     real: Res<Time<Real>>,
-    state: Res<GlobalState>,
-    mut cameras: Query<(&mut Transform, &mut Projection, &mut PanOrbitCamera), With<Camera3d>>,
+    scene: FollowScene,
+    mut cameras: FollowCameras,
 ) {
-    let Ok((mut transform, mut projection, mut orbit)) = cameras.single_mut() else {
+    let state = &scene.state;
+    let appearance = &scene.appearance;
+    let Ok((entity, mut transform, mut projection, mut orbit, mut dof)) = cameras.single_mut()
+    else {
         return;
     };
     let Projection::Perspective(projection) = &mut *projection else {
         return;
     };
+    if (!presentation.follow.enabled() || !presentation.follow.dof) && dof.is_some() {
+        commands.entity(entity).remove::<DepthOfField>();
+    }
     if !presentation.follow.enabled() {
         if let Some(saved) = runtime.projection.take() {
             let aspect_ratio = projection.aspect_ratio;
@@ -349,6 +390,14 @@ fn follow_camera(
     let size = state.vehicle_size.max(0.001);
     let scale = vehicle::world_scale(state.vehicle_count);
     let heading = runtime.heading;
+    let body_scale = if appearance.style == crate::scene::SceneStyle::Glow {
+        let speed01 = sample.velocity.length() / state.vehicle_max_speed.max(f32::EPSILON);
+        appearance.vehicles.visual_size
+            * appearance.vehicles.length
+            * crate::vehicle_appearance::streak_scale(speed01, appearance.streak)
+    } else {
+        1.0
+    };
     let mut desired = *transform;
     match presentation.follow.mode {
         FollowMode::Chase => {
@@ -374,7 +423,7 @@ fn follow_camera(
             projection.near = size * 0.05;
         }
         FollowMode::FirstPerson => {
-            desired.translation = position + heading * (size * 2.0);
+            desired.translation = position + heading * (size * body_scale * 2.0);
             desired.look_to(
                 heading,
                 if heading.dot(Vec3::Y).abs() > 0.98 {
@@ -397,11 +446,73 @@ fn follow_camera(
     transform.translation = start.translation.lerp(desired.translation, smooth);
     transform.rotation = start.rotation.slerp(desired.rotation, smooth);
     orbit.last_anchor_depth = -(transform.translation.distance(position).max(size) as f64);
+    if presentation.follow.dof {
+        let settings = DepthOfField {
+            mode: DepthOfFieldMode::Gaussian,
+            focal_distance: focus_distance(
+                presentation.follow.mode,
+                transform.translation,
+                position,
+                size,
+            )
+            .unwrap(),
+            // A virtual sensor in body units makes the lens useful in this large-unit world.
+            sensor_height: size * 0.8,
+            aperture_f_stops: presentation.follow.aperture,
+            max_circle_of_confusion_diameter: 12.0,
+            max_depth: vehicle::walls(state.vehicle_count).max_element() * 10.0,
+        };
+        if let Some(dof) = dof.as_mut() {
+            **dof = settings;
+        } else {
+            commands.entity(entity).insert(settings);
+        }
+    }
+}
+
+fn followed_marker(
+    presentation: Res<Presentation>,
+    runtime: Res<FollowRuntime>,
+    clock: Res<SimulationClock>,
+    state: Res<GlobalState>,
+    mut gizmos: Gizmos,
+) {
+    if presentation.follow.mode == FollowMode::Chase {
+        if let Some(sample) = runtime.sample {
+            let position = sample.predicted(clock.elapsed_secs());
+            let normal = sample.velocity.try_normalize().unwrap_or(Vec3::Y);
+            gizmos.circle(
+                Isometry3d::new(position, Quat::from_rotation_arc(Vec3::Z, normal)),
+                state.vehicle_size * 1.4,
+                Color::srgba(1.0, 0.85, 0.3, 0.65),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn depth_of_field_focus_tracks_actual_camera_and_looks_ahead_in_first_person() {
+        let boid = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(focus_distance(FollowMode::Off, Vec3::ZERO, boid, 1.0), None);
+        assert_eq!(
+            focus_distance(FollowMode::Chase, boid + Vec3::Z * 24.0, boid, 2.0),
+            Some(24.0)
+        );
+        assert_eq!(
+            focus_distance(FollowMode::Chase, boid, boid, 2.0),
+            Some(0.2)
+        );
+        assert_eq!(
+            focus_distance(FollowMode::FirstPerson, boid, boid, 2.0),
+            Some(20.0)
+        );
+        assert!(Follow::default().dof);
+        assert!(!Follow::default().enabled());
+    }
 
     #[test]
     fn spring_converges_with_same_end_state_at_every_frame_rate() {
@@ -534,6 +645,8 @@ mod tests {
         let mut app = crate::presentation::tests::clock_app();
         app.init_resource::<FollowRuntime>()
             .init_resource::<GlobalState>()
+            .init_resource::<crate::scene::Appearance>()
+            .add_systems(Update, crate::scene::sync_glow_camera)
             .add_systems(
                 Update,
                 follow_camera.after(crate::presentation::prepare_simulation),
@@ -547,6 +660,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Camera3d::default(),
+                Msaa::Sample4,
                 Transform::from_xyz(0.0, 0.0, 100.0),
                 Projection::Perspective(original.clone()),
                 PanOrbitCamera::default(),
@@ -565,6 +679,34 @@ mod tests {
                 .advance_by(std::time::Duration::from_millis(200));
             app.update();
         }
+        for style in [
+            crate::scene::SceneStyle::Glow,
+            crate::scene::SceneStyle::Classic,
+            crate::scene::SceneStyle::Studio,
+        ] {
+            app.world_mut()
+                .resource_mut::<crate::scene::Appearance>()
+                .style = style;
+            app.update();
+            assert_eq!(
+                app.world().get::<bevy::camera::Hdr>(camera).is_some(),
+                style == crate::scene::SceneStyle::Glow
+            );
+            assert!(app.world().get::<DepthOfField>(camera).is_some());
+            assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), Msaa::Sample4);
+        }
+        let dof = app.world().get::<DepthOfField>(camera).unwrap();
+        assert_eq!(dof.mode, DepthOfFieldMode::Gaussian);
+        assert_eq!(
+            dof.focal_distance,
+            app.world().resource::<GlobalState>().vehicle_size * 10.0
+        );
+        app.world_mut().resource_mut::<Presentation>().follow.dof = false;
+        app.update();
+        assert!(app.world().get::<DepthOfField>(camera).is_none());
+        app.world_mut().resource_mut::<Presentation>().follow.dof = true;
+        app.update();
+        assert!(app.world().get::<DepthOfField>(camera).is_some());
         let Projection::Perspective(first) = app.world().get::<Projection>(camera).unwrap() else {
             panic!()
         };
@@ -581,6 +723,7 @@ mod tests {
         };
         assert_eq!(restored.fov, original.fov);
         assert_eq!(restored.near, original.near);
+        assert!(app.world().get::<DepthOfField>(camera).is_none());
         {
             let mut presentation = app.world_mut().resource_mut::<Presentation>();
             presentation.follow.mode = FollowMode::Chase;
@@ -596,6 +739,27 @@ mod tests {
         assert_eq!(
             chase.near,
             app.world().resource::<GlobalState>().vehicle_size * 0.05
+        );
+        let sample_position = app
+            .world()
+            .resource::<FollowRuntime>()
+            .sample
+            .unwrap()
+            .predicted(app.world().resource::<SimulationClock>().elapsed_secs());
+        let actual_distance = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .distance(sample_position);
+        assert!(
+            (app.world()
+                .get::<DepthOfField>(camera)
+                .unwrap()
+                .focal_distance
+                - actual_distance)
+                .abs()
+                < 0.0001
         );
         let before = *app.world().get::<Transform>(camera).unwrap();
         let position = app

@@ -82,9 +82,24 @@ fn main() {
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
-        .add_systems(Update, fps_update_system)
+        .add_systems(Update, (fps_update_system, sync_ui_visibility))
         .add_systems(EguiPrimaryContextPass, ui)
         .run();
+}
+
+fn sync_ui_visibility(
+    presentation: Res<presentation::Presentation>,
+    mut roots: Query<&mut Visibility, With<Text>>,
+) {
+    if presentation.is_changed() {
+        for mut visibility in &mut roots {
+            *visibility = if presentation.ui_visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
 }
 
 // The built-in controller deliberately leaves input mapping to the application.
@@ -230,8 +245,11 @@ fn ui(
     mut presentation: ResMut<presentation::Presentation>,
     mut swarm_ui: swarm::SwarmUi,
 ) -> Result {
-    let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
+    if !presentation.ui_visible {
+        return Ok(());
+    }
+    let ctx = egui_context.ctx_mut()?;
     egui::Window::new("Menu")
         .default_size([340.0, 640.0])
         .vscroll(true)
@@ -386,6 +404,10 @@ fn ui(
             egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
                 vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
                 vehicle_appearance::ui(ui, &mut appearance.vehicles);
+                if appearance.style == scene::SceneStyle::Glow {
+                    ui.add(egui::Slider::new(&mut appearance.glow, 0.0..=20.0).text("glow"));
+                    ui.add(egui::Slider::new(&mut appearance.streak, 0.0..=3.0).text("streak"));
+                }
             });
         });
     let following = targets.iter().any(|selection| selection.0);
