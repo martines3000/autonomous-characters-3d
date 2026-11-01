@@ -58,6 +58,9 @@ struct TimedCommand {
 enum Command {
     Set(Setting),
     Follow(bool),
+    BoidFollow(crate::follow::FollowMode),
+    FollowNext,
+    FollowId(u32),
     Pause(bool),
     Preset(CameraPreset),
     Target(Vec3),
@@ -410,6 +413,13 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
+                ["boidcam", "chase"] => Command::BoidFollow(crate::follow::FollowMode::Chase),
+                ["boidcam", "first"] => Command::BoidFollow(crate::follow::FollowMode::FirstPerson),
+                ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
+                ["boidcam", "next"] => Command::FollowNext,
+                ["boidcam", "id", id] => {
+                    Command::FollowId(integer(id, 0, u32::MAX as usize)? as u32)
+                }
                 ["follow", value @ ("on" | "off")] => Command::Follow(switch(value)?),
                 ["attractor", "mouse"] => Command::Attractor(None),
                 ["attractor", x, y, z] => Command::Attractor(Some(Vec3::new(
@@ -489,8 +499,17 @@ fn run_scenario(world: &mut World) {
                 Command::Set(setting) => apply_setting(world, setting),
                 Command::Pause(paused) => world.resource_mut::<Presentation>().paused = paused,
                 Command::Preset(preset) => {
-                    world.resource_mut::<Presentation>().preset = Some(preset)
+                    let mut presentation = world.resource_mut::<Presentation>();
+                    presentation.follow.mode = crate::follow::FollowMode::Off;
+                    presentation.preset = Some(preset)
                 }
+                Command::BoidFollow(mode) => {
+                    let mut presentation = world.resource_mut::<Presentation>();
+                    presentation.cancel_camera_transition();
+                    presentation.follow.mode = mode;
+                }
+                Command::FollowNext => world.resource_mut::<Presentation>().follow.next(),
+                Command::FollowId(id) => world.resource_mut::<Presentation>().follow.select(id),
                 Command::Follow(follow) => {
                     for mut selection in world
                         .query_filtered::<&mut TargetSelection, With<Target>>()
@@ -1029,6 +1048,31 @@ mod tests {
             "attractor on",
         ] {
             assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn boid_follow_commands_validate_modes_and_spawn_ids() {
+        use crate::follow::FollowMode;
+        let commands = parse("0 boidcam chase\n0 boidcam id 4294967295\n1 boidcam next\n2 boidcam first\n3 boidcam off\n4 exit").unwrap();
+        assert_eq!(commands[0].command, Command::BoidFollow(FollowMode::Chase));
+        assert_eq!(commands[1].command, Command::FollowId(u32::MAX));
+        assert_eq!(commands[2].command, Command::FollowNext);
+        assert_eq!(
+            commands[3].command,
+            Command::BoidFollow(FollowMode::FirstPerson)
+        );
+        assert_eq!(commands[4].command, Command::BoidFollow(FollowMode::Off));
+        for line in [
+            "0 boidcam firstperson",
+            "0 boidcam id -1",
+            "0 boidcam id 4294967296",
+            "0 boidcam id 1.5",
+            "0 boidcam id",
+            "0 boidcam next 3",
+            "0 follow chase",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
         }
     }
 

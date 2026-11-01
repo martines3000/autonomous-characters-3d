@@ -69,10 +69,10 @@ pub struct Vehicle;
 
 // x: spawn ID, y: group, z: formation slot, w: reserved. Travels with the vehicle.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct VehicleMetadata(UVec4);
+pub(crate) struct VehicleMetadata(pub(crate) UVec4);
 
 #[derive(Component, Default)]
-struct VehicleVelocity(pub Vector3<f32>);
+pub(crate) struct VehicleVelocity(pub Vector3<f32>);
 
 #[derive(Component, Default)]
 struct VehicleAcceleration(pub Vector3<f32>);
@@ -2354,6 +2354,121 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_camera_tracks_spawn_id_across_sorts_count_edits_and_pause() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 257,
+            ..default()
+        };
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.0),
+        );
+        let id = flock.read_boids(&device, &queue)[13].metadata.x;
+        for frame in 0..12 {
+            if frame == 3 {
+                state.vehicle_count = 777;
+            }
+            // Both one-sort and two-sort paths must resolve the same spawn ID.
+            let mut params = gpu_params(&state, Vec3::ZERO, frame >= 6, 1.0 / 60.0);
+            if frame == 10 {
+                params.dt = 0.0;
+            }
+            params.track = UVec4::new(1, id, (frame as f32 / 60.0).to_bits(), 0);
+            gpu_step(&mut flock, &device, &queue, &params);
+            let actual = flock
+                .read_boids(&device, &queue)
+                .into_iter()
+                .find(|b| b.metadata.x == id)
+                .unwrap();
+            let tracked = flock.read_track(&device, &queue);
+            assert_eq!(tracked[4], UVec4::new(id, params.track.z, 1, 0));
+            for (record, expected) in tracked[..4].iter().zip(actual.state) {
+                assert_eq!(record.to_array(), expected.to_array().map(f32::to_bits));
+            }
+        }
+        // Truncation retains the first records before this step, then may sort them again.
+        let surviving_id = flock.read_boids(&device, &queue)[0].metadata.x;
+        state.vehicle_count = 31;
+        let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+        params.track = UVec4::new(1, surviving_id, 99.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        let actual = flock
+            .read_boids(&device, &queue)
+            .into_iter()
+            .find(|b| b.metadata.x == surviving_id)
+            .unwrap();
+        assert_eq!(
+            flock.read_track(&device, &queue)[0].to_array(),
+            actual[0].to_array().map(f32::to_bits)
+        );
+        params.track = UVec4::new(1, u32::MAX, 100.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        assert_eq!(flock.read_track(&device, &queue)[4], UVec4::ZERO);
+        // Index selection returns an ID whose state is exactly the sampled state.
+        params.track = UVec4::new(2, 7, 101.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        let actual = flock.read_boids(&device, &queue)[7];
+        let tracked = flock.read_track(&device, &queue);
+        assert_eq!(tracked[4].x, actual.metadata.x);
+        assert_eq!(
+            tracked[0].to_array(),
+            actual[0].to_array().map(f32::to_bits)
+        );
+        // Tracking is read-only with respect to boids. Sparse fixed inputs avoid
+        // neighbor-sum ordering differences between independent GPU atomic sorts.
+        let inputs: Vec<BoidData> = (0..64)
+            .map(|i| {
+                let mut boid: BoidData = [
+                    Vec4::new(i as f32 * 37.0, 0.0, 0.0, 0.0),
+                    Vec4::new(3.0, -4.0, 5.0, 0.0),
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+                .into();
+                boid.metadata.x = i * 2;
+                boid
+            })
+            .collect();
+        let mut off = GpuFlock::new(&device);
+        let mut on = GpuFlock::new(&device);
+        off.upload(&device, &queue, &inputs);
+        on.upload(&device, &queue, &inputs);
+        state.vehicle_count = inputs.len();
+        for _ in 0..8 {
+            let params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            gpu_step(&mut off, &device, &queue, &params);
+            gpu_step(
+                &mut on,
+                &device,
+                &queue,
+                &crate::gpu_flock::GpuParams {
+                    track: UVec4::new(1, 26, 0, 0),
+                    ..params
+                },
+            );
+        }
+        let mut a = off.read_boids(&device, &queue);
+        let mut b = on.read_boids(&device, &queue);
+        a.sort_by_key(|boid| boid.metadata.x);
+        b.sort_by_key(|boid| boid.metadata.x);
+        for (off, on) in a.iter().zip(&b) {
+            assert_eq!(off.metadata, on.metadata);
+            for (a, b) in off.state.iter().zip(on.state) {
+                assert_eq!(
+                    a.to_array().map(f32::to_bits),
+                    b.to_array().map(f32::to_bits)
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "headless GPU measurement; run in release with --nocapture --test-threads=1"]
     fn gpu_flocking_benchmark() {
         use crate::gpu_flock::{gpu_params, GpuFlock};
@@ -2361,6 +2476,7 @@ mod tests {
         const WARMUP: usize = 600;
         const STEPS: usize = 60;
         const DT: f32 = 1.0 / 60.0;
+        let track = std::env::var("GPU_BENCH_TRACK").is_ok_and(|v| v == "1");
         let counts = gpu_bench_values(
             "GPU_BENCH_COUNTS",
             &std::env::var("GPU_BENCH_COUNTS")
@@ -2460,9 +2576,12 @@ mod tests {
                     scene.formation.set_mode(formation_mode);
                     let formation = FormationFrame::fixed(scene.formation);
                     flock.set_scene(&scene);
-                    let params = gpu_params(&state, Vec3::ZERO, following, DT)
+                    let mut params = gpu_params(&state, Vec3::ZERO, following, DT)
                         .with_scene(&scene)
                         .with_formation(&formation, cap);
+                    if track {
+                        params.track = UVec4::new(1, 13, 0, 0);
+                    }
                     let mut timings = Vec::with_capacity(STEPS);
                     let mut warmup_steps = 0;
                     let mut status = String::from("complete");
@@ -2532,7 +2651,7 @@ mod tests {
                         "NA".into()
                     };
                     println!(
-                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
+                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} track={track} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
                         params.max_neighbors, timings.len(), gpu_bench_percentile(&timings, 50), gpu_bench_percentile(&timings, 95),
                         stats.sample_count, stats.nn_p1, stats.nn_p10, stats.nn_median, stats.close_percent, stats.mean_speed,
                     );

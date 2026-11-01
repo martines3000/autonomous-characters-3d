@@ -51,6 +51,7 @@ struct Params {
     formation_settings: vec4<f32>,
     predators: vec4<u32>,
     predator_settings: vec4<f32>,
+    track: vec4<u32>,
 };
 
 struct Boid {
@@ -636,4 +637,24 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
     let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)) | (group << 16u);
     instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
+}
+
+// Optional camera sample. No invocation or arena write when camera following is off.
+@compute @workgroup_size(256)
+fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let i = invocation.x;
+    if i >= params.count { return; }
+    var base = params.groups.z;
+    if params.dt > 0.0 { base = stepped_order_base(); }
+    let spawn_id = arena[read_order(base, i)].x;
+    if (params.track.x == 1u && spawn_id == params.track.y) ||
+       (params.track.x == 2u && i == params.track.y) {
+        let boid = boids[i];
+        let output = params.track.w;
+        arena[output] = bitcast<vec4<u32>>(vec4<f32>(boid.position, boid.wander_theta));
+        arena[output + 1u] = bitcast<vec4<u32>>(vec4<f32>(boid.velocity, boid.wander_phi));
+        arena[output + 2u] = bitcast<vec4<u32>>(boid.rotation);
+        arena[output + 3u] = bitcast<vec4<u32>>(boid.separation);
+        arena[output + 4u] = vec4<u32>(spawn_id, params.track.z, 1u, 0u);
+    }
 }

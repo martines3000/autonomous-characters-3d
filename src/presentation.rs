@@ -22,6 +22,9 @@ pub const MAX_SPEED: f32 = 4.0;
 #[derive(Resource, Default)]
 pub(crate) struct SimulationClock(Time<Virtual>);
 impl SimulationClock {
+    pub(crate) fn elapsed_secs(&self) -> f32 {
+        self.0.elapsed_secs()
+    }
     pub(crate) fn delta_secs_f64(&self) -> f64 {
         self.0.delta_secs_f64()
     }
@@ -144,6 +147,7 @@ pub struct Presentation {
     pub orbit: bool,
     pub orbit_speed: f32,
     pub preset: Option<CameraPreset>,
+    pub(crate) follow: crate::follow::Follow,
     manual_camera: bool,
     transition: Option<CameraTransition>,
 }
@@ -156,6 +160,7 @@ impl Default for Presentation {
             orbit: false,
             orbit_speed: 10.0,
             preset: None,
+            follow: default(),
             manual_camera: false,
             transition: None,
         }
@@ -166,6 +171,7 @@ impl Presentation {
     pub fn cancel_camera_transition(&mut self) {
         self.transition = None;
         self.preset = None;
+        self.follow.mode = crate::follow::FollowMode::Off;
     }
 }
 
@@ -220,9 +226,23 @@ fn presentation_input(
     presentation.manual_camera = !pointer
         && (buttons.pressed(MouseButton::Right)
             || buttons.pressed(MouseButton::Middle)
-            || scroll.delta != Vec2::ZERO);
+            || (scroll.delta != Vec2::ZERO && !presentation.follow.enabled()));
+    if presentation.manual_camera {
+        presentation.follow.mode = crate::follow::FollowMode::Off;
+    }
+    if !pointer && presentation.follow.enabled() {
+        presentation.follow.distance =
+            (presentation.follow.distance * (-scroll.delta.y * 0.1).exp()).clamp(2.0, 80.0);
+    }
     if keyboard {
         return;
+    }
+    if keys.just_pressed(KeyCode::KeyB) {
+        presentation.follow.mode = presentation.follow.mode.cycle();
+        presentation.transition = None;
+    }
+    if keys.just_pressed(KeyCode::KeyN) {
+        presentation.follow.next();
     }
     if keys.just_pressed(KeyCode::KeyP) {
         presentation.paused = !presentation.paused;
@@ -241,18 +261,22 @@ fn presentation_input(
     .zip(CameraPreset::ALL)
     {
         if keys.just_pressed(key) {
+            presentation.follow.mode = crate::follow::FollowMode::Off;
             presentation.preset = Some(preset);
         }
     }
 }
 
-fn animate_camera(
+pub(crate) fn animate_camera(
     mut presentation: ResMut<Presentation>,
     real: Res<Time<Real>>,
     state: Res<GlobalState>,
     targets: Query<&Transform, (With<Target>, Without<Camera3d>)>,
     mut cameras: Query<(&mut Transform, &mut PanOrbitCamera, &Projection), With<Camera3d>>,
 ) {
+    if presentation.follow.enabled() {
+        return;
+    }
     if presentation.manual_camera {
         presentation.transition = None;
         return;
@@ -276,7 +300,7 @@ fn animate_camera(
     if let Some(transition) = &mut presentation.transition {
         transition.elapsed += real.delta_secs();
         let t = (transition.elapsed / 0.6).min(1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
+        let smooth = transition_smoothstep(transition.elapsed);
         transform.translation = transition
             .start
             .translation
@@ -303,6 +327,11 @@ fn animate_camera(
     }
 }
 
+pub(crate) fn transition_smoothstep(elapsed: f32) -> f32 {
+    let t = (elapsed / 0.6).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
     ui.horizontal(|ui| {
         if ui
@@ -327,6 +356,32 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
             }
         }
     });
+    let previous_follow = presentation.follow.mode;
+    ui.horizontal(|ui| {
+        ui.label("Boid camera (B)");
+        egui::ComboBox::from_id_salt("follow_mode")
+            .selected_text(presentation.follow.mode.name())
+            .show_ui(ui, |ui| {
+                for mode in crate::follow::FollowMode::ALL {
+                    ui.selectable_value(&mut presentation.follow.mode, mode, mode.name());
+                }
+            });
+        if ui.button("Next boid (N)").clicked() {
+            presentation.follow.next();
+        }
+    });
+    if previous_follow != presentation.follow.mode {
+        presentation.transition = None;
+        presentation.preset = None;
+    }
+    if let Some(id) = presentation
+        .follow
+        .id
+        .filter(|_| presentation.follow.enabled())
+    {
+        ui.label(format!("Boid ID: {id}"));
+    }
+    ui.add(egui::Slider::new(&mut presentation.follow.distance, 2.0..=80.0).text("chase distance"));
     ui.checkbox(&mut presentation.orbit, "Auto-orbit (O)");
     ui.add(egui::Slider::new(&mut presentation.orbit_speed, -45.0..=45.0).text("orbit °/s"));
     ui.horizontal_wrapped(|ui| {
@@ -335,6 +390,7 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
                 .button(format!("{} {}", index + 1, preset.name()))
                 .clicked()
             {
+                presentation.follow.mode = crate::follow::FollowMode::Off;
                 presentation.preset = Some(preset);
             }
         }
@@ -354,6 +410,89 @@ pub(crate) mod tests {
             .init_resource::<Time>()
             .add_systems(Update, prepare_simulation);
         app
+    }
+
+    #[test]
+    fn follow_shortcuts_cycle_pick_scroll_and_exit() {
+        use crate::follow::FollowMode;
+        let mut app = App::new();
+        app.init_resource::<Presentation>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_systems(Update, presentation_input);
+        for expected in [FollowMode::Chase, FollowMode::FirstPerson, FollowMode::Off] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyB);
+            app.update();
+            assert_eq!(app.world().resource::<Presentation>().follow.mode, expected);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        }
+        app.world_mut().resource_mut::<Presentation>().follow.mode = FollowMode::Chase;
+        app.world_mut()
+            .resource_mut::<Presentation>()
+            .follow
+            .select(123);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyN);
+        app.update();
+        assert_eq!(app.world().resource::<Presentation>().follow.id, None);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        let distance = app.world().resource::<Presentation>().follow.distance;
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta
+            .y = 1.0;
+        app.update();
+        assert!(app.world().resource::<Presentation>().follow.distance < distance);
+        assert_eq!(
+            app.world().resource::<Presentation>().follow.mode,
+            FollowMode::Chase
+        );
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::ZERO;
+        for key in [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+        ] {
+            app.world_mut().resource_mut::<Presentation>().follow.mode = FollowMode::FirstPerson;
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            assert_eq!(
+                app.world().resource::<Presentation>().follow.mode,
+                FollowMode::Off
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        }
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            app.world_mut().resource_mut::<Presentation>().follow.mode = FollowMode::Chase;
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(button);
+            app.update();
+            assert_eq!(
+                app.world().resource::<Presentation>().follow.mode,
+                FollowMode::Off
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .reset_all();
+        }
     }
 
     #[test]

@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 124 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 147 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -75,6 +75,9 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
 | P | Pause / resume vehicle simulation |
 | O | Toggle real-time auto-orbit |
+| B | Boid camera: Off → Chase → First person → Off |
+| N | Pick a random boid for the camera |
+| Scroll while riding | Change chase distance |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
 
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
@@ -297,6 +300,28 @@ position when requested, at 30% of the overview fit distance; it intentionally c
 does not continuously track the target. Every preset scales with count, including the close-up.
 Manual pan/zoom remains available afterwards.
 
+### Ride a boid
+
+**Presentation → Follow** offers Off (default), Chase and First person. **B** cycles these modes;
+**N** / **Next boid** picks a random living vehicle. The UI displays its stable spawn ID. Scroll
+or the chase-distance slider adjusts the chase view. A right/middle drag or preset **1–5** exits
+follow; leaving First person restores the prior FOV and near plane. Automatic count framing and
+Frame world are skipped while follow is on. Chase distance and height scale with physical vehicle size
+and `world_scale(count)`; first-person placement scales with physical body size.
+
+Chase follows a smoothed velocity heading with a critically damped spring and looks a quarter
+simulated second ahead. First person sits two physical size units ahead of the vehicle center,
+uses a 75° vertical FOV. Both follow modes use a near plane of `0.05 * vehicle_size`. Render-only proportions and
+custom model extents can put unusually long/wide models into view. GPU samples arrive through
+an asynchronous 80-byte Bevy readback (typically a few frames late); prediction uses the simulation
+clock, so pause freezes prediction and **0.1×** produces slow motion. CPU modes sample the matching
+spawn ID directly. Lost IDs, truncation and CPU/GPU transitions automatically pick another boid.
+Zero count holds the view until vehicles return.
+
+Auto-orbit yaws the chase offset in real time, including while paused for bullet-time shots.
+First person ignores auto-orbit. The boid camera never changes vehicle steering. With it off,
+there is no tracking dispatch, buffer copy or readback entity; the simulation passes stay unchanged.
+
 ### Vehicle appearance
 
 The **Vehicles** section changes the running flock without respawning or resetting it. Shapes are
@@ -491,6 +516,7 @@ src/
 ├── swarm.rs         # optional cursor field, groups, obstacles and Swarm UI
 ├── formation.rs     # analytic targets and simulated-substep morph snapshot
 ├── predator.rs      # flee fields, masks, simulated-substep paths and controls
+├── follow.rs        # optional boid chase/first-person camera and tiny GPU readback
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
@@ -683,7 +709,10 @@ pgrep -a autonomous   # no process should remain after exit
 | `set orbit` | `on` / `off`; default off; uses real time |
 | `set orbit_speed` | Degrees per real second, −45–45; default 10 |
 | `preset` | `front`, `side`, `top`, `overview`, `closeup`; smooth transition, waits for manual input release |
-| `follow` | `on` / `off`; uses the existing target selection |
+| `follow on`, `follow off` | Select / clear the target sphere for target seeking |
+| `boidcam chase`, `boidcam first`, `boidcam off` | Boid chase camera, first-person camera, or exit |
+| `boidcam next` | Pick a random living boid; retains camera mode |
+| `boidcam id` | Stable spawn ID, integer 0–4,294,967,295; retains camera mode; missing IDs auto-repick |
 | `set groups` | `off` (default) or integer `2`–`8`; membership changes use modulo mapping |
 | `group_target` | `group x y z` sets a target, or `group off` clears it; group index 0–7, world coordinates within ±10,000,000 |
 | `group_color` | `group RRGGBB` or `group #RRGGBB`; group index 0–7; accepts inactive table entries |
@@ -762,6 +791,7 @@ CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::wall_containmen
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
 # Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
 # Optional GPU_BENCH_FORMATION=off (default), sphere or helix; active shapes use the chosen cap.
+# Optional GPU_BENCH_TRACK=1: include the boid-camera track kernel (no CPU readback).
 # Optional GPU_BENCH_PREDATORS=0 (default) or 1..4: orbiting fields, including 512-byte/frame uploads.
 # GPU_BENCH_COMBINED=1 enables groups 2, four spheres, sphere formation, attractor and four predators.
 # Optional GPU_BENCH_WARMUP=1..6000 (default 600); 3540 plus 60 timed steps gives 60 simulated seconds.

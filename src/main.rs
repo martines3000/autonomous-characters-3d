@@ -1,3 +1,4 @@
+mod follow;
 mod formation;
 mod gpu_flock;
 mod instancing;
@@ -72,6 +73,7 @@ fn main() {
             vehicle_model::VehicleModelPlugin,
             scenario::ScenarioPlugin,
             presentation::PresentationPlugin,
+            follow::FollowPlugin,
             swarm::SwarmPlugin,
         ))
         .add_systems(
@@ -93,17 +95,19 @@ fn camera_input(
     mut contexts: EguiContexts,
     mut cameras: Query<&mut PanOrbitCamera>,
     mut previous_mode: Local<u8>,
+    presentation: Option<Res<presentation::Presentation>>,
 ) {
     let blocked = contexts
         .ctx_mut()
         .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
+    let following = presentation.is_some_and(|p| p.follow.enabled());
     let mode = if blocked {
         0
     } else if buttons.pressed(MouseButton::Right) {
         1
     } else if buttons.pressed(MouseButton::Middle) {
         2
-    } else if scroll.delta.y != 0.0 {
+    } else if !following && scroll.delta.y != 0.0 {
         3
     } else {
         0
@@ -122,7 +126,7 @@ fn camera_input(
         if mode == 1 || mode == 2 {
             camera.send_screenspace_input(motion.delta);
         }
-        if !blocked && scroll.delta.y != 0.0 {
+        if !blocked && !following && scroll.delta.y != 0.0 {
             let scale = if scroll.unit == MouseScrollUnit::Line {
                 150.0
             } else {
@@ -415,11 +419,13 @@ fn ui(
                     "Vehicles wander freely."
                 });
             }
+            ui.label(format!("Boid camera: {}", presentation.follow.mode.name()));
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
                 for (input, action) in [
                     ("Hold F", "Apply cursor field (Swarm)"),
                     ("P / O", "Pause / auto-orbit"),
+                    ("B / N", "Boid camera / next boid"),
                     (
                         "1 / 2 / 3 / 4 / 5",
                         "Front / side / top / overview / target",
@@ -428,7 +434,7 @@ fn ui(
                     ("Left-click background", "Stop following"),
                     ("Right-drag", "Orbit camera"),
                     ("Middle-drag", "Pan camera"),
-                    ("Scroll", "Zoom camera"),
+                    ("Scroll", "Zoom / chase distance"),
                     ("W / A / S / D", "Move selected target"),
                     ("Space / Left Shift", "Move target up / down"),
                 ] {

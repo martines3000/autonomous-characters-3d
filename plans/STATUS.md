@@ -2,7 +2,7 @@
 
 ## Current work
 
-- Boid follow camera on `feat/boid-camera-and-fixes` (in progress). Wall containment and group rebalance are committed there; see Completed.
+No active plans.
 
 ## Prioritized future tasks
 
@@ -39,6 +39,8 @@ CI (finding F12) is not wanted by the owner.
 | F14 | Advisory matches in the lockfile | Resolved in `262dc33`: `cargo deny check advisories` passes for the native target |
 
 ## Completed
+
+- [Boid follow camera](completed/2026-11-01-boid-follow-camera.md) (2026-11-01): optional Chase/First person, stable spawn IDs, asynchronous 80-byte GPU samples, direct CPU sampling, simulation-clock prediction and paused real-time orbit. B/N, scroll, UI and reproducible scenario controls; off adds no tracking dispatch/readback. 130 normal and 14 GPU tests pass. RX 7900 XT 1M wander tracking adds about 0.10 ms (2.2%); 20k app means 1.298 ms off / 1.328 ms chase at 881×1119.
 
 - [Outside-only wall containment and group rebalance](completed/2026-11-01-wall-containment.md) (2026-11-01): 20k settled wander speed rises from roughly 29.3 to 39.2 units/s; maximum measured GPU overshoot is 23.399 units and the existing <50 assertion passes. Group-count edits spread existing members by spawn ID; Off handling and carried metadata remain intact.
 - [Visual showcase, custom models and swarm mechanics](completed/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, 2026-11-01): seven stages on `feat/visual-showcase-and-swarm-features`, `e635c6d`..`a0d3ed7`, pushed, not merged; all new features optional and off by default; GPU steps unchanged with them off (1M wander about 4.6 ms, follow about 7.9 ms at cap 16).

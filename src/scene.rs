@@ -484,6 +484,11 @@ pub(crate) fn frame_world(
     let settled = debounce.pending
         && !appearance.count_editing
         && time.elapsed_secs_f64() - debounce.changed_at >= 0.35;
+    if presentation.as_ref().is_some_and(|p| p.follow.enabled()) {
+        debounce.pending = false;
+        appearance.frame_requested = false;
+        return;
+    }
     let requested = appearance.frame_requested || (appearance.auto_frame && settled);
     if settled {
         debounce.pending = false;
