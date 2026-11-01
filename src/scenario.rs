@@ -120,6 +120,8 @@ enum Setting {
     Style(SceneStyle),
     Environment(crate::environment::Environment),
     Shadows(bool),
+    Volumetric(bool),
+    VolumetricSteps(u32),
     ShadowCap(usize),
     AmbientOcclusion(bool),
     Glow(f32),
@@ -260,6 +262,8 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("style", "classic") => Setting::Style(SceneStyle::Classic),
         ("style", "glow") => Setting::Style(SceneStyle::Glow),
         ("environment", _) => Setting::Environment(value.parse()?),
+        ("volumetric", _) => Setting::Volumetric(switch(value)?),
+        ("volumetric_steps", _) => Setting::VolumetricSteps(integer(value, 16, 128)? as u32),
         ("shadows", _) => Setting::Shadows(switch(value)?),
         ("shadow_cap", _) => Setting::ShadowCap(integer(value, 0, 1_000_000)?),
         ("ambient_occlusion", _) => Setting::AmbientOcclusion(switch(value)?),
@@ -801,6 +805,10 @@ fn apply_setting(world: &mut World, setting: Setting) {
         }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
         Setting::Environment(value) => world.resource_mut::<Appearance>().environment = value,
+        Setting::Volumetric(value) => world.resource_mut::<Appearance>().volumetric = value,
+        Setting::VolumetricSteps(value) => {
+            world.resource_mut::<Appearance>().volumetric_steps = value
+        }
         Setting::Shadows(value) => world.resource_mut::<Appearance>().shadows = value,
         Setting::ShadowCap(value) => world.resource_mut::<Appearance>().shadow_cap = value,
         Setting::AmbientOcclusion(value) => {
@@ -1528,6 +1536,35 @@ mod tests {
         assert!(parse("0 measure begin sample").is_err());
         assert!(parse("0 measure begin a\n1 measure begin b\n2 measure end").is_err());
         assert!(parse("0 measure begin a\n1 exit\n2 measure end").is_err());
+    }
+
+    #[test]
+    fn volumetric_commands_parse_apply_and_reject_invalid_quality() {
+        let commands = parse("0 set volumetric on\n0 set volumetric_steps 16\n0 set volumetric off\n0 set volumetric_steps 128").unwrap();
+        assert_eq!(commands[0].command, Command::Set(Setting::Volumetric(true)));
+        assert_eq!(
+            commands[1].command,
+            Command::Set(Setting::VolumetricSteps(16))
+        );
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        for command in commands {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(!world.resource::<Appearance>().volumetric);
+        assert_eq!(world.resource::<Appearance>().volumetric_steps, 128);
+        for bad in [
+            "volumetric maybe",
+            "volumetric_steps 0",
+            "volumetric_steps 15",
+            "volumetric_steps 129",
+            "volumetric_steps 64.5",
+            "volumetric_steps NaN",
+        ] {
+            assert!(parse(&format!("0 set {bad}")).is_err());
+        }
     }
 
     #[test]

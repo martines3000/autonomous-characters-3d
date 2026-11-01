@@ -182,6 +182,22 @@ Glow bloom, bank/flap motion, boid chase and its depth of field remain available
 The instanced PBR path inherits Bevy's environment-map view key and both view bind groups, so birds
 receive diffuse sky color, roughness-dependent reflections and directional sunlight in the same draw.
 
+### Volumetric light and sun glare
+
+**Scene → Volumetric light** (default Off; `set volumetric on|off`) enables shadowed sun shafts
+with an active Environment. Sunset uses warm low-angle scattering, Midday stays subtle, and
+Underwater uses stronger cyan scattering from the surface. Environment Off has no effect.
+Volumetrics imply sun shadow maps and flock casting, within the existing **Flock shadow cap**.
+The saved Shadows checkbox stays editable; disabling volumetrics restores its current preference.
+Depth/normal prepasses follow the same effective shadow policy. MSAA remains unchanged.
+
+**Ray steps** (`set volumetric_steps 16..128`, default 64) trades ray quality for frame time.
+Lower steps can show bands; no temporal jitter is used without TAA. Medium density scales with
+world size; a cached 32³ density texture shapes underwater particle columns along the sun.
+Any active environment also adds subtle high-threshold sun/bright-sky Bloom;
+Glow retains its original Bloom settings. Showcase presets keep volumetrics Off; enable them
+**after** `showcase fish`, `showcase starling` or another preset. Fish occlude the rays.
+
 ### Flock shadows and ambient occlusion
 
 **Scene → Shadows** (default Off; scenario `set shadows on|off`) enables three cascades on the
@@ -190,6 +206,8 @@ still hide the floor. Cascade reach follows world size/camera distance, with a t
 while riding. Animation, procedural flap/swim and Glow streak share one vertex shader across passes.
 
 Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows, Ambient occlusion and Motion blur all Off,
+Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows, Volumetric light and
+Ambient occlusion all Off,
 the original color pipeline, MSAA and scene defaults remain unchanged. **Flock shadow cap** defaults
 to 200,000 (`set shadow_cap 0..1000000`); counts above it skip flock casting automatically, while
 other scene shadows remain enabled. Zero disables flock casting. Lowering the count resumes it.
@@ -870,6 +888,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |
 | `set environment` | `off` (default), `sunset`, `midday`, `underwater`; independent of Style |
+| `set volumetric` | `on` / `off` (default); active environments imply sun/flock shadows, respecting the casting cap |
+| `set volumetric_steps` | Integer 16–128 (default 64); higher improves shafts and costs more |
 | `set glow` | Emission strength 0–20, default 4; Glow only |
 | `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
 | `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |

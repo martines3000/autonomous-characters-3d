@@ -174,6 +174,8 @@ pub struct Appearance {
     pub glow: f32,
     pub streak: f32,
     pub shadows: bool,
+    pub volumetric: bool,
+    pub volumetric_steps: u32,
     pub shadow_cap: usize,
     pub ambient_occlusion: bool,
 }
@@ -191,9 +193,22 @@ impl Default for Appearance {
             glow: 4.0,
             streak: 0.8,
             shadows: false,
+            volumetric: false,
+            volumetric_steps: 64,
             shadow_cap: 200_000,
             ambient_occlusion: false,
         }
+    }
+}
+
+impl Appearance {
+    pub fn volumetric_active(&self) -> bool {
+        self.volumetric && self.environment != crate::environment::Environment::Off
+    }
+
+    /// Preserve the user's Shadows preference while shafts need flock occluders.
+    pub fn effective_shadows(&self) -> bool {
+        self.shadows || self.volumetric_active()
     }
 }
 
@@ -223,33 +238,60 @@ impl Plugin for ScenePlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn sync_glow_camera(
     mut commands: Commands,
     appearance: Res<Appearance>,
-    cameras: Query<(Entity, Has<Hdr>, Has<Bloom>), With<Camera3d>>,
+    cameras: Query<(Entity, Has<Hdr>, Option<&Bloom>), With<Camera3d>>,
 ) {
+    let desired = if appearance.style == SceneStyle::Glow {
+        Some(Bloom {
+            intensity: 0.18,
+            low_frequency_boost: 0.2,
+            composite_mode: BloomCompositeMode::Additive,
+            prefilter: BloomPrefilter {
+                threshold: 1.0,
+                threshold_softness: 0.2,
+            },
+            ..default()
+        })
+    } else if appearance.environment != crate::environment::Environment::Off {
+        Some(Bloom {
+            intensity: 0.035,
+            low_frequency_boost: 0.0,
+            composite_mode: BloomCompositeMode::Additive,
+            prefilter: BloomPrefilter {
+                // The procedural surface highlight has a lower HDR range than the HDRIs.
+                threshold: if appearance.environment == crate::environment::Environment::Underwater
+                {
+                    1.5
+                } else {
+                    3.0
+                },
+                threshold_softness: 0.15,
+            },
+            ..default()
+        })
+    } else {
+        None
+    };
     for (entity, hdr, bloom) in &cameras {
-        if appearance.style == SceneStyle::Glow {
-            if !hdr || !bloom {
-                commands.entity(entity).insert((
-                    Hdr,
-                    Bloom {
-                        intensity: 0.18,
-                        low_frequency_boost: 0.2,
-                        composite_mode: BloomCompositeMode::Additive,
-                        prefilter: BloomPrefilter {
-                            threshold: 1.0,
-                            threshold_softness: 0.2,
-                        },
-                        ..default()
-                    },
-                ));
+        if let Some(desired) = &desired {
+            if !hdr {
+                commands.entity(entity).insert(Hdr);
+            }
+            // These values distinguish Glow and environment glare policies.
+            if bloom.is_none_or(|old| {
+                old.intensity != desired.intensity
+                    || old.prefilter.threshold != desired.prefilter.threshold
+            }) {
+                commands.entity(entity).insert(desired.clone());
             }
         } else {
-            if bloom {
+            if bloom.is_some() {
                 commands.entity(entity).remove::<Bloom>();
             }
-            if hdr && appearance.environment == crate::environment::Environment::Off {
+            if hdr {
                 commands.entity(entity).remove::<Hdr>();
             }
         }
@@ -282,7 +324,7 @@ pub(crate) fn sync_shadow_camera(
 ) {
     for (entity, depth, normal, msaa, ao, saved) in &cameras {
         let mut camera = commands.entity(entity);
-        if appearance.shadows
+        if appearance.effective_shadows()
             || appearance.ambient_occlusion
             || presentation.as_ref().is_some_and(|p| p.motion_blur)
         {
@@ -357,10 +399,10 @@ fn sync_shadow_floor(
         if !matches!(surface, StudioSurface::Ground) {
             continue;
         }
-        if appearance.shadows && no_receiver {
+        if appearance.effective_shadows() && no_receiver {
             commands.entity(entity).remove::<NotShadowReceiver>();
         }
-        if !appearance.shadows && !no_receiver {
+        if !appearance.effective_shadows() && !no_receiver {
             commands.entity(entity).insert(NotShadowReceiver);
         }
     }
@@ -376,8 +418,8 @@ fn sync_shadow_lights(
     let eye = cameras.iter().next().map_or(Vec3::ZERO, |t| t.translation);
     let riding = presentation.follow.mode != crate::follow::FollowMode::Off;
     for (mut light, mut cascades) in &mut lights {
-        light.shadow_maps_enabled = appearance.shadows;
-        if appearance.shadows {
+        light.shadow_maps_enabled = appearance.effective_shadows();
+        if appearance.effective_shadows() {
             *cascades = shadow_cascades(state.vehicle_count, eye, riding);
             // Much smaller than Bevy's 1.8-unit default: the birds are only a few units long.
             light.shadow_normal_bias = 0.15;
@@ -960,6 +1002,116 @@ mod tests {
             }
         }
         assert_eq!(SceneStyle::default(), SceneStyle::Studio);
+    }
+
+    #[test]
+    fn volumetric_transitions_restore_saved_shadows_and_glow_bloom() {
+        use crate::environment::Environment;
+        use bevy::light::Skybox;
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<crate::volumetric::WaterParticles>()
+            .add_systems(
+                Update,
+                (
+                    sync_shadow_camera,
+                    sync_shadow_lights,
+                    sync_shadow_floor,
+                    sync_glow_camera,
+                    crate::volumetric::sync_volumetric,
+                ),
+            );
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Skybox::default(), Msaa::Sample4))
+            .id();
+        let sun = app
+            .world_mut()
+            .spawn((KeyLight, DirectionalLight::default()))
+            .id();
+        let floor = app
+            .world_mut()
+            .spawn((StudioSurface::Ground, NotShadowReceiver))
+            .id();
+        for saved_shadows in [false, true] {
+            for (environment, enabled) in [
+                (Environment::Underwater, true),
+                (Environment::Off, true),
+                (Environment::Sunset, true),
+                (Environment::Midday, false),
+                (Environment::Off, true),
+                (Environment::Off, false),
+            ] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.shadows = saved_shadows;
+                    appearance.environment = environment;
+                    appearance.volumetric = enabled;
+                }
+                app.update();
+                let active = enabled && environment != Environment::Off;
+                let shadows = saved_shadows || active;
+                assert_eq!(
+                    app.world()
+                        .get::<DirectionalLight>(sun)
+                        .unwrap()
+                        .shadow_maps_enabled,
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(camera).contains::<DepthPrepass>(),
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(camera).contains::<NormalPrepass>(),
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(floor).contains::<NotShadowReceiver>(),
+                    !shadows
+                );
+                assert_eq!(app.world().resource::<Appearance>().shadows, saved_shadows);
+                assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            }
+        }
+        for environment in Environment::ALL {
+            for style in [
+                SceneStyle::Studio,
+                SceneStyle::Glow,
+                SceneStyle::Classic,
+                SceneStyle::Glow,
+            ] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.environment = environment;
+                    appearance.style = style;
+                }
+                app.update();
+                let bloom = app.world().get::<Bloom>(camera);
+                if style == SceneStyle::Glow {
+                    let bloom = bloom.unwrap();
+                    assert_eq!(bloom.intensity, 0.18);
+                    assert_eq!(bloom.low_frequency_boost, 0.2);
+                    assert_eq!(bloom.prefilter.threshold, 1.0);
+                } else if environment != Environment::Off {
+                    let bloom = bloom.unwrap();
+                    assert_eq!(bloom.intensity, 0.035);
+                    assert_eq!(
+                        bloom.prefilter.threshold,
+                        if environment == Environment::Underwater {
+                            1.5
+                        } else {
+                            3.0
+                        }
+                    );
+                } else {
+                    assert!(bloom.is_none());
+                }
+            }
+        }
     }
 
     #[test]
