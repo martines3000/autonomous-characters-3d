@@ -165,11 +165,17 @@ fn vehicle_spawner(
     while cpu_vehicle_count(&state) > vehicle_spawner.vehicle_count {
         let id = vehicle_spawner.next_id;
         vehicle_spawner.next_id = id.checked_add(1).expect("CPU spawn ID exhausted");
+        let position = (Vec3::new(rand::random(), rand::random(), rand::random())
+            - Vec3::splat(0.5))
+            * spawn_size(state.vehicle_count);
+        let velocity = random_direction().mul(state.vehicle_max_speed);
+        let rotation = if state.motion.classic_heading {
+            Quat::IDENTITY
+        } else {
+            crate::motion::initial(velocity.into())
+        };
         commands
-            .spawn(Transform::from_translation(
-                (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
-                    * spawn_size(state.vehicle_count),
-            ))
+            .spawn(Transform::from_translation(position).with_rotation(rotation))
             .insert(Vehicle)
             .insert(VehicleMetadata(UVec4::new(
                 id,
@@ -177,9 +183,7 @@ fn vehicle_spawner(
                 0,
                 0,
             )))
-            .insert(VehicleVelocity(
-                random_direction().mul(state.vehicle_max_speed),
-            ))
+            .insert(VehicleVelocity(velocity))
             .insert(VehicleAcceleration(Vector3::zeros()))
             .insert(VehicleWanderRotation {
                 theta: 0.0,
@@ -482,6 +486,7 @@ fn update(
     vehicle_query
         .par_iter_mut()
         .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
+            let old_velocity = velocity.0;
             velocity.0 += acceleration.0 * (time.delta_secs() * REFERENCE_HZ);
             limit(&mut velocity.0, state.vehicle_max_speed);
 
@@ -491,7 +496,15 @@ fn update(
 
             let direction = normalize_or_zero(velocity.0);
             if direction != Vector3::zeros() {
-                transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction.into());
+                transform.rotation = crate::motion::orientation(
+                    transform.rotation,
+                    direction.into(),
+                    old_velocity.into(),
+                    velocity.0.into(),
+                    time.delta_secs(),
+                    state.motion,
+                    state.vehicle_max_speed,
+                );
             }
 
             acceleration.0 *= 0.0;
@@ -2355,6 +2368,88 @@ mod tests {
 
     #[test]
     #[ignore = "needs a GPU"]
+    fn gpu_banked_rotation_parity_and_position_velocity_bit_preservation() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        let (device, queue) = gpu_device();
+        let inputs: Vec<BoidData> = (0..64)
+            .map(|i| {
+                let mut boid: BoidData = [
+                    Vec4::new(
+                        (i % 8) as f32 * 40.0 - 140.0,
+                        (i / 8) as f32 * 40.0 - 140.0,
+                        0.0,
+                        0.0,
+                    ),
+                    Vec4::new(3.0 + (i % 3) as f32, 4.0, 7.0 - (i % 5) as f32, 0.0),
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+                .into();
+                boid.metadata.x = i;
+                boid
+            })
+            .collect();
+        let mut natural = GpuFlock::new(&device);
+        let mut classic = GpuFlock::new(&device);
+        natural.upload(&device, &queue, &inputs);
+        classic.upload(&device, &queue, &inputs);
+        let mut state = GlobalState {
+            vehicle_count: inputs.len(),
+            vehicle_wander_radius: 0.0,
+            ..default()
+        };
+        let mut previous: std::collections::HashMap<_, _> =
+            inputs.into_iter().map(|b| (b.metadata.x, b)).collect();
+        let mut different = false;
+        for _ in 0..16 {
+            let params = gpu_params(&state, Vec3::new(120.0, 200.0, 80.0), true, 1.0 / 60.0);
+            gpu_step(&mut natural, &device, &queue, &params);
+            state.motion.classic_heading = true;
+            gpu_step(
+                &mut classic,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::new(120.0, 200.0, 80.0), true, 1.0 / 60.0),
+            );
+            state.motion.classic_heading = false;
+            let a = natural.read_boids(&device, &queue);
+            let b: std::collections::HashMap<_, _> = classic
+                .read_boids(&device, &queue)
+                .into_iter()
+                .map(|b| (b.metadata.x, b))
+                .collect();
+            for boid in &a {
+                let old = previous[&boid.metadata.x];
+                for record in [0, 1, 3] {
+                    assert_eq!(
+                        boid[record].to_array().map(f32::to_bits),
+                        b[&boid.metadata.x][record].to_array().map(f32::to_bits)
+                    );
+                }
+                let velocity: Vector3<f32> = boid[1].truncate().into();
+                let expected = crate::motion::orientation(
+                    Quat::from_vec4(old[2]),
+                    normalize_or_zero(velocity).into(),
+                    old[1].truncate(),
+                    boid[1].truncate(),
+                    1.0 / 60.0,
+                    state.motion,
+                    state.vehicle_max_speed,
+                );
+                assert!(
+                    expected.dot(Quat::from_vec4(boid[2])).abs() > 1.0 - 1e-5,
+                    "id={}",
+                    boid.metadata.x
+                );
+                different |= boid[2] != b[&boid.metadata.x][2];
+            }
+            previous = a.into_iter().map(|b| (b.metadata.x, b)).collect();
+        }
+        assert!(different);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
     fn gpu_camera_tracks_spawn_id_across_sorts_count_edits_and_pause() {
         use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
         let (device, queue) = gpu_device();
@@ -2476,6 +2571,7 @@ mod tests {
         const WARMUP: usize = 600;
         const STEPS: usize = 60;
         const DT: f32 = 1.0 / 60.0;
+        let classic = std::env::var("GPU_BENCH_CLASSIC_HEADING").is_ok_and(|v| v == "1");
         let track = std::env::var("GPU_BENCH_TRACK").is_ok_and(|v| v == "1");
         let counts = gpu_bench_values(
             "GPU_BENCH_COUNTS",
@@ -2554,6 +2650,7 @@ mod tests {
                         gpu_max_neighbors: cap,
                         ..default()
                     };
+                    state.motion.classic_heading = classic;
                     state.groups.count = groups;
                     let mut scene = SwarmScene::default();
                     for index in 0..obstacle_count {
@@ -2651,7 +2748,7 @@ mod tests {
                         "NA".into()
                     };
                     println!(
-                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} track={track} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
+                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} track={track} classic_heading={classic} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
                         params.max_neighbors, timings.len(), gpu_bench_percentile(&timings, 50), gpu_bench_percentile(&timings, 95),
                         stats.sample_count, stats.nn_p1, stats.nn_p10, stats.nn_median, stats.close_percent, stats.mean_speed,
                     );
@@ -3609,6 +3706,10 @@ mod tests {
             &[[Vec4::ZERO, Vec4::ZERO, rotation, Vec4::ZERO].into()],
         );
         let state = GlobalState {
+            motion: crate::motion::MotionSettings {
+                classic_heading: true,
+                ..default()
+            },
             mode: SimulationMode::Gpu,
             vehicle_count: 1,
             ..default()
@@ -3983,6 +4084,72 @@ mod tests {
         let mut velocity = Vector3::repeat(80.0);
         limit(&mut velocity, 80.0);
         assert!((velocity.magnitude() - 80.0).abs() <= 1e-3);
+    }
+
+    #[test]
+    fn banking_keeps_cpu_position_and_velocity_bits_identical_to_classic() {
+        let make = |classic_heading| {
+            let mut app = App::new();
+            let state = GlobalState {
+                motion: crate::motion::MotionSettings {
+                    classic_heading,
+                    ..default()
+                },
+                ..default()
+            };
+            app.insert_resource(state)
+                .init_resource::<Time>()
+                .add_systems(Update, update);
+            let entity = app
+                .world_mut()
+                .spawn((
+                    Vehicle,
+                    Transform::from_xyz(1.0, 2.0, 3.0),
+                    VehicleVelocity(Vector3::new(-3.0, 8.0, 12.0)),
+                    VehicleAcceleration::default(),
+                ))
+                .id();
+            (app, entity)
+        };
+        let (mut classic, a) = make(true);
+        let (mut natural, b) = make(false);
+        for i in 0..90 {
+            let acceleration = Vector3::new((i as f32 * 0.1).sin() * 20.0, -3.0, 2.0);
+            for (app, entity) in [(&mut classic, a), (&mut natural, b)] {
+                app.world_mut()
+                    .get_mut::<VehicleAcceleration>(entity)
+                    .unwrap()
+                    .0 = acceleration;
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_by(Duration::from_secs_f64(1.0 / 60.0));
+                app.update();
+            }
+            assert_eq!(
+                classic
+                    .world()
+                    .get::<Transform>(a)
+                    .unwrap()
+                    .translation
+                    .to_array()
+                    .map(f32::to_bits),
+                natural
+                    .world()
+                    .get::<Transform>(b)
+                    .unwrap()
+                    .translation
+                    .to_array()
+                    .map(f32::to_bits)
+            );
+            assert_eq!(
+                Vec3::from(classic.world().get::<VehicleVelocity>(a).unwrap().0)
+                    .to_array()
+                    .map(f32::to_bits),
+                Vec3::from(natural.world().get::<VehicleVelocity>(b).unwrap().0)
+                    .to_array()
+                    .map(f32::to_bits)
+            );
+        }
     }
 
     #[test]

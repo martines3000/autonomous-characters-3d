@@ -2,6 +2,7 @@ mod follow;
 mod formation;
 mod gpu_flock;
 mod instancing;
+mod motion;
 mod octree;
 mod predator;
 mod presentation;
@@ -177,6 +178,7 @@ impl SimulationMode {
 struct GlobalState {
     attractor: swarm::Attractor,
     groups: swarm::Groups,
+    motion: motion::MotionSettings,
 
     // Basic info
     vehicle_count: usize,
@@ -213,6 +215,7 @@ impl Default for GlobalState {
         Self {
             attractor: default(),
             groups: default(),
+            motion: default(),
             vehicle_count: 20_000,
             vehicle_size: 1.0,
             vehicle_mass: 60.0,
@@ -404,6 +407,12 @@ fn ui(
             egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
                 vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
                 vehicle_appearance::ui(ui, &mut appearance.vehicles);
+                egui::CollapsingHeader::new("Motion").default_open(true).show(ui, |ui| {
+                    ui.checkbox(&mut state.motion.classic_heading, "Classic heading");
+                    ui.add(egui::Slider::new(&mut state.motion.bank, 0.0..=1.0).text("Banking"));
+                    ui.add(egui::Slider::new(&mut state.motion.flap, 0.0..=1.5).text("Flap / Swim amplitude"));
+                    ui.add(egui::Slider::new(&mut state.motion.frequency, 0.0..=3.0).text("speed → frequency"));
+                });
                 if appearance.style == scene::SceneStyle::Glow {
                     ui.add(egui::Slider::new(&mut appearance.glow, 0.0..=20.0).text("glow"));
                     ui.add(egui::Slider::new(&mut appearance.streak, 0.0..=3.0).text("streak"));

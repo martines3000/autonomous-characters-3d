@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 152 tests, including GPU parity tests and seeded benchmarks |
+| Tests | None | 160 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -77,6 +77,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | O | Toggle real-time auto-orbit |
 | B | Boid camera: Off → Chase → First person → Off |
 | N | Pick a random boid for the camera |
+| Vehicles → Motion | Banking, Classic heading, Flap/Swim and speed-frequency controls |
 | Presentation → Depth of field | Toggle boid-camera blur; aperture controls strength |
 | Scroll while riding | Change chase distance |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
@@ -348,6 +349,36 @@ the predicted followed position in Chase; first person omits it.
 See the [Glow/DoF measurements](plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
 verification and screenshot evidence.
 
+### Natural vehicle motion
+
+**Vehicles → Motion** controls stable heading, turn banking and procedural animation. Defaults
+are Banking **0.7**, amplitude **0.45**, speed-frequency factor **1**, and Classic heading **off**.
+Local +Y stays forward and local +Z (the back) aims toward world up in level flight. Near vertical,
+the previous up direction is projected onto the new heading plane; smooth horizon recovery
+avoids a pole flip. The upright influence uses smoothstep on horizontal heading squared over 0.1.
+
+Turn acceleration is `(new_velocity - old_velocity) / dt` with its heading-parallel component
+removed. Signed lateral acceleration along the upright right axis commands
+`clamp(bank * atan2(a_right, 0.35 * max_speed), -60°, 60°)`. At the default strength a typical
+20-unit/s² turn at max speed 80 commands about 25°. Quaternion response is exponential,
+`1-exp(-8*dt)`, about a 0.125 simulated-second time constant. Bank 0 removes commanded lean
+while retaining the stable-up frame. **Classic heading** restores the exact old minimal-arc
+rotation; set amplitude 0 too for the original static appearance. Stationary vehicles retain
+rotation. CPU and GPU use matching rules; positions, velocities and steering remain unchanged.
+
+Built-in **Bird** wings move along local Z by `A * max(abs(x)-0.15,0) * sin(ω*t+phase)`;
+its body stays still. **Chevron** uses one quarter of that amplitude. Frequency is
+`1.6 + 2.4 * factor * speed01` Hz. **Fish** uses tail coordinate `u=clamp((1.25-y)/2.5,0,1)`
+and lateral displacement `A*u²*sin(2π*1.25*u-ω*t+phase)`, at `1.2 + 2*factor*speed01` Hz.
+Analytic spatial derivatives correct normals. Time is simulation elapsed time; pause freezes
+motion and slow motion slows it. Existing stable per-instance phases prevent synchronized flaps.
+Frequency responds to current packed speed, so changing speed/frequency can rephase the wave.
+
+Dart, imported models and amplitude 0 compile out procedural deformation. Imported models retain
+their baked animation and receive stable/banked orientation only. Procedural motion runs before
+Glow's streak and works with every color mode. Neither deformation changes physical size or
+separation. GPU Boids remain 64 bytes and instances remain 48 bytes.
+
 ### Vehicle appearance
 
 The **Vehicles** section changes the running flock without respawning or resetting it. Shapes are
@@ -533,6 +564,7 @@ src/
 ├── vehicle.rs       # CPU steering and integration, tests, benchmarks
 ├── octree.rs        # exact radius queries for the CPU octree mode
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
+├── motion.rs        # stable banked orientation and render-only motion settings
 ├── instancing.rs    # one instanced draw and shared appearance uniform
 ├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
 ├── vehicle_model.rs # bounded glTF import, axes, material factors and model choices
@@ -712,6 +744,10 @@ pgrep -a autonomous   # no process should remain after exit
 | `set style` | `studio` (default), `classic`, `glow` |
 | `set glow` | Emission strength 0–20, default 4; Glow only |
 | `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
+| `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |
+| `set flap` | Procedural amplitude 0–1.5, default 0.45; 0 disables it |
+| `set flap_frequency` | Speed-frequency factor 0–3, default 1 |
+| `set legacy_heading` | `on` / `off` (default); exact original minimal-arc orientation |
 | `set dof` | `on` (default) / `off`; applies only while the boid camera is active |
 | `ui` | `off` / `on`; hides/restores Menu, Controls and FPS text for capture |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
@@ -821,6 +857,7 @@ CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::wall_containmen
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
 # Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
 # Optional GPU_BENCH_FORMATION=off (default), sphere or helix; active shapes use the chosen cap.
+# Optional GPU_BENCH_CLASSIC_HEADING=1: use the exact legacy rotation branch.
 # Optional GPU_BENCH_TRACK=1: include the boid-camera track kernel (no CPU readback).
 # Optional GPU_BENCH_PREDATORS=0 (default) or 1..4: orbiting fields, including 512-byte/frame uploads.
 # GPU_BENCH_COMBINED=1 enables groups 2, four spheres, sphere formation, attractor and four predators.

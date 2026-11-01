@@ -2,7 +2,7 @@
 
 ## Current work
 
-No active plans.
+- [Natural vehicle motion](planned/2026-11-01-vehicle-motion.md) (in progress).
 
 ## Prioritized future tasks
 
