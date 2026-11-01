@@ -2,6 +2,7 @@ mod formation;
 mod gpu_flock;
 mod instancing;
 mod octree;
+mod predator;
 mod presentation;
 mod scenario;
 mod scene;
@@ -292,6 +293,8 @@ fn ui(
                 if groups != state.groups { state.groups = groups; }
                 ui.separator();
                 swarm::obstacles_ui(ui, &mut scene);
+                ui.separator();
+                predator::ui(ui, &mut scene.predators, state.groups.count, swarm_ui.orbit_focus());
                 if scene != *swarm_ui.scene { *swarm_ui.scene = scene; }
             });
             egui::CollapsingHeader::new("Steering").show(ui, |ui| {

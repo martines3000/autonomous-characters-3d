@@ -49,6 +49,8 @@ struct Params {
     formation: vec4<u32>,
     formation_center_extent: vec4<f32>,
     formation_settings: vec4<f32>,
+    predators: vec4<u32>,
+    predator_settings: vec4<f32>,
 };
 
 struct Boid {
@@ -90,6 +92,7 @@ struct Instance {
 override GROUPS_ENABLED: bool = false;
 override OBSTACLES_ENABLED: bool = false;
 override FORMATION_ENABLED: bool = false;
+override PREDATORS_ENABLED: bool = false;
 
 fn read_order(base: u32, index: u32) -> u32 {
     return arena[2u * params.groups.w + base + index / 4u][index % 4u];
@@ -571,6 +574,21 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         let offset = formation_target(slot, group) - position;
         let desired = normalize_or_zero(offset) * params.max_speed * min(length(offset) / params.formation_settings.x, 1.0);
         force += limit(desired - velocity, params.max_speed * params.formation_settings.y);
+    }
+    if PREDATORS_ENABLED {
+        var flee = vec3<f32>(0.0);
+        for (var i = 0u; i < params.predators.y; i += 1u) {
+            let predator = bitcast<vec4<f32>>(arena[params.predators.x + i * 2u]);
+            let mask = arena[params.predators.x + i * 2u + 1u].x;
+            if (mask & (1u << group)) == 0u { continue; }
+            let offset = position - predator.xyz;
+            let distance = length(offset);
+            var normal = vec3<f32>(1.0, 0.0, 0.0);
+            if distance > 0.0 { normal = offset / distance; }
+            let weight = 1.0 - clamp(distance / predator.w, 0.0, 1.0);
+            flee += normal * (weight * weight * (3.0 - 2.0 * weight));
+        }
+        force += limit(flee, 1.0) * (params.max_speed * params.predator_settings.x);
     }
     var acceleration = force / params.mass;
 

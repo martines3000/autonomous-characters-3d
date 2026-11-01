@@ -64,6 +64,8 @@ enum Command {
     Attractor(Option<Vec3>),
     ObstacleAdd(Vec3, f32),
     ObstacleClear,
+    PredatorAdd(Vec3, f32),
+    PredatorClear,
     Camera { yaw: f32, pitch: f32, distance: f32 },
     Frame,
     Present(bool),
@@ -78,6 +80,13 @@ enum Setting {
     Count(usize),
     Groups(u32),
     FormationMode(crate::formation::FormationMode),
+    PredatorStrength(f32),
+    PredatorPath(crate::predator::PredatorPath),
+    PredatorGroups(u32),
+    PredatorPathRadius(f32),
+    PredatorPathSpeed(f32),
+    PredatorCenter(Vec3),
+    PredatorsVisible(bool),
     FormationCenter(Vec3),
     FormationExtent(f32),
     FormationArrival(f32),
@@ -183,6 +192,13 @@ fn switch(value: &str) -> Result<bool, String> {
 
 fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, String> {
     Ok(match (name, value) {
+        ("predator_strength", _) => Setting::PredatorStrength(number(value, 0.0, 20.0)?),
+        ("predator_path", "off") => Setting::PredatorPath(crate::predator::PredatorPath::Off),
+        ("predator_path", "orbit") => Setting::PredatorPath(crate::predator::PredatorPath::Orbit),
+        ("predator_groups", _) => Setting::PredatorGroups(integer(value, 0, 255)? as u32),
+        ("predator_path_radius", _) => Setting::PredatorPathRadius(number(value, 1.0, 200.0)?),
+        ("predator_path_speed", _) => Setting::PredatorPathSpeed(number(value, -180.0, 180.0)?),
+        ("predators_visible", _) => Setting::PredatorsVisible(switch(value)?),
         ("formation", "off") => Setting::FormationMode(crate::formation::FormationMode::Off),
         ("formation", "sphere") => Setting::FormationMode(crate::formation::FormationMode::Sphere),
         ("formation", "helix") => Setting::FormationMode(crate::formation::FormationMode::Helix),
@@ -285,6 +301,7 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
     let mut mode = GlobalState::default().mode;
     let mut model_settings = ModelSettings::default();
     let mut obstacle_count = 0;
+    let mut predator_count = 0;
     for (index, line) in script.lines().enumerate() {
         let line = script_line(line);
         if line.is_empty() {
@@ -328,6 +345,29 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     }
                     Command::Set(value)
                 }
+                ["predator", "clear"] => {
+                    predator_count = 0;
+                    Command::PredatorClear
+                }
+                ["predator", "add", x, y, z, radius] => {
+                    if predator_count >= crate::predator::MAX_PREDATORS {
+                        return Err("at most four predators; clear before adding more".into());
+                    }
+                    predator_count += 1;
+                    Command::PredatorAdd(
+                        Vec3::new(
+                            number(x, -1e7, 1e7)?,
+                            number(y, -1e7, 1e7)?,
+                            number(z, -1e7, 1e7)?,
+                        ),
+                        number(radius, 1.0, 200.0)?,
+                    )
+                }
+                ["predator_center", x, y, z] => Command::Set(Setting::PredatorCenter(Vec3::new(
+                    number(x, -1e7, 1e7)?,
+                    number(y, -1e7, 1e7)?,
+                    number(z, -1e7, 1e7)?,
+                ))),
                 ["formation_center", x, y, z] => Command::Set(Setting::FormationCenter(Vec3::new(
                     number(x, -1e7, 1e7)?,
                     number(y, -1e7, 1e7)?,
@@ -459,6 +499,18 @@ fn run_scenario(world: &mut World) {
                         selection.0 = follow;
                     }
                 }
+                Command::PredatorAdd(position, radius) => {
+                    world
+                        .resource_mut::<crate::swarm::SwarmScene>()
+                        .predators
+                        .add(position, radius);
+                }
+                Command::PredatorClear => {
+                    let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+                    if !scene.predators.objects.is_empty() {
+                        scene.predators.objects.clear();
+                    }
+                }
                 Command::ObstacleAdd(center, radius) => {
                     world
                         .resource_mut::<crate::swarm::SwarmScene>()
@@ -557,6 +609,29 @@ fn run_scenario(world: &mut World) {
 
 fn apply_setting(world: &mut World, setting: Setting) {
     match setting {
+        value @ (Setting::PredatorStrength(_)
+        | Setting::PredatorPath(_)
+        | Setting::PredatorGroups(_)
+        | Setting::PredatorPathRadius(_)
+        | Setting::PredatorPathSpeed(_)
+        | Setting::PredatorCenter(_)
+        | Setting::PredatorsVisible(_)) => {
+            let mut scene = world.resource_mut::<crate::swarm::SwarmScene>();
+            let mut settings = scene.predators.clone();
+            match value {
+                Setting::PredatorStrength(v) => settings.strength = v,
+                Setting::PredatorPath(v) => settings.path = v,
+                Setting::PredatorGroups(v) => settings.set_mask(v),
+                Setting::PredatorPathRadius(v) => settings.path_radius = v,
+                Setting::PredatorPathSpeed(v) => settings.path_speed = v,
+                Setting::PredatorCenter(v) => settings.path_center = v,
+                Setting::PredatorsVisible(v) => settings.visible = v,
+                _ => unreachable!(),
+            }
+            if settings != scene.predators {
+                scene.predators = settings;
+            }
+        }
         value @ (Setting::FormationMode(_)
         | Setting::FormationCenter(_)
         | Setting::FormationExtent(_)
@@ -745,6 +820,54 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn predator_commands_validate_masks_capacity_paths_and_changed_only_setters() {
+        let commands=parse("0 predator add 1 -2 3 20\n0 set predator_strength 8\n0 set predator_path orbit\n0 set predator_groups 5\n0 set predator_path_radius 50\n0 set predator_path_speed -30\n0 predator_center 4 5 6\n0 set predators_visible off\n1 predator clear").unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::PredatorAdd(Vec3::new(1.0, -2.0, 3.0), 20.0)
+        );
+        assert_eq!(commands.last().unwrap().command, Command::PredatorClear);
+        for command in [
+            "predator add NaN 0 0 10",
+            "predator add 0 0 0 0",
+            "predator add 0 0 0 201",
+            "set predator_path chase",
+            "set predator_strength 21",
+            "set predator_groups 256",
+            "set predator_groups -1",
+            "set predator_path_speed inf",
+            "predator_center 0 1",
+        ] {
+            assert!(parse(&format!("0 {command}")).is_err(), "{command}");
+        }
+        let four = "0 predator add 0 0 0 20\n".repeat(4);
+        assert!(parse(&four).is_ok());
+        assert!(parse(&format!("{four}0 predator add 0 0 0 20")).is_err());
+        assert!(parse(&format!("{four}0 predator clear\n{four}")).is_ok());
+        let mut world = World::new();
+        world.init_resource::<crate::swarm::SwarmScene>();
+        world
+            .resource_mut::<crate::swarm::SwarmScene>()
+            .predators
+            .add(Vec3::ZERO, 20.0);
+        apply_setting(&mut world, Setting::PredatorGroups(5));
+        assert_eq!(
+            world
+                .resource::<crate::swarm::SwarmScene>()
+                .predators
+                .objects[0]
+                .mask,
+            5
+        );
+        world.clear_trackers();
+        apply_setting(&mut world, Setting::PredatorGroups(5));
+        assert!(!world
+            .get_resource_ref::<crate::swarm::SwarmScene>()
+            .unwrap()
+            .is_changed());
+    }
+
     #[test]
     fn formation_commands_validate_ranges_presets_and_unchanged_writes() {
         use crate::formation::FormationMode;

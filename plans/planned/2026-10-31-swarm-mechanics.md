@@ -1,7 +1,7 @@
 # Add optional swarm mechanics with one CPU/GPU contract
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It designs all of Stage 7;
-Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; 7c is committed as `4e0d5a6`; the current worker implements **7d only**. The orchestrator owns review, commits and authorization of
+Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; 7c is committed as `4e0d5a6`; 7d is committed as `77406a4`; the current worker implements **7e only**. The orchestrator owns review, commits and authorization of
 subsequent workers. Owner order: 7a attractor, 7b groups, 7c obstacles, 7d formations, 7e predators.
 
 ## Purpose
@@ -28,7 +28,11 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 - [x] (2026-10-31 23:09Z) Stage 7d: analytic targets, dense slots, morph clock, UI/scenarios.
 - [x] (2026-10-31 23:09Z) Stage 7d: 116 release tests and all 11 ignored GPU tests pass in the single final device run.
 - [x] (2026-10-31 23:09Z) Stage 7d: repeated Off/On/cap/60-second convergence measurements, desktop proof and gates pass; awaiting owner review/commit.
-- [ ] Stage 7e: bounded predator objects and fleeing (separate worker).
+- [x] (2026-10-31 23:49Z) Stage 7e: shared flee law, path snapshots, arena upload lifecycle, UI/gizmos/scenarios.
+- [x] (2026-10-31 23:49Z) Stage 7e: 122 release tests and the single final 13-test GPU gate pass; parser/path/mask/force/arena regressions included.
+- [x] (2026-10-31 23:58Z) Stage 7e: formatting, 122 release tests, warning-free build, Clippy 7, native smoke, desktop/pause proof and diff check. Repeated diagnostics recorded.
+- [ ] Stage 7e: required idle-machine Off/On/combined/rendered rerun; unrelated Blender remained active (224% CPU sampled at 23:58Z). Provisional diagnostics cannot close this acceptance condition.
+- [ ] Stage 7 complete (all five optional mechanics verified; owner review/commit separate).
 - [ ] Orchestrator review and commits.
 
 ## Surprises & Discoveries
@@ -187,6 +191,38 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
   and expose the exact path rather than add a hidden density approximation.
   Date: 2026-10-31.
 
+- Decision (7e, before code): `SwarmScene::predators` owns up to four static positions, reference
+  threat radii and eight-bit prey masks, plus strength (default 4), visibility, Off/Orbit path,
+  reference path radius (50), angular speed (30 degrees/s), default mask (255) and anchored center.
+  Empty list is Off; zero strength also compiles force out. Logical group zero is the entire flock
+  when groups are Off; otherwise use the carried mapped group. Each relevant predator contributes
+  outward normal (+X at coincidence) times smoothstep(1-clamp(distance/(radius*S),0,1)). Clamp the
+  summed normal weights to length one, multiply by V*k, and add after formation before mass division.
+  All four fields are evaluated outside neighbor sampling; predators do not themselves enable a cap.
+  Rationale: direct bounded shared law, no capture/history or per-boid role data.
+  Date: 2026-10-31.
+- Decision (7e): Orbit is a deterministic XY circle, with evenly spaced predator phases. It uses
+  formation center while formation is enabled, otherwise an anchored orbit center (origin by
+  default; UI captures orbit focus when selecting Orbit and offers an explicit focus button).
+  Static mode uses each edited world position; Orbit overrides these positions. Threat radius/path
+  dimensions scale by world_scale, but explicit static/anchor coordinates do not. Keep phase bounded
+  in f64, advancing only during simulated substeps; an empty-list snapshot resets phase, backend/count edits preserve
+  settings. Paused camera movement cannot move the anchor. Explicit center/count edits may relocate
+  or rescale visible objects while time is frozen, matching other scene editing semantics.
+  Rationale: deterministic, pause-safe paths without per-frame camera-driven resource writes.
+  Date: 2026-10-31.
+- Decision (7e): extracted `PredatorFrame` holds four per-substep snapshots, sampled once in the main
+  world after the simulation clock and formation snapshot. CPU/GPU use exactly those positions,
+  radii and masks. Binding 8 reserves 32 vec4 records at `[5C/2+24,5C/2+56)`: four substeps × four
+  objects × two vec4s. Records are `(position.xyz float bits, world radius bits)` and `(mask,0,0,0)`.
+  One small upload per changed frame carries all samples; per-step uniforms select the proper eight-
+  vec4 slice. Static/paused frames skip unchanged uploads; capacity growth rewrites the relocated
+  tail. Disabled force uploads no records. Add offset/count/substep and strength uniforms. Preserve
+  64-byte Boids, 48-byte instances and eight storage bindings. Sixteen prebuilt steer specializations
+  cover the four enable bits; no per-frame pipeline creation or disabled-path field work.
+  Rationale: exact substeps with at most 512 bytes per moving frame, rather than per-boid uploads.
+  Date: 2026-10-31.
+
 ## Assumptions and Open Questions
 
 - The first groups implementation supports two groups (table capacity at most eight), one shared
@@ -204,7 +240,7 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 
 ## Outcomes & Retrospective
 
-Design complete before implementation. Stages 7a–7c are committed; 7d is implemented and verified; 7e remains a specification.
+Design completed before implementation. Stages 7a–7d are committed; 7e is implemented and behavior-verified. All five mechanics exist. Overall Stage 7 completion remains open until the required idle-machine performance acceptance and owner review.
 Stage handoffs and validation evidence are recorded below.
 Stage 7a is implemented and ready for orchestrator review, without commits or dependency changes.
 Release suite: 97 passed, 7 ignored (eight new non-ignored tests and one new ignored GPU test).
@@ -361,14 +397,13 @@ point and optional scenario point. Append two Vec4 uniforms: world point/radius 
 with three reserved lanes. An inactive field encodes signed strength zero and branches before
 force evaluation. No Boid/Instance layout changes in 7a, no storage buffers or per-boid field data.
 
-For 7b–7e, add scalar enable/strength/extent controls beside the attractor in `GlobalState`.
-The fixed group table lives in `GlobalState::groups`; a CPU `SwarmScene` resource introduced in 7c
-owns the obstacle vector, analytic formation controls and later
-predator objects/path state; extracted render data contains only the packed uniform/arena snapshot.
-CPU kernels read the same scene snapshot for each substep. If a moving obstacle/predator path changes
-between substeps, evaluate its simulated-time position analytically from the substep clock on both
-backends, rather than advancing it once per rendered frame. Formation target evaluation uses the
-same substep morph time. The disabled path never reads these collections.
+The fixed group table lives in `GlobalState::groups`. CPU `SwarmScene` owns obstacle, formation
+and predator controls; simulated animation never writes these settings or GlobalState. Changed-only
+`FormationFrame` and `PredatorFrame` resources hold up to four substep samples after the shared
+simulation clock is prepared. CPU and GPU consume the same snapshots, including every predator
+position/radius/mask. The render world extracts these frames plus scene settings; a moving path
+uploads one bounded sample batch per frame, never one upload per substep or per boid. Formation
+target evaluation uses the same substep morph time. Disabled shader specializations omit force work.
 
 | Mechanic | CPU data | GPU data |
 | --- | --- | --- |
@@ -376,7 +411,7 @@ same substep morph time. The disabled path never reads these collections.
 | Groups | `GlobalState::groups` fixed group table; carried ID/group/slot component | Uniform group table and enable/count; separate metadata table resolved through sorted order maps; Instance.w group bits |
 | Obstacles | `SwarmScene` bounded typed sphere vector and path state | Uniform count/arena offset/strength/clearance; sphere records in shared arena |
 | Formations | `SwarmScene::formation` controls, changed-only substep `FormationFrame`, carried dense slot | Analytic sphere/helix uniforms; eight group ranges after sphere reservation; metadata.z slot |
-| Predators | `SwarmScene` bounded control objects, group masks and simulated path state | Uniform count/offset/strength/path time; object records in arena; no prey-history buffer |
+| Predators | `SwarmScene::predators` controls; changed-only four-substep `PredatorFrame` | Uniform count/offset/substep/strength; four sample sets in arena at `5C/2+24`; no prey-history buffer |
 
 7b adds CPU metadata components but keeps the GPU Boid at 64 bytes. A persistent `vec4<u32>`
 metadata table stores spawn ID, group, formation slot and reserved role, independently of animation
@@ -418,8 +453,9 @@ it is not the physical storage stride.
 7c–7e append shared scene records starting at `5C/2`, with uniform offsets/counts naming disjoint
 obstacle, formation-slot and predator ranges. Bitcast float payloads into the raw u32 lanes. CPU
 keeps typed vectors and packs/uploads scene changes; never upload boid metadata each frame.
-Capacity growth must relocate/reupload this scene tail when its base changes. Future workers define
-and test exact record strides and bounds before use. Empty scene lists have zero count; the metadata
+Capacity growth relocates/reuploads this scene tail when its base changes. Spheres reserve
+`[5C/2,5C/2+16)`, formation ranges `[5C/2+16,5C/2+24)`, and predator samples
+`[5C/2+24,5C/2+56)` vec4s. Total arena allocation is `40C+896` bytes. Empty scene lists have zero count; the metadata
 allocation already makes the binding legal. Do not add a ninth storage binding.
 
 Current arena costs 40 bytes per capacity entry (8 bytes more than the rejected two 80-byte
@@ -443,7 +479,7 @@ vehicles and metadata may be initialized during pause without stepping retained 
 | Groups | Global selected target overrides group targets; formation overrides both | Tables live; movement follows simulated time | Same-group align/cohere, all-group separate | Respawn on backend change; retained membership on CPU mode switch; new IDs/groups on growth |
 | Obstacles | Additive soft avoidance | Edits live; moving proxy paths freeze | Same avoidance for all groups | Keep proxies/world centers; rescale reference dimensions |
 | Formations | Replaces seek/wander; follow selection remains stored for exit | Morph freezes; editing and slot maintenance stay live | Each group gets its own contiguous slot range/center | Reassign dense unique slots on count/group-count edits; no optimal matching |
-| Predators | Additive flee, navigation recovers after passing | Paths/flee use simulation steps | Prey mask selects affected groups; predators are separate control objects | Keep object state; rescale reference dimensions; no flock population changes |
+| Predators | Additive flee; follow/group goals stay stored, formation retains navigation override | Shared per-substep paths freeze and follow speed; edits/gizmos live; camera movement cannot move anchor | Mask selects mapped groups; Off uses logical group 0; caps never hide threats | Preserve scene/path phase across CPU/backend/count edits; backend respawns flock only; rescale reference radius/path |
 
 | Pair | Composition |
 | --- | --- |
@@ -473,7 +509,9 @@ Controls panel shows hold F, its selected mode and the plane rule. Scenario prop
   `set formation_arrival_radius r` (0.1..200), `set formation_strength k` (0..20),
   `set formation_morph t` (0..1), `set formation_morph_speed r` (0..2 fractions/s).
 - 7e: `predator add x y z radius`, `predator clear`, `set predator_strength k`,
-  `set predator_path off|orbit`, `set predator_groups mask`.
+  `set predator_path off|orbit`, `set predator_groups mask`; plus `predator_center x y z`,
+  `set predator_path_radius r`, `set predator_path_speed degrees_per_second`,
+  `set predators_visible on|off`. Masks update every existing control and future additions.
 
 Stages 7a–7d commands are implemented. Later command ranges and record layouts are
 finalized in their stage checkpoints; parsing always rejects non-finite/out-of-budget data.
@@ -960,6 +998,124 @@ Nonzero convergence error is expected with preserved flocking, wall drag and exa
 Obstructed/out-of-wall slots may never converge; helix crowding and very large group combinations
 remain limits. Measurements cover this RX 7900 XT only. Stage 7e is not implemented.
 
+### Stage 7e implementation, diagnostics and acceptance gap
+
+Stage 7d is the committed baseline `77406a4`. The final mechanic now adds up to four visible,
+masked flee controls, static/Orbit motion, shared simulated-substep snapshots, bounded arena
+records, sixteen fixed steer variants, Swarm controls and validated scenarios. No Boid/instance
+stride, binding count, dependency, wall drag, navigation default or vehicle drawing changes.
+
+CPU/GPU sum outward smoothstep weights, use +X at coincidence, clamp the sum to length one and
+multiply by max speed × predator strength. Add after formation and before mass division. Logical
+mask group is zero while groups are disabled; otherwise use carried mapped membership. Every
+predator is evaluated outside neighbor loops. Predators do not independently enable neighbor caps.
+The selected global target still overrides group targets, and formations retain their navigation
+override. Flee adds to all other terms; arrival regroups when threats leave. Static/Orbit use one
+world snapshot per substep on both backends. Orbit uses an anchored focus or enabled formation
+center, not the live camera; explicit edits remain live while paused. Scene settings and GlobalState
+are never written by simulated path motion. The extracted frame changes only when its value changes.
+
+The arena remains eight storage bindings: persistent metadata/order region `[0,5C/2)`, sixteen
+sphere vec4s `[5C/2,5C/2+16)`, eight group-range vec4s `[5C/2+16,5C/2+24)`, then 32 predator vec4s
+`[5C/2+24,5C/2+56)`. Each of four substeps has four two-vec4 `(position.xyz, world_radius)` / mask
+records. Uniforms append offset/count/substep and strength at Naga-compatible byte offsets 400/416,
+raising Params from 400 to 432 bytes. Arena allocation is `40C+896` bytes. Growth rewrites the tail.
+One changed moving frame writes 512 bytes once before all substeps; no per-boid or per-substep
+uploads. Static/paused samples skip unchanged writes. Entering pause after multiple substeps may
+replace historical samples with the final frozen position once. Strength/visibility alone do not
+upload records. The upload fixture proves growth and unchanged-frame counts; moving parity checks
+all four slices. The benchmark reports exactly 660 uploads for 600 warmup + 60 timed steps in every
+moving case (512 bytes each). Sixteen bounded prebuilt steer variants are the direct four-bit
+extension of 7d; they create no runtime pipelines and compile disabled feature work out.
+
+**Performance acceptance is pending an idle-machine rerun.** Both 7d baselines ran with low load.
+An unrelated Blender process (PID 389450, another project) started before post-change measurements,
+used substantial CPU and stayed active. The worker asked the user for an idle window and did not
+alter or terminate that process. A three-second sample at 23:58Z still measured 224% Blender CPU
+and 9.78% total machine CPU use; the discrete GPU busy counter read 7%. Post-change numbers below are explicitly provisional diagnostics,
+not the requested idle acceptance gate. They show no apparent Off regression, but cannot establish
+an uncontaminated 3–5% comparison. Keep Stage 7 completion open until the owner reruns these cases
+on an idle machine. Baseline values remain valid; repeat them too if conditions/hardware changed.
+
+RX 7900 XT, release seeded headless benchmark, 600 warmup + 60 timed steps, dt=1/60, medians in ms.
+Configured cap 16 is inactive in wander and active in follow. Each case starts at PCG frame zero.
+
+| Count / navigation | 7d baseline 1 / 2 | 7e Off 1 / 2 (provisional) | 4 Orbit On 1 / 2 (provisional) |
+| --- | --- | --- | --- |
+| 100,000 wander | 0.698 / 0.688 | 0.690 / 0.654 | 0.862 / 0.927 |
+| 100,000 follow | 3.417 / 3.094 | 3.304 / 2.932 | 3.788 / 3.297 |
+| 1,000,000 wander | 4.714 / 4.656 | 4.587 / 4.606 | 5.394 / 5.361 |
+| 1,000,000 follow | 7.745 / 7.976 | 7.976 / 8.024 | 7.917 / 7.916 |
+
+Combined diagnostic, 100k wander: groups 2, four spheres, sphere formation, attractor at origin,
+four orbiting predators. Cap 0 median **41.847 ms**, p95 **44.558 ms**; cap 16 median **6.833 ms**,
+p95 **10.054 ms**. Both finish 600+60 steps without slow-step cutoff. After 11 simulated seconds,
+median slot error is 638.760 / 637.988 world units for cap 0 / 16: competing attraction/fleeing can
+prevent slot convergence. No density or force defaults were retuned. This is one run per cap as
+requested; it remains non-idle and provisional.
+
+Rendered diagnostics: 100k Dart, Studio/Aurora, Heading, 4× MSAA, 1776×1000, camera yaw25/pitch18/
+distance2500, immediate presentation, 1× simulated time, 3 s warmup + 4 s measured. On means four
+Orbit controls with radius20, path radius50 and speed30°/simulated s. Fresh apps alternate Off/On;
+every script reaches `exit`. Frame intervals include simulation, rendering, UI, gizmos and uploads.
+
+| Rendered 100k | Frames | Mean ms | p50 ms | p95 ms |
+| --- | --- | --- | --- | --- |
+| off-1 | 3006 | 1.331 | 1.329 | 1.892 |
+| on-1 | 2908 | 1.375 | 1.373 | 1.937 |
+| off-2 | 3144 | 1.272 | 1.270 | 1.872 |
+| on-2 | 2974 | 1.345 | 1.343 | 1.966 |
+
+Recorded local uptime (CET; raw .load files accompany logs):
+
+- `before-1`: 00:17:33 up  5:58,  1 user,  load average: 0.18, 0.23, 0.57
+- `before-2`: 00:21:11 up  6:02,  1 user,  load average: 0.02, 0.15, 0.46
+- `off-1`: 00:40:40 up  6:21,  1 user,  load average: 1.88, 1.61, 0.85
+- `off-2`: 00:50:19 up  6:31,  1 user,  load average: 3.04, 2.83, 1.78
+- `on-1`: 00:49:42 up  6:30,  1 user,  load average: 5.71, 3.20, 1.85
+- `on-2`: 00:50:45 up  6:31,  1 user,  load average: 2.08, 2.62, 1.74
+- `combined`: 00:51:41 up  6:32,  1 user,  load average: 0.86, 2.19, 1.64
+
+Repeat commands on an idle machine (guard cargo/rustc/autonomous before every invocation):
+
+```sh
+GPU_BENCH_COUNTS=100000,1000000 GPU_BENCH_CAPS=16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::gpu_flocking_benchmark -- --exact --ignored --nocapture --test-threads=1
+GPU_BENCH_PREDATORS=4 GPU_BENCH_COUNTS=100000,1000000 GPU_BENCH_CAPS=16 GPU_BENCH_MODES=wander,follow CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::gpu_flocking_benchmark -- --exact --ignored --nocapture --test-threads=1
+GPU_BENCH_COMBINED=1 GPU_BENCH_COUNTS=100000 GPU_BENCH_CAPS=0,16 GPU_BENCH_MODES=wander CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::gpu_flocking_benchmark -- --exact --ignored --nocapture --test-threads=1
+```
+
+Final gates pass: formatting check; 122 release tests, 15 ignored (13 device tests and two benchmarks);
+warning-free release build; Clippy seven existing warnings, repeated for the test target; ten-second
+native startup smoke; diff check. No dependencies or historical review records changed.
+The single final ignored GPU run passes all 13, under the existing eight-binding test setup. New
+mixed parity covers static and orbit paths, all four substep sample slices, three groups, masks
+1/5/255/0, an obstacle, attractor and a blended formation, with following both On/Off and unlimited/
+nontruncating capped queries. New predator worst position error is 7.630326e-6 world units and
+velocity error 1.2361032e-5. Growth/count/paused upload tests check exact arena records and counters.
+CPU tests cover falloff edges, coincidence, clamp, masks, Off bytes, group-zero semantics, path
+scaling/determinism/substep chunking, pause/speed, and unchanged settings/frame ticks. Existing mode/
+membership fixtures now also preserve predator scene settings across CPU/backend/count changes.
+Parser tests validate commands, masks, ranges, capacities and unchanged setters.
+
+Desktop artifacts live under
+`/tmp/claude-1000/-home-martines-Projects-autonomous-characters-3d/af1dacb4-dc47-4bb5-8e8c-02c6cd1b95e8/scratchpad/shots/stage7e/`:
+
+- `orbit-a.png`, `orbit-b.png`: 20k GPU wander with a moving magenta control.
+- `following-orbit-a.png`, `following-orbit-b.png`: 20k follow bends around the opposite sides of the moving threat.
+- `formation-deformed.png`, `formation-regrouped.png`: formation deforms, then regroups after clearing.
+- `groups-mask.png`: two formations; identical fields affect only cyan group 0, leaving orange group 1 intact.
+- `octree.png`: 1,500 CPU vehicles with formation/fleeing.
+- `paused-a.png`, `paused-b.png`: Orbit paused; scene crop `960x750+420+100` has **zero** differing pixels across two seconds. UI/FPS remain live outside the crop.
+- `combined.png`: actual 100k GPU combined mechanics, cap16.
+
+Scripts, uptime, full timings, verification logs and pixel comparison are beside the images. No
+commit, push, merge, reset or discard was performed. No Cargo/rustc/native flock app remains after
+checks. Remaining limitations: idle-machine performance acceptance; soft fields permit penetration
+and competing forces can prevent formation convergence; no chase/capture, predator obstacle
+avoidance or per-boid predator role; other GPU/CPU performance and dense eight-group combinations
+are not established. Stage 7 mechanics are implemented and behavior-verified; overall completion
+awaits idle performance acceptance and owner review/commit.
+
 ## Interfaces and Dependencies
 
 7a: new `src/swarm.rs` owns AttractorMode/settings, force kernel, cursor input, gizmo and UI.
@@ -1019,3 +1175,5 @@ Revision notes:
 - 2026-10-31: Stage 7d desktop scenarios and repeated rendered intervals pass; recorded cap/convergence limitations and zero-pixel paused proof. The single final 11-test device gate passes.
 
 - 2026-10-31: Stage 7d complete and uncommitted; final 116-test / 11-device-test gate, Clippy baseline, desktop exit/pixel proof and all performance evidence recorded. Stage 7e remains separate owner-authorized work.
+
+- 2026-10-31: Stage 7d committed by orchestrator as 77406a4; 7e only authorized. Finalized flee law, mask semantics, anchored paths, shared substep snapshots and 512-byte arena reservation before code.

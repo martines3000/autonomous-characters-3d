@@ -225,6 +225,7 @@ pub struct SwarmScene {
     pub obstacle_clearance: f32,
     pub show_obstacles: bool,
     pub formation: crate::formation::Formation,
+    pub predators: crate::predator::Predators,
 }
 
 impl Default for SwarmScene {
@@ -235,6 +236,7 @@ impl Default for SwarmScene {
             obstacle_clearance: 10.0,
             show_obstacles: true,
             formation: default(),
+            predators: default(),
         }
     }
 }
@@ -378,7 +380,8 @@ impl SwarmUi<'_, '_> {
 pub struct SwarmPlugin;
 impl Plugin for SwarmPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::formation::FormationFrame>()
+        app.init_resource::<crate::predator::PredatorFrame>()
+            .init_resource::<crate::formation::FormationFrame>()
             .init_resource::<SwarmScene>()
             .init_gizmo_group::<SwarmMarker>();
         let mut store = app.world_mut().resource_mut::<GizmoConfigStore>();
@@ -394,6 +397,13 @@ impl Plugin for SwarmPlugin {
         )
         .add_systems(
             Update,
+            crate::predator::prepare_frame
+                .after(crate::formation::prepare_frame)
+                .before(vehicle::step_cpu)
+                .before(crate::gpu_flock::update_gpu_params),
+        )
+        .add_systems(
+            Update,
             cursor_input
                 .after(crate::target::input_controls)
                 .before(vehicle::step_cpu)
@@ -401,13 +411,14 @@ impl Plugin for SwarmPlugin {
         )
         .add_systems(
             PostUpdate,
-            (draw_attractor, draw_obstacles).after(crate::scene::frame_world),
+            (draw_attractor, draw_obstacles, crate::predator::draw)
+                .after(crate::scene::frame_world),
         );
     }
 }
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
-struct SwarmMarker;
+pub(crate) struct SwarmMarker;
 
 // Plane through the current orbit focus, perpendicular to the camera's forward direction.
 fn cursor_on_plane(ray: Ray3d, camera: &Transform, depth: f32) -> Option<Vec3> {

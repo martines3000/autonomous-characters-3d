@@ -18,6 +18,7 @@ use crate::{
     formation::FormationFrame,
     instancing::VehicleInstances,
     octree::{Octree, Point},
+    predator::PredatorFrame,
     swarm::SwarmScene,
     target::{Target, TargetSelection},
     vehicle_appearance::{instance_phase, pack_speed_group, VehicleMeshes},
@@ -25,7 +26,7 @@ use crate::{
 };
 use na::Vector3;
 
-use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
+use bevy::{camera::visibility::NoFrustumCulling, ecs::system::SystemParam, prelude::*};
 use rand::RngExt;
 
 pub struct VehiclePlugin;
@@ -51,6 +52,11 @@ pub(crate) fn step_cpu(world: &mut World) {
             if formation.morph != morph {
                 formation.morph = morph;
             }
+        }
+        if world.resource::<PredatorFrame>().count > 0
+            && world.resource::<PredatorFrame>().step != index as usize
+        {
+            world.resource_mut::<PredatorFrame>().step = index as usize;
         }
         world.run_schedule(CpuStep);
     }
@@ -88,6 +94,7 @@ impl Plugin for VehiclePlugin {
         app.init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(Startup, spawn_flock)
             .add_systems(CpuStep, (movement, update).chain())
             .add_systems(PostUpdate, crate::vehicle_appearance::update_shape)
@@ -103,7 +110,8 @@ impl Plugin for VehiclePlugin {
                 )
                     .chain()
                     .after(crate::target::input_controls)
-                    .after(crate::formation::prepare_frame),
+                    .after(crate::formation::prepare_frame)
+                    .after(crate::predator::prepare_frame),
             );
     }
 }
@@ -195,6 +203,12 @@ type SteeringQuery<'w, 's> = Query<
     With<Vehicle>,
 >;
 
+#[derive(SystemParam)]
+struct SwarmFrames<'w> {
+    formation: Res<'w, FormationFrame>,
+    predators: Res<'w, PredatorFrame>,
+}
+
 // Boids algorithm
 fn movement(
     mut vehicle_query: SteeringQuery,
@@ -202,8 +216,9 @@ fn movement(
     state: Res<GlobalState>,
     time: Res<Time>,
     scene: Res<SwarmScene>,
-    formation: Res<FormationFrame>,
+    frames: SwarmFrames,
 ) {
+    let formation = &frames.formation;
     let (target_transform, selection) = target_query.single().unwrap();
     let mut wander = true;
 
@@ -214,7 +229,12 @@ fn movement(
     if !wander && !formation.settings.enabled() {
         let limit_seek = state.vehicle_max_speed * state.vehicle_seek_factor;
 
-        flock(&mut vehicle_query, &state, &scene, &formation);
+        flock(
+            &mut vehicle_query,
+            &state,
+            &scene,
+            (formation, &frames.predators),
+        );
 
         // Seek
         vehicle_query.par_iter_mut().for_each(
@@ -239,7 +259,12 @@ fn movement(
         let limit_wall_avoid = state.vehicle_max_speed * state.vehicle_wall_avoid_factor;
         let walls = walls(state.vehicle_count);
 
-        flock(&mut vehicle_query, &state, &scene, &formation);
+        flock(
+            &mut vehicle_query,
+            &state,
+            &scene,
+            (formation, &frames.predators),
+        );
 
         // Wander (random steering force within a Sphere)
         vehicle_query.par_iter_mut().for_each(
@@ -509,7 +534,7 @@ fn flock(
     vehicle_query: &mut SteeringQuery,
     state: &Res<GlobalState>,
     scene: &SwarmScene,
-    formation: &FormationFrame,
+    frames: (&FormationFrame, &PredatorFrame),
 ) {
     if state.mode == SimulationMode::Octree {
         let Some((_, _, _, first_transform, _, _)) = vehicle_query.iter().next() else {
@@ -598,7 +623,7 @@ fn flock(
                     state,
                     metadata.0,
                     scene,
-                    formation,
+                    frames,
                 );
                 acceleration.apply_force(force, state.vehicle_mass);
             },
@@ -633,7 +658,7 @@ fn flock(
                 state,
                 metadata.0,
                 scene,
-                formation,
+                frames,
             );
             acceleration.apply_force(force, state.vehicle_mass);
         },
@@ -657,7 +682,7 @@ fn flocking_force(
         state,
         UVec4::ZERO,
         &SwarmScene::default(),
-        &FormationFrame::default(),
+        (&FormationFrame::default(), &PredatorFrame::default()),
     )
 }
 
@@ -668,8 +693,9 @@ fn group_flocking_force(
     state: &GlobalState,
     metadata: UVec4,
     scene: &SwarmScene,
-    formation: &FormationFrame,
+    frames: (&FormationFrame, &PredatorFrame),
 ) -> Vector3<f32> {
+    let (formation, predators) = frames;
     let separate_radius = state.vehicle_size * state.vehicle_separation_distance;
     let dist_separate = separate_radius.powi(2);
     let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
@@ -751,6 +777,15 @@ fn group_flocking_force(
             formation.settings.strength,
         ));
     }
+    if predators.active() {
+        let group = if state.groups.count == 0 {
+            0
+        } else {
+            state.groups.mapped_group(metadata.y)
+        };
+        force +=
+            Vector3::from(predators.force(Vec3::from(position), group, state.vehicle_max_speed));
+    }
     force
 }
 
@@ -790,7 +825,8 @@ mod tests {
                 app.insert_resource(cpu_state())
                     .init_resource::<Time>()
                     .init_resource::<SwarmScene>()
-                    .init_resource::<FormationFrame>();
+                    .init_resource::<FormationFrame>()
+                    .init_resource::<PredatorFrame>();
                 app.update();
                 let (max_speed, octree_size) = {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
@@ -855,6 +891,7 @@ mod tests {
         })
         .init_resource::<SwarmScene>()
         .init_resource::<FormationFrame>()
+        .init_resource::<PredatorFrame>()
         .add_systems(CpuStep, (movement, update).chain())
         .add_systems(
             Update,
@@ -986,6 +1023,7 @@ mod tests {
                 .init_resource::<Time>()
                 .init_resource::<SwarmScene>()
                 .init_resource::<FormationFrame>()
+                .init_resource::<PredatorFrame>()
                 .add_systems(Update, update);
             let entity = app
                 .world_mut()
@@ -1028,6 +1066,7 @@ mod tests {
         .init_resource::<Time>()
         .init_resource::<SwarmScene>()
         .init_resource::<FormationFrame>()
+        .init_resource::<PredatorFrame>()
         .add_systems(Update, movement);
         app.world_mut().spawn((
             Target,
@@ -1089,6 +1128,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(Update, update);
         let mut acceleration = VehicleAcceleration::default();
         acceleration.apply_force(Vector3::new(1e6, -2e6, 3e6), 1.0);
@@ -1162,7 +1202,7 @@ mod tests {
                     &mut query,
                     &state,
                     &SwarmScene::default(),
-                    &FormationFrame::default(),
+                    (&FormationFrame::default(), &PredatorFrame::default()),
                 )
             },
         );
@@ -1270,7 +1310,7 @@ mod tests {
                 state,
                 UVec4::ZERO,
                 &SwarmScene::default(),
-                &FormationFrame::default(),
+                (&FormationFrame::default(), &PredatorFrame::default()),
             )
         };
         // A foreign close neighbor still separates, but cannot align or cohere.
@@ -1354,7 +1394,7 @@ mod tests {
                 &state,
                 UVec4::ZERO,
                 scene,
-                &FormationFrame::default(),
+                (&FormationFrame::default(), &PredatorFrame::default()),
             )
         };
         let baseline = force(&scene);
@@ -1479,6 +1519,7 @@ mod tests {
         formation.ranges[0] = UVec2::new(0, 1);
         app.insert_resource(state)
             .insert_resource(formation)
+            .init_resource::<PredatorFrame>()
             .init_resource::<SwarmScene>()
             .init_resource::<Time>()
             .add_systems(Update, movement);
@@ -1558,7 +1599,7 @@ mod tests {
                 &state,
                 UVec4::ZERO,
                 &SwarmScene::default(),
-                frame,
+                (frame, &PredatorFrame::default()),
             )
         };
         let baseline = force(&frame).map(f32::to_bits);
@@ -1578,12 +1619,14 @@ mod tests {
         .init_resource::<VehicleSpawner>()
         .init_resource::<SwarmScene>()
         .init_resource::<FormationFrame>()
+        .init_resource::<PredatorFrame>()
         .add_systems(
             Update,
             (vehicle_spawner, vehicle_cleanup, update_membership).chain(),
         );
         let mut scene = SwarmScene::default();
         scene.add_obstacle(Vec3::new(40.0, -10.0, 2.0), 12.0);
+        scene.predators.add(Vec3::new(20.0, 3.0, -4.0), 18.0);
         app.insert_resource(scene.clone());
         app.update();
         let snapshot = |world: &mut World| {
@@ -1673,6 +1716,7 @@ mod tests {
             app.insert_resource(state)
                 .init_resource::<SwarmScene>()
                 .init_resource::<FormationFrame>()
+                .init_resource::<PredatorFrame>()
                 .add_systems(CpuStep, (movement, update).chain())
                 .add_systems(
                     Update,
@@ -1918,7 +1962,8 @@ mod tests {
         app.insert_resource(cpu_state())
             .init_resource::<Time>()
             .init_resource::<SwarmScene>()
-            .init_resource::<FormationFrame>();
+            .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>();
         app.update();
         let count = 300;
         let max_speed = {
@@ -2205,6 +2250,21 @@ mod tests {
             "helix" => crate::formation::FormationMode::Helix,
             _ => panic!("GPU_BENCH_FORMATION must be off, sphere or helix"),
         };
+        let predator_count = std::env::var("GPU_BENCH_PREDATORS").map_or(0, |value| {
+            value
+                .parse::<usize>()
+                .expect("GPU_BENCH_PREDATORS must be 0..=4")
+        });
+        assert!(predator_count <= crate::predator::MAX_PREDATORS);
+        let combined = std::env::var("GPU_BENCH_COMBINED").is_ok_and(|value| value == "1");
+        let groups = if combined { 2 } else { groups };
+        let obstacle_count = if combined { 4 } else { obstacle_count };
+        let predator_count = if combined { 4 } else { predator_count };
+        let formation_mode = if combined {
+            crate::formation::FormationMode::Sphere
+        } else {
+            formation_mode
+        };
         let warmup = std::env::var("GPU_BENCH_WARMUP").map_or(WARMUP, |value| {
             value
                 .parse::<usize>()
@@ -2215,7 +2275,7 @@ mod tests {
             "GPU_BENCH_WARMUP must be 1..=6000"
         );
         let (device, queue) = gpu_device();
-        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups} obstacles={obstacle_count} formation={formation_mode:?} warmup={warmup}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
+        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups} obstacles={obstacle_count} formation={formation_mode:?} predators={predator_count} combined={combined} warmup={warmup}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
         for count in counts {
             for &following in &modes {
                 for &cap in &caps {
@@ -2237,6 +2297,15 @@ mod tests {
                         ) * world_scale(state.vehicle_count);
                         scene.add_obstacle(center, 8.0);
                     }
+                    if combined {
+                        state.attractor.mode = crate::swarm::AttractorMode::Attract;
+                        state.attractor.scripted_point = Some(Vec3::ZERO);
+                    }
+                    for _ in 0..predator_count {
+                        scene.predators.add(Vec3::ZERO, 20.0);
+                    }
+                    scene.predators.path = crate::predator::PredatorPath::Orbit;
+                    let mut predators = PredatorFrame::default();
                     scene.formation.set_mode(formation_mode);
                     let formation = FormationFrame::fixed(scene.formation);
                     flock.set_scene(&scene);
@@ -2248,7 +2317,22 @@ mod tests {
                     let mut status = String::from("complete");
                     for step in 0..warmup + STEPS {
                         let start = Instant::now();
-                        gpu_step(&mut flock, &device, &queue, &params);
+                        let step_params = if predator_count > 0 {
+                            predators = predators.advance(
+                                &scene.predators,
+                                state.vehicle_count,
+                                Vec3::ZERO,
+                                &crate::presentation::SimulationFrame {
+                                    steps: 1,
+                                    step: Duration::from_secs_f32(DT),
+                                },
+                            );
+                            flock.set_predators(&predators);
+                            params.with_predators(&predators)
+                        } else {
+                            params
+                        };
+                        gpu_step(&mut flock, &device, &queue, &step_params);
                         device.poll(PollType::wait_indefinitely()).unwrap();
                         let elapsed = start.elapsed();
                         if step < warmup {
@@ -2286,6 +2370,9 @@ mod tests {
                             .collect();
                         distances.sort_by(f64::total_cmp);
                         println!("gpu_formation_convergence count={count} cap={cap} follow={following} shape={:?} simulated_seconds={:.3} median_slot_distance={:.3} p95_slot_distance={:.3}", formation_mode, (warmup_steps + timings.len()) as f32 * DT, gpu_bench_percentile(&distances, 50), gpu_bench_percentile(&distances, 95));
+                    }
+                    if predator_count > 0 {
+                        println!("gpu_predator_uploads count={count} cap={cap} uploads={} bytes_per_frame={}", flock.read_predators(&device, &queue).1, crate::predator::PREDATOR_RECORDS * 16);
                     }
                     let mode = if following { "follow" } else { "wander" };
                     let target_distance = if following {
@@ -2833,6 +2920,192 @@ mod tests {
         }
     }
 
+    #[test]
+    fn predators_off_preserves_force_and_groups_off_uses_logical_group_zero() {
+        let mut state = flocking_state();
+        state.vehicle_count = 200;
+        let mut settings = crate::predator::Predators::default();
+        let force = |state: &GlobalState, frame: &PredatorFrame| {
+            group_flocking_force(
+                Vector3::zeros(),
+                Vector3::x(),
+                |visit| visit(Vector3::y(), Vector3::z(), 1),
+                state,
+                UVec4::new(0, 1, 0, 0),
+                &SwarmScene::default(),
+                (&FormationFrame::default(), frame),
+            )
+        };
+        let baseline = force(&state, &PredatorFrame::default());
+        settings.strength = 20.0;
+        let snapshot = |settings: &crate::predator::Predators| {
+            PredatorFrame::default().advance(settings, 200, Vec3::ZERO, &default())
+        };
+        assert_eq!(
+            force(&state, &snapshot(&settings)).map(f32::to_bits),
+            baseline.map(f32::to_bits)
+        );
+        settings.add(Vec3::ZERO, 20.0);
+        settings.strength = 0.0;
+        assert_eq!(
+            force(&state, &snapshot(&settings)).map(f32::to_bits),
+            baseline.map(f32::to_bits)
+        );
+        settings.strength = 4.0;
+        settings.set_mask(2);
+        assert_eq!(
+            force(&state, &snapshot(&settings)).map(f32::to_bits),
+            baseline.map(f32::to_bits)
+        );
+        state.groups.count = 2;
+        let without = force(&state, &PredatorFrame::default());
+        assert!(
+            (force(&state, &snapshot(&settings))
+                - without
+                - Vector3::x() * state.vehicle_max_speed * 4.0)
+                .magnitude()
+                < 1e-4
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_predators_match_cpu_with_masks_groups_and_formation() {
+        let mut scene = SwarmScene::default();
+        scene
+            .formation
+            .set_mode(crate::formation::FormationMode::Sphere);
+        scene.formation.morph = 0.5;
+        scene.add_obstacle(Vec3::new(60.0, -20.0, 10.0), 8.0);
+        for (position, mask) in [
+            (Vec3::new(60.0, -20.0, 10.0), 1),
+            (Vec3::ZERO, 5),
+            (Vec3::new(120.0, 0.0, 0.0), 255),
+            (Vec3::ZERO, 0),
+        ] {
+            scene.predators.add(position, 80.0);
+            scene.predators.objects.last_mut().unwrap().mask = mask;
+        }
+        let groups = crate::swarm::Groups {
+            count: 3,
+            ..default()
+        };
+        for path in [
+            crate::predator::PredatorPath::Off,
+            crate::predator::PredatorPath::Orbit,
+        ] {
+            scene.predators.path = path;
+            scene.predators.path_radius = 15.0;
+            for cap in [0, 512] {
+                gpu_steering_parity(
+                    256,
+                    cap,
+                    crate::swarm::Attractor {
+                        mode: crate::swarm::AttractorMode::Repel,
+                        scripted_point: Some(Vec3::ZERO),
+                        ..default()
+                    },
+                    groups,
+                    scene.clone(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_predator_samples_survive_growth_and_upload_once_per_frame() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::X * 10.0, 8.0);
+        for _ in 0..4 {
+            scene.predators.add(Vec3::ZERO, 20.0);
+        }
+        scene.predators.path = crate::predator::PredatorPath::Orbit;
+        let simulation = crate::presentation::SimulationFrame {
+            steps: 4,
+            step: Duration::from_secs_f32(1.0 / 60.0),
+        };
+        let mut predators =
+            PredatorFrame::default().advance(&scene.predators, 200, Vec3::ZERO, &simulation);
+        let mut state = GlobalState {
+            vehicle_count: 70,
+            ..default()
+        };
+        state.groups.count = 2;
+        flock.set_scene(&scene);
+        flock.set_predators(&predators);
+        let mut uploads = 0;
+        for count in [70, 70, 1025, 37, 800] {
+            state.vehicle_count = count;
+            for step in 0..4 {
+                let mut params = gpu_params(&state, Vec3::ZERO, false, 0.0)
+                    .with_scene(&scene)
+                    .with_predators(&predators);
+                params.predators.z = step;
+                gpu_step(&mut flock, &device, &queue, &params);
+                if step == 0 && (uploads == 0 || count == 1025) {
+                    uploads += 1;
+                }
+                assert_eq!(
+                    flock.read_predators(&device, &queue),
+                    (predators.records(), uploads)
+                );
+                assert_eq!(
+                    flock.read_obstacle_records(&device, &queue).0,
+                    scene.obstacle_records()
+                );
+            }
+        }
+        predators = predators.advance(&scene.predators, 200, Vec3::ZERO, &simulation);
+        flock.set_predators(&predators);
+        let params = gpu_params(&state, Vec3::ZERO, false, 0.0)
+            .with_scene(&scene)
+            .with_predators(&predators);
+        gpu_step(&mut flock, &device, &queue, &params);
+        uploads += 1;
+        assert_eq!(
+            flock.read_predators(&device, &queue),
+            (predators.records(), uploads)
+        );
+        scene.predators.strength = 8.0;
+        scene.predators.visible = false;
+        predators.strength = scene.predators.strength;
+        predators.visible = scene.predators.visible;
+        flock.set_predators(&predators);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &params.with_predators(&predators),
+        );
+        assert_eq!(flock.read_predators(&device, &queue).1, uploads);
+        // Entering pause replaces substep history with the final frozen position once.
+        predators = predators.advance(&scene.predators, 200, Vec3::ZERO, &default());
+        flock.set_predators(&predators);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &params.with_predators(&predators),
+        );
+        uploads += 1;
+        assert_eq!(
+            flock.read_predators(&device, &queue),
+            (predators.records(), uploads)
+        );
+        flock.set_predators(&predators);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &params.with_predators(&predators),
+        );
+        assert_eq!(flock.read_predators(&device, &queue).1, uploads);
+    }
+
     fn gpu_steering_parity(
         count: usize,
         cap: u32,
@@ -2879,12 +3152,24 @@ mod tests {
             };
             let mut app = App::new();
             let formation = FormationFrame::fixed(scene.formation);
+            let mut predators = PredatorFrame::default().advance(
+                &scene.predators,
+                count,
+                if scene.formation.enabled() {
+                    scene.formation.center
+                } else {
+                    scene.predators.path_center
+                },
+                &crate::presentation::SimulationFrame::default(),
+            );
+            app.insert_resource(predators);
             app.insert_resource(formation);
             app.insert_resource(scene.clone());
             app.insert_resource(GlobalState { ..state })
                 .init_resource::<Time>()
                 .init_resource::<SwarmScene>()
                 .init_resource::<FormationFrame>()
+                .init_resource::<PredatorFrame>()
                 .add_systems(Update, (update_formation_slots, movement, update).chain());
             app.world_mut().spawn((
                 Target,
@@ -2934,6 +3219,7 @@ mod tests {
                 .collect();
             let mut flock = GpuFlock::new(&device);
             flock.set_scene(&scene);
+            flock.set_predators(&predators);
             flock.upload(&device, &queue, &boids);
             state.mode = SimulationMode::Gpu;
             gpu_step(
@@ -2942,12 +3228,35 @@ mod tests {
                 &queue,
                 &gpu_params(&state, target, following, 0.0)
                     .with_scene(&scene)
-                    .with_formation(&formation, cap),
+                    .with_formation(&formation, cap)
+                    .with_predators(&predators),
             );
             if !scene.formation.enabled() {
                 assert_eq!(flock.read_boids(&device, &queue), boids);
             }
-            for step in 0..3 {
+            let steps = if predators.active() { 4 } else { 3 };
+            if predators.active() {
+                predators = predators.advance(
+                    &scene.predators,
+                    count,
+                    if scene.formation.enabled() {
+                        scene.formation.center
+                    } else {
+                        scene.predators.path_center
+                    },
+                    &crate::presentation::SimulationFrame {
+                        steps: 4,
+                        step: Duration::from_secs_f32(dt),
+                    },
+                );
+                flock.set_predators(&predators);
+            }
+            for step in 0..steps {
+                if predators.active() {
+                    let mut cpu_sample = predators;
+                    cpu_sample.step = step;
+                    app.insert_resource(cpu_sample);
+                }
                 app.world_mut()
                     .resource_mut::<Time>()
                     .advance_by(Duration::from_secs_f32(dt));
@@ -2964,14 +3273,14 @@ mod tests {
                         )
                     })
                     .collect();
-                gpu_step(
-                    &mut flock,
-                    &device,
-                    &queue,
-                    &gpu_params(&state, target, following, dt)
-                        .with_scene(&scene)
-                        .with_formation(&formation, cap),
-                );
+                let mut params = gpu_params(&state, target, following, dt)
+                    .with_scene(&scene)
+                    .with_formation(&formation, cap)
+                    .with_predators(&predators);
+                if predators.active() {
+                    params.predators.z = step as u32;
+                }
+                gpu_step(&mut flock, &device, &queue, &params);
                 let actual = flock.read_boids(&device, &queue);
                 assert_eq!(actual.len(), count);
                 let mut seen = vec![false; count];
@@ -3198,6 +3507,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(Update, (vehicle_spawner, vehicle_cleanup).chain());
         for (mode, count, expected) in [
             (SimulationMode::Naive, 23, 23),
@@ -3231,6 +3541,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(CpuStep, (movement, update).chain())
             .add_systems(
                 Update,
@@ -3303,6 +3614,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(Update, update);
         let rotation = Quat::from_rotation_x(0.5);
         let entity = app
@@ -3329,7 +3641,8 @@ mod tests {
                 app.insert_resource(cpu_state())
                     .init_resource::<Time>()
                     .init_resource::<SwarmScene>()
-                    .init_resource::<FormationFrame>();
+                    .init_resource::<FormationFrame>()
+                    .init_resource::<PredatorFrame>();
                 app.update();
                 {
                     let mut state = app.world_mut().resource_mut::<GlobalState>();
@@ -3388,6 +3701,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .add_systems(Update, vehicle_spawner);
         app.update();
         let max_speed = app.world().resource::<GlobalState>().vehicle_max_speed;
@@ -3417,6 +3731,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Appearance>()
             .init_resource::<crate::vehicle_model::VehicleModels>()
@@ -3489,6 +3804,7 @@ mod tests {
             .init_resource::<VehicleSpawner>()
             .init_resource::<SwarmScene>()
             .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
             .init_resource::<Time>()
             .add_systems(
                 Update,

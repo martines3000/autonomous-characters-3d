@@ -24,6 +24,7 @@ use bevy::{
 use crate::{
     formation::FormationFrame,
     instancing::FlockInstances,
+    predator::{PredatorFrame, PREDATOR_RECORDS},
     swarm::{Obstacle, SwarmScene, MAX_OBSTACLES, OBSTACLE_LOOK_AHEAD},
     target::{Target, TargetSelection},
     vehicle, GlobalState, SimulationMode,
@@ -124,6 +125,9 @@ pub(crate) struct GpuParams {
     pub formation_center_extent: Vec4,
     // World arrival radius, strength, actual morph, reserved.
     pub formation_settings: Vec4,
+    // Arena offset, active count, substep, reserved.
+    pub predators: UVec4,
+    pub predator_settings: Vec4,
 }
 
 impl GpuParams {
@@ -162,6 +166,16 @@ impl GpuParams {
         self
     }
 
+    pub(crate) fn with_predators(mut self, frame: &PredatorFrame) -> Self {
+        self.predators = UVec4::ZERO;
+        self.predator_settings = Vec4::ZERO;
+        if frame.active() {
+            self.predators.y = frame.count as u32;
+            self.predator_settings.x = frame.strength;
+        }
+        self
+    }
+
     fn simulates(&self) -> bool {
         self.dt > 0.0
     }
@@ -171,13 +185,15 @@ pub struct GpuFlockPlugin;
 
 impl Plugin for GpuFlockPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FormationFrame>()
+        app.init_resource::<PredatorFrame>()
+            .init_resource::<FormationFrame>()
             .init_resource::<SwarmScene>()
             .init_resource::<GpuParams>()
             .add_plugins((
                 ExtractResourcePlugin::<GpuParams>::default(),
                 ExtractResourcePlugin::<SwarmScene>::default(),
                 ExtractResourcePlugin::<FormationFrame>::default(),
+                ExtractResourcePlugin::<PredatorFrame>::default(),
             ))
             .add_systems(
                 Update,
@@ -203,6 +219,7 @@ pub(crate) fn update_gpu_params(
     frame: Res<crate::presentation::SimulationFrame>,
     mut params: ResMut<GpuParams>,
     formation: Res<FormationFrame>,
+    predators: Res<PredatorFrame>,
 ) {
     let (target, selection) = targets
         .single()
@@ -211,7 +228,8 @@ pub(crate) fn update_gpu_params(
         });
     params.set_if_neq(
         gpu_params(&state, target, selection, frame.step.as_secs_f32())
-            .with_formation(&formation, state.gpu_max_neighbors),
+            .with_formation(&formation, state.gpu_max_neighbors)
+            .with_predators(&predators),
     );
 }
 
@@ -285,6 +303,7 @@ fn init_gpu_flock(mut commands: Commands, device: Res<RenderDevice>) {
 struct FlockFrame<'w> {
     simulation: Res<'w, crate::presentation::SimulationFrame>,
     formation: Res<'w, FormationFrame>,
+    predators: Res<'w, PredatorFrame>,
 }
 
 fn run_gpu_flock(
@@ -300,6 +319,7 @@ fn run_gpu_flock(
     let mut params = (*params).with_scene(&scene);
     let frame = &frames.simulation;
     flock.set_scene(&scene);
+    flock.set_predators(&frames.predators);
     let device = context.render_device().clone();
     let diagnostics = context.diagnostic_recorder();
     let recorder = diagnostics.as_deref();
@@ -316,11 +336,15 @@ fn run_gpu_flock(
         || params.count != flock.count
         || params.groups.x != flock.group_count
         || flock.scene_dirty
+        || flock.predators_dirty
         || (params.formation.x != 0) != flock.formation_enabled
     {
         for index in 0..frame.steps.max(1) {
             if params.formation.x != 0 {
                 params.formation_settings.z = frames.formation.samples[index as usize];
+            }
+            if params.predators.y != 0 {
+                params.predators.z = index;
             }
             flock.encode(&device, &queue, context.command_encoder(), &params);
         }
@@ -355,8 +379,8 @@ pub(crate) struct GpuFlock {
     formation_count: ComputePipeline,
     formation_scan: ComputePipeline,
     formation_assign: ComputePipeline,
-    // Index bits: 0 groups, 1 obstacles, 2 formation. Disabled features compile out of steering.
-    steer: [ComputePipeline; 8],
+    // Index bits: 0 groups, 1 obstacles, 2 formation, 3 predators. Disabled features compile out of steering.
+    steer: [ComputePipeline; 16],
     params: Buffer,
     buffers: Option<FlockBuffers>,
     // Boids alive on the GPU.
@@ -369,6 +393,10 @@ pub(crate) struct GpuFlock {
     obstacles: Vec<Obstacle>,
     scene_dirty: bool,
     formation_enabled: bool,
+    predator_records: Vec<UVec4>,
+    predators_dirty: bool,
+    #[cfg(test)]
+    predator_uploads: u32,
     #[cfg(test)]
     scene_uploads: u32,
 }
@@ -435,7 +463,10 @@ impl FlockBuffers {
             "gpu_flock_metadata_arena",
             // Two metadata tables and two packed u32 order maps; scene data shares this binding.
             capacity as u64 * METADATA_SIZE * 5 / 2
-                + (MAX_OBSTACLES as u64 * 2 + crate::swarm::MAX_GROUPS as u64) * METADATA_SIZE,
+                + (MAX_OBSTACLES as u64 * 2
+                    + crate::swarm::MAX_GROUPS as u64
+                    + PREDATOR_RECORDS as u64)
+                    * METADATA_SIZE,
             BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
         let bind_group = device.create_bind_group(
@@ -490,7 +521,7 @@ impl GpuFlock {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |entry_point, groups, obstacles, formation| {
+        let pipeline = |entry_point, groups, obstacles, formation, predators| {
             device.create_compute_pipeline(&RawComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&pipeline_layout),
@@ -501,6 +532,7 @@ impl GpuFlock {
                         ("GROUPS_ENABLED", groups),
                         ("OBSTACLES_ENABLED", obstacles),
                         ("FORMATION_ENABLED", formation),
+                        ("PREDATORS_ENABLED", predators),
                     ],
                     ..default()
                 },
@@ -514,31 +546,30 @@ impl GpuFlock {
             mapped_at_creation: false,
         });
         Self {
-            spawn: pipeline("spawn", 0.0, 0.0, 0.0),
-            update_groups: pipeline("update_groups", 0.0, 0.0, 0.0),
-            gather_metadata: pipeline("gather_metadata", 0.0, 0.0, 0.0),
-            compact_metadata: pipeline("compact_metadata", 0.0, 0.0, 0.0),
-            clear_counts: pipeline("clear_counts", 0.0, 0.0, 0.0),
-            count_cells: pipeline("count", 0.0, 0.0, 0.0),
-            count_separation: pipeline("count_separation", 0.0, 0.0, 0.0),
-            scan_blocks: pipeline("scan_blocks", 0.0, 0.0, 0.0),
-            scan_block_sums: pipeline("scan_block_sums", 0.0, 0.0, 0.0),
-            scatter: pipeline("scatter", 0.0, 0.0, 0.0),
-            scatter_fine: pipeline("scatter_fine", 0.0, 0.0, 0.0),
-            separate: pipeline("separate", 0.0, 0.0, 0.0),
-            formation_count: pipeline("formation_count", 0.0, 0.0, 0.0),
-            formation_scan: pipeline("formation_scan", 0.0, 0.0, 0.0),
-            formation_assign: pipeline("formation_assign", 0.0, 0.0, 0.0),
-            steer: [
-                pipeline("steer", 0.0, 0.0, 0.0),
-                pipeline("steer", 1.0, 0.0, 0.0),
-                pipeline("steer", 0.0, 1.0, 0.0),
-                pipeline("steer", 1.0, 1.0, 0.0),
-                pipeline("steer", 0.0, 0.0, 1.0),
-                pipeline("steer", 1.0, 0.0, 1.0),
-                pipeline("steer", 0.0, 1.0, 1.0),
-                pipeline("steer", 1.0, 1.0, 1.0),
-            ],
+            spawn: pipeline("spawn", 0.0, 0.0, 0.0, 0.0),
+            update_groups: pipeline("update_groups", 0.0, 0.0, 0.0, 0.0),
+            gather_metadata: pipeline("gather_metadata", 0.0, 0.0, 0.0, 0.0),
+            compact_metadata: pipeline("compact_metadata", 0.0, 0.0, 0.0, 0.0),
+            clear_counts: pipeline("clear_counts", 0.0, 0.0, 0.0, 0.0),
+            count_cells: pipeline("count", 0.0, 0.0, 0.0, 0.0),
+            count_separation: pipeline("count_separation", 0.0, 0.0, 0.0, 0.0),
+            scan_blocks: pipeline("scan_blocks", 0.0, 0.0, 0.0, 0.0),
+            scan_block_sums: pipeline("scan_block_sums", 0.0, 0.0, 0.0, 0.0),
+            scatter: pipeline("scatter", 0.0, 0.0, 0.0, 0.0),
+            scatter_fine: pipeline("scatter_fine", 0.0, 0.0, 0.0, 0.0),
+            separate: pipeline("separate", 0.0, 0.0, 0.0, 0.0),
+            formation_count: pipeline("formation_count", 0.0, 0.0, 0.0, 0.0),
+            formation_scan: pipeline("formation_scan", 0.0, 0.0, 0.0, 0.0),
+            formation_assign: pipeline("formation_assign", 0.0, 0.0, 0.0, 0.0),
+            steer: std::array::from_fn(|flags| {
+                pipeline(
+                    "steer",
+                    (flags & 1 != 0) as u32 as f64,
+                    (flags & 2 != 0) as u32 as f64,
+                    (flags & 4 != 0) as u32 as f64,
+                    (flags & 8 != 0) as u32 as f64,
+                )
+            }),
             layout,
             params,
             buffers: None,
@@ -550,6 +581,10 @@ impl GpuFlock {
             obstacles: Vec::new(),
             scene_dirty: false,
             formation_enabled: false,
+            predator_records: Vec::new(),
+            predators_dirty: false,
+            #[cfg(test)]
+            predator_uploads: 0,
             #[cfg(test)]
             scene_uploads: 0,
         }
@@ -564,6 +599,14 @@ impl GpuFlock {
         if self.obstacles != scene.obstacles {
             self.obstacles.clone_from(&scene.obstacles);
             self.scene_dirty = true;
+        }
+    }
+
+    pub(crate) fn set_predators(&mut self, frame: &PredatorFrame) {
+        let records = frame.records();
+        if self.predator_records != records {
+            self.predator_records = records;
+            self.predators_dirty = true;
         }
     }
 
@@ -590,6 +633,7 @@ impl GpuFlock {
             && count == self.count
             && !remap
             && !self.scene_dirty
+            && !self.predators_dirty
             && formation == self.formation_enabled
         {
             self.count = count;
@@ -635,6 +679,7 @@ impl GpuFlock {
             }
             self.buffers = Some(grown);
             self.scene_dirty = true;
+            self.predators_dirty = true;
             self.order_base = 0;
         }
         let buffers = self.buffers.as_ref().unwrap();
@@ -661,6 +706,25 @@ impl GpuFlock {
             }
             self.scene_dirty = false;
         }
+        if self.predators_dirty {
+            if !self.predator_records.is_empty() {
+                let bytes: Vec<u8> = self
+                    .predator_records
+                    .iter()
+                    .flat_map(|v| v.to_array().into_iter().flat_map(u32::to_le_bytes))
+                    .collect();
+                queue.write_buffer(
+                    &buffers.arena,
+                    (buffers.capacity as u64 * 5 / 2 + 24) * METADATA_SIZE,
+                    &bytes,
+                );
+                #[cfg(test)]
+                {
+                    self.predator_uploads += 1;
+                }
+            }
+            self.predators_dirty = false;
+        }
         let spawn_from = self.count.min(count);
         let block_count = buffers.table_size / SCAN_BLOCK;
         let step = GpuParams {
@@ -669,6 +733,12 @@ impl GpuFlock {
             frame: self.frame,
             block_count,
             obstacles: UVec4::new(buffers.capacity * 5 / 2, params.obstacles.y, 0, 0),
+            predators: UVec4::new(
+                buffers.capacity * 5 / 2 + 24 + params.predators.z * 8,
+                params.predators.y,
+                params.predators.z,
+                0,
+            ),
             formation: UVec4::new(
                 params.formation.x,
                 0,
@@ -759,7 +829,8 @@ impl GpuFlock {
             (
                 &self.steer[(params.groups.x != 0) as usize
                     | (((params.obstacles.y != 0) as usize) << 1)
-                    | ((formation as usize) << 2)],
+                    | ((formation as usize) << 2)
+                    | (((params.predators.y != 0) as usize) << 3)],
                 groups(count),
             ),
         ] {
@@ -793,6 +864,7 @@ impl GpuFlock {
         {
             self.buffers = Some(FlockBuffers::new(device, &self.layout, &self.params, count));
             self.scene_dirty = true;
+            self.predators_dirty = true;
         }
         let mut bytes = Vec::with_capacity(boids.len() * BOID_SIZE as usize);
         let mut metadata = Vec::with_capacity(boids.len() * METADATA_SIZE as usize);
@@ -948,6 +1020,15 @@ impl GpuFlock {
             .unwrap()
     }
 
+    #[cfg(test)]
+    pub fn read_predators(&self, device: &RenderDevice, queue: &RenderQueue) -> (Vec<UVec4>, u32) {
+        let offset = (self.buffers.as_ref().unwrap().capacity as u64 * 5 / 2 + 24) * METADATA_SIZE;
+        (
+            self.read_arena(device, queue, offset, PREDATOR_RECORDS as u64),
+            self.predator_uploads,
+        )
+    }
+
     /// Copies the first `count` boids back to the CPU (blocking).
     #[cfg(test)]
     pub fn read_boids(&self, device: &RenderDevice, queue: &RenderQueue) -> Vec<BoidData> {
@@ -1035,7 +1116,8 @@ mod tests {
     #[test]
     fn presentation_params_skip_paused_steps_and_scale_simulated_delta() {
         let mut app = crate::presentation::tests::clock_app();
-        app.init_resource::<FormationFrame>()
+        app.init_resource::<PredatorFrame>()
+            .init_resource::<FormationFrame>()
             .init_resource::<SwarmScene>()
             .init_resource::<GlobalState>()
             .init_resource::<GpuParams>()
@@ -1211,6 +1293,36 @@ mod tests {
     }
 
     #[test]
+    fn predator_params_preserve_off_and_neighbor_cap_and_fit_arena_tail() {
+        let state = GlobalState {
+            vehicle_count: 100_000,
+            ..default()
+        };
+        let base = gpu_params(&state, Vec3::ZERO, false, 0.01);
+        assert_eq!(base.with_predators(&PredatorFrame::default()), base);
+        let mut settings = crate::predator::Predators::default();
+        settings.add(Vec3::ZERO, 20.0);
+        let frame = PredatorFrame::default().advance(&settings, 100_000, Vec3::ZERO, &default());
+        let active = base.with_predators(&frame);
+        assert_eq!(active.predators.y, 1);
+        assert_eq!(active.max_neighbors, base.max_neighbors);
+        assert_eq!(active.predator_settings.x, 4.0);
+        settings.strength = 0.0;
+        assert_eq!(
+            base.with_predators(&frame.advance(&settings, 100_000, Vec3::ZERO, &default())),
+            base
+        );
+        for capacity in [512_u32, 131072, 1048576] {
+            let predators = capacity * 5 / 2 + 24;
+            assert_eq!(predators - (capacity * 5 / 2 + 16), 8);
+            assert_eq!(PREDATOR_RECORDS, 32);
+            assert!(
+                (predators as u64 + PREDATOR_RECORDS as u64) * METADATA_SIZE < 128 * 1024 * 1024
+            );
+        }
+    }
+
+    #[test]
     fn params_encode_with_wgsl_uniform_offsets() {
         // Naga's Params layout: seven u32s, eighteen f32s, vec3s at 112/128, Vec4s at 144/160.
         let params = GpuParams {
@@ -1250,14 +1362,25 @@ mod tests {
             formation: UVec4::new(1, 0, 4, 9000),
             formation_center_extent: Vec4::new(52.0, 53.0, 54.0, 55.0),
             formation_settings: Vec4::new(56.0, 57.0, 58.0, 59.0),
+            predators: UVec4::new(9001, 4, 3, 0),
+            predator_settings: Vec4::new(60.0, 61.0, 62.0, 63.0),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 400);
-        assert_eq!(bytes.len(), 400);
+        assert_eq!(GpuParams::min_size().get(), 432);
+        assert_eq!(bytes.len(), 432);
         assert_eq!(size_of::<BoidData>(), 80);
         assert_eq!(BOID_SIZE, 64);
+        for (axis, value) in [9001_u32, 4, 3, 0].into_iter().enumerate() {
+            assert_eq!(&bytes[400 + axis * 4..404 + axis * 4], &value.to_le_bytes());
+        }
+        for axis in 0..4 {
+            assert_eq!(
+                &bytes[416 + axis * 4..420 + axis * 4],
+                &((60 + axis) as f32).to_le_bytes()
+            );
+        }
         for (axis, value) in [1_u32, 0, 4, 9000].into_iter().enumerate() {
             assert_eq!(&bytes[352 + axis * 4..356 + axis * 4], &value.to_le_bytes());
         }

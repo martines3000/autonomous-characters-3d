@@ -2,7 +2,7 @@
 
 ## Current work
 
-- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a–7c committed (`4e0d5a6` latest); 7d analytic Sphere/Helix formations implemented and verified, awaiting orchestrator review. Dense carried group slots, simulated-time morphs, UI/scenarios, 116 release tests and 11 GPU tests pass. Off headless costs remain within observed variation; cap/convergence/desktop evidence recorded. Clippy remains seven existing warnings. Stage 7e remains separate work.
+- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a–7d committed (`77406a4` latest); 7e predators implemented and behavior-verified (122 release / 13 GPU tests, Clippy 7), uncommitted. All five mechanics exist. Idle performance acceptance is pending: unrelated Blender activity contaminated post-change timings; repeated diagnostics, combined measurements and desktop/pause evidence are recorded in the plan. Stage 7 completion remains open until idle rerun and owner review.
 
 - [Presentation controls](planned/2026-10-31-presentation-controls.md): Stage 5 done: simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
 
