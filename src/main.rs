@@ -14,6 +14,7 @@ mod scene;
 mod showcase;
 mod swarm;
 mod target;
+mod underwater;
 mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;

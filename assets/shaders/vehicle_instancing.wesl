@@ -10,6 +10,7 @@ import bevy_pbr::render::{
 import bevy_pbr::render::mesh_view_bindings::{screen_space_ambient_occlusion_texture, view};
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION)
 import bevy_pbr::ssao::utils::ssao_multibounce;
+@if(UNDERWATER) import super::underwater_caustics::caustics;
 
 struct Appearance {
     colors: array<vec4<f32>, 7>,
@@ -213,6 +214,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
     @if(GLOW) { lit = vec4<f32>(lit.rgb + in.color * in.glow_emission, lit.a); }
+    @if(UNDERWATER) {
+        let caustic = caustics(in.world_position.xyz, pbr_input.N, appearance.motion.x, appearance.proportions.w);
+        lit = vec4<f32>(lit.rgb * (1.0 + caustic * 3.5) + caustic * 0.18, lit.a);
+    }
     return main_pass_post_lighting_processing(pbr_input, lit);
 }
 

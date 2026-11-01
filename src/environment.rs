@@ -32,19 +32,21 @@ pub enum Environment {
     Off,
     Sunset,
     Midday,
+    Underwater,
 }
 impl Environment {
-    pub const ALL: [Self; 3] = [Self::Off, Self::Sunset, Self::Midday];
+    pub const ALL: [Self; 4] = [Self::Off, Self::Sunset, Self::Midday, Self::Underwater];
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "Off",
             Self::Sunset => "Sunset",
             Self::Midday => "Midday",
+            Self::Underwater => "Underwater",
         }
     }
     fn source(self) -> Option<&'static str> {
         match self {
-            Self::Off => None,
+            Self::Off | Self::Underwater => None,
             Self::Sunset => Some("environment/kloppenheim_06_puresky_4k.hdr"),
             Self::Midday => Some("environment/kloofendal_48d_partly_cloudy_puresky_2k.hdr"),
         }
@@ -52,6 +54,7 @@ impl Environment {
     fn sun_lux(self) -> f32 {
         match self {
             Self::Sunset => 12000.0,
+            Self::Underwater => 9000.0,
             _ => 24000.0,
         }
     }
@@ -64,6 +67,7 @@ impl Environment {
     fn ibl_intensity(self) -> f32 {
         match self {
             Self::Sunset => 650.0,
+            Self::Underwater => 850.0,
             _ => 1000.0,
         }
     }
@@ -75,8 +79,9 @@ impl FromStr for Environment {
             "off" => Ok(Self::Off),
             "sunset" => Ok(Self::Sunset),
             "midday" => Ok(Self::Midday),
+            "underwater" => Ok(Self::Underwater),
             _ => Err(format!(
-                "invalid environment {value:?}; expected off, sunset or midday"
+                "invalid environment {value:?}; expected off, sunset, midday or underwater"
             )),
         }
     }
@@ -112,14 +117,16 @@ struct PreviousCamera {
 pub struct EnvironmentPlugin;
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EnvironmentCache>().add_systems(
-            PostUpdate,
-            update_environment
-                .after(crate::scene::draw_world)
-                .after(crate::scene::sync_glow_camera)
-                .before(bevy::camera::CameraUpdateSystems)
-                .before(TransformSystems::Propagate),
-        );
+        app.add_plugins(crate::underwater::UnderwaterPlugin)
+            .init_resource::<EnvironmentCache>()
+            .add_systems(
+                PostUpdate,
+                update_environment
+                    .after(crate::scene::draw_world)
+                    .after(crate::scene::sync_glow_camera)
+                    .before(bevy::camera::CameraUpdateSystems)
+                    .before(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -153,7 +160,7 @@ fn update_environment(
     >,
 ) {
     let kind = appearance.environment;
-    let Some(path) = kind.source() else {
+    if kind == Environment::Off {
         for (entity, _, _, _, _, previous) in &mut cameras {
             if let Some(previous) = previous {
                 let mut camera = commands.entity(entity);
@@ -178,12 +185,12 @@ fn update_environment(
             }
         }
         return;
-    };
+    }
     if !cache.0.iter().any(|entry| entry.kind == kind) {
         cache.0.push(CachedEnvironment {
             kind,
-            source: Some(server.load(path)),
-            ready: None,
+            source: kind.source().map(|path| server.load(path)),
+            ready: (kind == Environment::Underwater).then(|| prepare_underwater(&mut images)),
             failed: false,
         });
     }
@@ -231,7 +238,7 @@ fn update_environment(
             server.get_load_state(source.id()),
             Some(LoadState::Failed(_))
         ) {
-            error!("Cannot load environment {path}");
+            error!("Cannot load environment {:?}", kind.source());
             entry.failed = true;
         }
     }
@@ -266,9 +273,15 @@ fn update_environment(
             transform.translation,
             vehicle::walls(state.vehicle_count),
         );
-        fog.falloff = FogFalloff::Linear {
-            start: far * 0.35,
-            end: far * 3.5,
+        fog.falloff = if kind == Environment::Underwater {
+            FogFalloff::Exponential {
+                density: 0.5 / vehicle::walls(state.vehicle_count).x,
+            }
+        } else {
+            FogFalloff::Linear {
+                start: far * 0.35,
+                end: far * 3.5,
+            }
         };
     }
     for (mut light, mut transform, key, _) in &mut lights {
@@ -282,6 +295,62 @@ fn update_environment(
             };
             *transform = Transform::from_translation(prepared.sun).looking_at(Vec3::ZERO, up);
         }
+    }
+}
+
+/// Smooth water-column radiance, with a broad refracted patch of light overhead.
+/// Direction-only detail keeps the six faces continuous and needs no downloaded assets.
+fn water_radiance(n: Vec3) -> Vec3 {
+    let deep = Vec3::new(0.0005, 0.003, 0.025);
+    let horizon = Vec3::new(0.006, 0.075, 0.19);
+    let surface = Vec3::new(0.025, 0.85, 0.72);
+    if n.y < 0.0 {
+        return horizon.lerp(deep, (-n.y).powf(0.7));
+    }
+    let gradient = horizon.lerp(surface, n.y.powf(1.4));
+    let light = n
+        .dot(Vec3::new(-0.18, 0.97, -0.16).normalize())
+        .max(0.0)
+        .powf(20.0);
+    let ripple = (n.x * 47.0 + (n.z * 31.0).sin()).sin() * (n.z * 53.0 + (n.x * 29.0).cos()).sin();
+    gradient + Vec3::new(0.65, 2.1, 1.5) * light * (0.85 + 0.15 * ripple)
+}
+
+fn prepare_underwater(images: &mut Assets<Image>) -> PreparedEnvironment {
+    // A low-frequency analytic sky needs only 128px; broad IBL lobes need even less.
+    let sky = images.add(cubemap(128, 1, |n, _| water_radiance(n)));
+    let panorama = Panorama {
+        width: 64,
+        height: 32,
+        pixels: (0..32)
+            .flat_map(|y| {
+                (0..64).map(move |x| {
+                    water_radiance(panorama_direction(
+                        (x as f32 + 0.5) / 64.0,
+                        (y as f32 + 0.5) / 32.0,
+                    ))
+                })
+            })
+            .collect(),
+    };
+    let diffuse = images.add(cubemap(16, 1, |n, _| convolve(&panorama, n, 1.0, true)));
+    let specular = images.add(cubemap(64, 7, |n, roughness| {
+        convolve(&panorama, n, roughness.max(0.04), false)
+    }));
+    let horizon = water_radiance(Vec3::X)
+        * Environment::Underwater.sky_brightness()
+        * ENV_EXPOSURE.exposure();
+    PreparedEnvironment {
+        sky,
+        light: EnvironmentMapLight {
+            diffuse_map: diffuse,
+            specular_map: specular,
+            intensity: Environment::Underwater.ibl_intensity(),
+            ..default()
+        },
+        sun: Vec3::new(-0.18, 0.97, -0.16).normalize(),
+        sun_color: Color::srgb(0.72, 1.0, 0.86),
+        horizon: Color::linear_rgb(horizon.x, horizon.y, horizon.z),
     }
 }
 
@@ -506,6 +575,55 @@ fn convolve(panorama: &Panorama, n: Vec3, roughness: f32, diffuse: bool) -> Vec3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn underwater_is_procedural_cached_and_restores_the_camera() {
+        use bevy::asset::AssetPlugin;
+        assert!(water_radiance(Vec3::Y).y > water_radiance(Vec3::NEG_Y).y * 20.0);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .insert_resource(Appearance {
+                environment: Environment::Underwater,
+                ..default()
+            })
+            .init_resource::<GlobalState>()
+            .init_resource::<EnvironmentCache>()
+            .add_systems(Update, update_environment);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::default(),
+                DistanceFog::default(),
+                Tonemapping::TonyMcMapface,
+            ))
+            .id();
+        app.update();
+        let entity = app.world().entity(camera);
+        assert!(entity.contains::<EnvironmentMapLight>());
+        assert!(
+            matches!(entity.get::<DistanceFog>().unwrap().falloff, FogFalloff::Exponential { density } if density > 0.0)
+        );
+        let sky = entity.get::<Skybox>().unwrap().image.clone();
+        let image_count = app.world().resource::<Assets<Image>>().len();
+        assert_eq!(image_count, 3);
+        assert!(app.world().resource::<EnvironmentCache>().0[0]
+            .source
+            .is_none());
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Off;
+        app.update();
+        assert!(!app.world().entity(camera).contains::<Skybox>());
+        assert!(!app.world().entity(camera).contains::<Hdr>());
+        assert_eq!(
+            *app.world().get::<Tonemapping>(camera).unwrap(),
+            Tonemapping::TonyMcMapface
+        );
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Underwater;
+        app.update();
+        assert_eq!(app.world().get::<Skybox>(camera).unwrap().image, sky);
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), image_count);
+    }
 
     #[test]
     fn sun_extraction_uses_hdr_peak_and_world_direction() {
