@@ -104,8 +104,8 @@ struct FlockRenderSettings {
 impl FlockRenderSettings {
     fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
         Self {
-            shadows: appearance.shadows,
-            opaque: appearance.shadows || appearance.ambient_occlusion,
+            shadows: appearance.effective_shadows(),
+            opaque: appearance.effective_shadows() || appearance.ambient_occlusion,
             count: state.vehicle_count,
             cap: appearance.shadow_cap,
         }
@@ -1067,6 +1067,19 @@ mod tests {
         appearance.ambient_occlusion = true;
         let settings = FlockRenderSettings::from_settings(&appearance, &state);
         assert!(settings.opaque && !settings.casts_shadows());
+        appearance.ambient_occlusion = false;
+        appearance.volumetric = true;
+        appearance.environment = crate::environment::Environment::Underwater;
+        for (count, expected) in [(0, false), (10, true), (11, false)] {
+            state.vehicle_count = count;
+            let settings = FlockRenderSettings::from_settings(&appearance, &state);
+            assert!(settings.opaque);
+            assert_eq!(settings.casts_shadows(), expected);
+        }
+        appearance.volumetric = false;
+        let settings = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(!settings.opaque && !settings.casts_shadows());
+        assert!(!appearance.shadows);
         assert_eq!(
             key,
             flock_pipeline_key(

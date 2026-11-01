@@ -117,16 +117,20 @@ struct PreviousCamera {
 pub struct EnvironmentPlugin;
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(crate::underwater::UnderwaterPlugin)
-            .init_resource::<EnvironmentCache>()
-            .add_systems(
-                PostUpdate,
-                update_environment
-                    .after(crate::scene::draw_world)
-                    .after(crate::scene::sync_glow_camera)
-                    .before(bevy::camera::CameraUpdateSystems)
-                    .before(TransformSystems::Propagate),
-            );
+        app.add_plugins((
+            crate::underwater::UnderwaterPlugin,
+            crate::volumetric::VolumetricPlugin,
+        ))
+        .init_resource::<EnvironmentCache>()
+        .add_systems(
+            PostUpdate,
+            update_environment
+                .after(crate::scene::draw_world)
+                .after(crate::scene::sync_glow_camera)
+                .before(crate::volumetric::sync_volumetric)
+                .before(bevy::camera::CameraUpdateSystems)
+                .before(TransformSystems::Propagate),
+        );
     }
 }
 

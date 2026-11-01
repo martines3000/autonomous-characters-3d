@@ -18,6 +18,7 @@ mod underwater;
 mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;
+mod volumetric;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
@@ -421,9 +422,14 @@ fn ui(
                             ui.selectable_value(&mut appearance.environment, environment, environment.name());
                         }
                     });
+                ui.checkbox(&mut appearance.volumetric, "Volumetric light");
+                if appearance.volumetric {
+                    ui.add(egui::Slider::new(&mut appearance.volumetric_steps, 16..=128).text("Ray steps"));
+                    ui.label("Active environments imply shadows (casting cap still applies)");
+                }
                 ui.checkbox(&mut appearance.shadows, "Shadows");
                 ui.add(egui::Slider::new(&mut appearance.shadow_cap, 0..=1_000_000).text("Flock shadow cap"));
-                if appearance.shadows && state.vehicle_count > appearance.shadow_cap {
+                if appearance.effective_shadows() && state.vehicle_count > appearance.shadow_cap {
                     ui.label("Flock shadows paused: vehicle count exceeds cap");
                 }
                 ui.checkbox(&mut appearance.ambient_occlusion, "Ambient occlusion");
