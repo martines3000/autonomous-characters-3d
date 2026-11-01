@@ -269,7 +269,8 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
             state.motion.bank,
             u32::from(state.motion.classic_heading) as f32,
             crate::motion::RESPONSE,
-            0.0,
+            // History stays off unless the render graph has a motion-vector view.
+            -1.0,
         ),
         mass: state.vehicle_mass,
         max_speed: state.vehicle_max_speed,

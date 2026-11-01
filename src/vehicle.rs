@@ -1147,12 +1147,9 @@ mod tests {
             vehicle_count: 600,
             ..default()
         };
-        gpu_step(
-            &mut flock,
-            &device,
-            &queue,
-            &gpu_params(&state, Vec3::ZERO, false, 0.0),
-        );
+        let mut spawn = gpu_params(&state, Vec3::ZERO, false, 0.0);
+        spawn.motion.w = 0.0;
+        gpu_step(&mut flock, &device, &queue, &spawn);
         for (boid, pose) in flock
             .read_boids(&device, &queue)
             .iter()

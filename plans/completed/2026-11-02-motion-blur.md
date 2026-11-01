@@ -81,3 +81,5 @@ No dependency changes. Add CPU previous-transform component, parallel render str
 Revision notes:
 
 - 2026-11-02: Completed; bound the arena output directly as the previous-transform stream and added spawn-only initialization.
+
+Orchestrator follow-up (2026-11-02): `gpu_params` defaulted the history substep to `0.0`, so the headless GPU benchmark measured with history on. It now defaults to `-1.0` (off), as the app does without a motion-vector view; the identity test enables history explicitly. Idle RX 7900 XT, cap 16, 1M, two runs each: before motion blur (`3605ca4`) wander 4.409/4.554 ms, follow 7.965/8.070 ms; history on 4.771–4.842 / 8.172–8.442 ms; history off 4.513/4.528 / 7.617/7.955 ms. History off costs nothing; history on costs about 0.3 ms at 1M. A `MOTION_HISTORY` override constant was tried and removed: it did not reduce the history-on cost.
