@@ -145,7 +145,7 @@ force weights are unchanged; visual speed tuning remains an owner decision. See
 
 ### Sky environments
 
-**Scene → Environment** selects **Off** (default), **Sunset** or **Midday**, independently of Style.
+**Scene → Environment** selects **Off** (default), **Sunset**, **Midday** or **Underwater**, independently of Style.
 Sunset and Midday use the bundled CC0 Poly Haven HDRIs; attribution is in
 [assets/environment/CREDITS.md](assets/environment/CREDITS.md).
 Each sky loads on first selection, then caches a 512px HDR cubemap, cosine-convolved diffuse lighting
@@ -159,6 +159,14 @@ while riding a bird. Off restores the original camera tonemapping/exposure and s
 Glow bloom, bank/flap motion, boid chase and its depth of field remain available with either sky.
 The instanced PBR path inherits Bevy's environment-map view key and both view bind groups, so birds
 receive diffuse sky color, roughness-dependent reflections and directional sunlight in the same draw.
+
+**Underwater** is fully procedural: a cached 128px turquoise-to-deep-blue cubemap, diffuse/GGX
+water IBL, green-tinted overhead sun and exponential distance fog. The existing floor becomes sand
+below the flock, with subtle ripples. Shared XZ-projected caustics move across vehicles and sand,
+fade with depth, and use simulation time: pause freezes them and slow motion slows them.
+The vehicle shader compiles caustics only for Underwater; other environments keep their existing path.
+Try Fish with Ocean colors, boid chase at 0.25×, Director, or Glow. Select with
+`set environment underwater`; Off restores the original floor and camera settings.
 
 ### Swarm mechanics
 
@@ -802,7 +810,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |
-| `set environment` | `off` (default), `sunset`, `midday`; independent of Style |
+| `set environment` | `off` (default), `sunset`, `midday`, `underwater`; independent of Style |
 | `set glow` | Emission strength 0–20, default 4; Glow only |
 | `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
 | `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |

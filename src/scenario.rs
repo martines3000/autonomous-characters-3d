@@ -937,6 +937,7 @@ mod tests {
             ("off", Environment::Off),
             ("sunset", Environment::Sunset),
             ("midday", Environment::Midday),
+            ("underwater", Environment::Underwater),
         ] {
             let parsed = parse(&format!("0 set environment {name}")).unwrap();
             assert_eq!(
@@ -947,7 +948,7 @@ mod tests {
             assert_eq!(world.resource::<Appearance>().environment, expected);
             assert_eq!(world.resource::<Appearance>().style, SceneStyle::Studio);
         }
-        for bad in ["underwater", "Sunset", "", "on", "NaN"] {
+        for bad in ["water", "Underwater", "Sunset", "", "on", "NaN"] {
             assert!(parse(&format!("0 set environment {bad}")).is_err());
         }
     }

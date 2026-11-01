@@ -127,13 +127,14 @@ struct AppearanceUniform {
     proportions: Vec4,
     solid_color: Vec4,
     group_colors: [Vec4; crate::swarm::MAX_GROUPS],
-    // simulated seconds, procedural amplitude, speed-frequency gain, reserved.
+    // simulated seconds, procedural amplitude, speed-frequency gain, underwater specialization.
     motion: Vec4,
 }
 
 impl AppearanceUniform {
     fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
         let look = appearance.style.settings();
+        let underwater = appearance.environment == crate::environment::Environment::Underwater;
         Self {
             colors: appearance.palette.colors(),
             material: Vec4::new(
@@ -160,9 +161,14 @@ impl AppearanceUniform {
                 state.motion.procedural_kind(appearance.vehicles.shape),
             ),
             motion: if state.motion.procedural_kind(appearance.vehicles.shape) != 0 {
-                Vec4::new(0.0, state.motion.flap, state.motion.frequency, 0.0)
+                Vec4::new(
+                    0.0,
+                    state.motion.flap,
+                    state.motion.frequency,
+                    f32::from(underwater),
+                )
             } else {
-                Vec4::ZERO
+                Vec4::new(0.0, 0.0, 0.0, f32::from(underwater))
             },
             proportions: Vec4::new(
                 appearance.vehicles.width,
@@ -192,9 +198,13 @@ fn update_appearance(
     mut uniform: ResMut<AppearanceUniform>,
     clock: Option<Res<crate::presentation::SimulationClock>>,
 ) {
-    if appearance.is_changed() || state.is_changed() || uniform.modes.w != 0 {
+    if appearance.is_changed()
+        || state.is_changed()
+        || uniform.modes.w != 0
+        || uniform.motion.w != 0.0
+    {
         let mut next = AppearanceUniform::from_settings(&appearance, &state);
-        if next.modes.w != 0 {
+        if next.modes.w != 0 || next.motion.w != 0.0 {
             next.motion.x = clock.as_ref().map_or(0.0, |c| c.elapsed_secs());
         }
         uniform.set_if_neq(next);
@@ -406,6 +416,7 @@ fn queue_instanced(
                     animation.mesh == Some(mesh_instance.mesh_asset_id()),
                     appearance.modes.z != 0,
                     appearance.modes.w != 0,
+                    appearance.motion.w != 0.0,
                 ),
                 &mesh.layout,
             ) else {
@@ -469,17 +480,22 @@ fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'s
         .filter_map(|(enabled, name)| enabled.then_some(name))
 }
 
+fn underwater_shader_def(enabled: bool) -> Option<&'static str> {
+    enabled.then_some("UNDERWATER")
+}
+
 fn flock_pipeline_key(
     view: MeshPipelineKey,
     animated: bool,
     glow: bool,
     procedural: bool,
-) -> (MeshPipelineKey, bool, bool, bool) {
-    (view, animated, glow, procedural)
+    underwater: bool,
+) -> (MeshPipelineKey, bool, bool, bool, bool) {
+    (view, animated, glow, procedural, underwater)
 }
 
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = (MeshPipelineKey, bool, bool, bool);
+    type Key = (MeshPipelineKey, bool, bool, bool, bool);
 
     fn specialize(
         &self,
@@ -521,6 +537,14 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         }
         if key.3 {
             descriptor.vertex.shader_defs.push("PROCEDURAL".into());
+        }
+        if let Some(name) = underwater_shader_def(key.4) {
+            descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .shader_defs
+                .push(name.into());
         }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
@@ -655,6 +679,68 @@ mod tests {
     use crate::{scene::SceneStyle, GlobalState};
 
     #[test]
+    fn underwater_key_gates_caustics_independently_of_shape_glow_and_ibl() {
+        use crate::environment::Environment;
+        let view = MeshPipelineKey::ENVIRONMENT_MAP;
+        for environment in Environment::ALL {
+            for style in SceneStyle::ALL {
+                let appearance = Appearance {
+                    environment,
+                    style,
+                    ..default()
+                };
+                let u = AppearanceUniform::from_settings(&appearance, &GlobalState::default());
+                let active = environment == Environment::Underwater;
+                let key = flock_pipeline_key(
+                    view,
+                    true,
+                    u.modes.z != 0,
+                    u.modes.w != 0,
+                    u.motion.w != 0.0,
+                );
+                assert_eq!(key.0, view);
+                assert_eq!(key.4, active);
+                assert_eq!(underwater_shader_def(key.4), active.then_some("UNDERWATER"));
+            }
+        }
+        // No deformation: caustics still advance, and pause freezes their simulation clock.
+        let mut app = crate::presentation::tests::clock_app();
+        app.init_resource::<GlobalState>()
+            .insert_resource(Appearance {
+                environment: Environment::Underwater,
+                ..default()
+            })
+            .init_resource::<AppearanceUniform>()
+            .add_systems(
+                Update,
+                update_appearance.after(crate::presentation::prepare_simulation),
+            );
+        let step = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(20));
+            app.update();
+        };
+        step(&mut app);
+        step(&mut app);
+        let before = app.world().resource::<AppearanceUniform>().motion.x;
+        assert!(before > 0.0);
+        assert_eq!(app.world().resource::<AppearanceUniform>().modes.w, 0);
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(app.world().resource::<AppearanceUniform>().motion.x, before);
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Midday;
+        step(&mut app);
+        assert_eq!(
+            app.world().resource::<AppearanceUniform>().motion,
+            Vec4::ZERO
+        );
+    }
+
+    #[test]
     fn environment_off_keeps_pipeline_keys_and_ibl_keeps_view_specialization() {
         use crate::environment::Environment;
         let view = MeshPipelineKey::from_msaa_samples(4)
@@ -666,11 +752,11 @@ mod tests {
                 ..default()
             };
             let uniform = AppearanceUniform::from_settings(&appearance, &GlobalState::default());
-            let key = flock_pipeline_key(view, false, uniform.modes.z != 0, false);
-            assert_eq!(key, (view, false, style == SceneStyle::Glow, false));
+            let key = flock_pipeline_key(view, false, uniform.modes.z != 0, false, false);
+            assert_eq!(key, (view, false, style == SceneStyle::Glow, false, false));
             assert!(!key.0.contains(MeshPipelineKey::ENVIRONMENT_MAP));
             let lit_view = view | MeshPipelineKey::ENVIRONMENT_MAP;
-            assert!(flock_pipeline_key(lit_view, true, true, true)
+            assert!(flock_pipeline_key(lit_view, true, true, true, false)
                 .0
                 .contains(MeshPipelineKey::ENVIRONMENT_MAP));
         }
@@ -690,8 +776,8 @@ mod tests {
             );
             assert_eq!(uniform.modes.zw(), UVec2::ZERO);
             assert_eq!(
-                flock_pipeline_key(view, false, false, false),
-                (view, false, false, false)
+                flock_pipeline_key(view, false, false, false, false),
+                (view, false, false, false, false)
             );
             let adjusted = Appearance {
                 glow: 20.0,
@@ -711,8 +797,8 @@ mod tests {
         let uniform = AppearanceUniform::from_settings(&appearance, &state);
         assert_eq!(uniform.modes.z, 1);
         assert_eq!(
-            flock_pipeline_key(hdr_view, true, true, false),
-            (hdr_view, true, true, false)
+            flock_pipeline_key(hdr_view, true, true, false, false),
+            (hdr_view, true, true, false, false)
         );
         assert_eq!(hdr_view.msaa_samples(), 4);
         assert_eq!(uniform.shading.y + uniform.shading.z, appearance.glow);
@@ -735,7 +821,7 @@ mod tests {
             let u = AppearanceUniform::from_settings(&appearance, &state);
             assert_eq!(u.modes.w, kind);
             assert_eq!(
-                flock_pipeline_key(MeshPipelineKey::empty(), false, true, kind != 0).3,
+                flock_pipeline_key(MeshPipelineKey::empty(), false, true, kind != 0, false).3,
                 kind != 0
             );
         }

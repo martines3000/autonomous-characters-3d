@@ -40,6 +40,8 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Procedural underwater environment](completed/2026-11-01-underwater.md) (2026-11-01): cached turquoise/deep-blue sky and water IBL, exponential fog, overhead sun, simulation-clock caustics on fish and sand; other environments compile out caustics. 160 normal and 15 GPU tests pass; seven baseline Clippy warnings; paused water and Off round-trip captures are byte-identical.
+
 - [Cinematic Director and fixed-step capture](completed/2026-11-01-director-capture.md) (2026-11-01): five tracked shots, C/UI/scenario controls, subject DoF, shake and reversible flyby ramp; serialized numbered PNG capture with fixed simulation/camera timing. 152 normal and 15 GPU tests pass; five Bird stills and a verified 90-frame/30-fps MP4 captured.
 - [HDRI sky environments](completed/2026-11-01-hdri-environment.md) (2026-11-01): independent Off/Sunset/Midday, cached 512px HDR sky and diffuse/GGX IBL, aligned sun, horizon fog, AgX; Off round trip is pixel-identical. 147 release and 15 GPU tests pass; Clippy remains at seven baseline warnings.
 

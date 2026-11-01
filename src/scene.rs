@@ -330,7 +330,7 @@ pub fn setup_scene(
 }
 
 #[derive(Component)]
-enum StudioSurface {
+pub(crate) enum StudioSurface {
     Sky,
     Ground,
 }
@@ -455,7 +455,7 @@ fn scene_fog_range(style: SceneStyle, eye: Vec3, walls: Vec3, target_far: f32) -
     (far * 0.6, (walls.x * 5.0).max(far * 2.0))
 }
 
-fn update_studio(
+pub(crate) fn update_studio(
     state: Res<GlobalState>,
     appearance: Res<Appearance>,
     cameras: Query<&Transform, (With<Camera3d>, Without<StudioSurface>)>,
@@ -463,7 +463,7 @@ fn update_studio(
         &StudioSurface,
         &mut Transform,
         &mut Visibility,
-        &MeshMaterial3d<StandardMaterial>,
+        Option<&MeshMaterial3d<StandardMaterial>>,
     )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     targets: Query<&Transform, (With<Target>, Without<StudioSurface>)>,
@@ -474,7 +474,7 @@ fn update_studio(
     let walls = vehicle::walls(state.vehicle_count);
     let target_far = far_target_distance(camera.translation, targets.iter());
     for (surface, mut transform, mut visibility, handle) in &mut surfaces {
-        if appearance.is_changed() {
+        if let Some(handle) = handle.filter(|_| appearance.is_changed()) {
             let tint = if appearance.style == SceneStyle::Glow {
                 Color::srgb(0.25, 0.25, 0.32)
             } else {
@@ -489,6 +489,8 @@ fn update_studio(
         }
         *visibility = if appearance.style != SceneStyle::Classic
             && appearance.environment == crate::environment::Environment::Off
+            || matches!(surface, StudioSurface::Ground)
+                && appearance.environment == crate::environment::Environment::Underwater
         {
             Visibility::Inherited
         } else {
@@ -502,6 +504,10 @@ fn update_studio(
             StudioSurface::Ground => {
                 transform.translation = Vec3::new(0.0, -walls.y, 0.0);
                 transform.scale = Vec3::new(walls.x, 1.0, walls.z);
+                if appearance.environment == crate::environment::Environment::Underwater {
+                    transform.translation.y = -walls.y * 1.6;
+                    transform.scale *= Vec3::new(1000.0, 1.0, 1000.0);
+                }
             }
         }
     }
@@ -666,6 +672,10 @@ pub(crate) fn draw_world(
             projection.far = end
                 .max(sky_radius(transform.translation, walls, target_far) * 1.1)
                 .max(1000.0);
+            if appearance.environment == crate::environment::Environment::Underwater {
+                // Keep the distant sand beyond the fog horizon instead of clipping a visible edge.
+                projection.far = projection.far.max(walls.max_element() * 1000.0);
+            }
         }
     }
 }
