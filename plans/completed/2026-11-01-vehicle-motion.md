@@ -13,7 +13,7 @@ Birds and fish keep an upright back, lean into turns, and deform with independen
 - [x] (2026-11-01 12:45Z) Codex implemented orientation, deformation, controls and regression tests. The worker was stopped for a shutdown, and the work was saved as WIP `22fb32e`.
 - [x] (2026-11-01 21:20Z) Orchestrator finished the stage: fmt, release build with no warnings, 142 release tests, 15 ignored GPU tests (including banked CPU/GPU rotation parity and position/velocity bit preservation), Clippy at the 7-warning baseline.
 - [x] (2026-11-01 21:20Z) Desktop check at 3,000 vehicles, boid chase at 0.25×: birds stay upright, bank into turns and flap out of sync. Fish bent into a zigzag, so the swim wave was cut to half a wavelength and half the amplitude.
-- [ ] After-change GPU benchmarks and Bird flap on/off frame times are deferred to an idle machine. Other agent sessions were running.
+- [x] (2026-11-02 00:07 CET) Idle-machine benchmarks (load 1.0–1.8 on 24 cores, RX 7900 XT), two runs each. Results are in Artifacts and Notes. Bird flap on/off app frame times were not measured separately.
 
 ## Surprises & Discoveries
 
@@ -64,6 +64,19 @@ Check bank law/clamp, exponential frame-rate agreement, pole continuity, exact l
 Style/motion settings are reversible. Keep exact legacy heading available. No commits, pushes, resets, merges or discarded work. Leave unrelated environment assets untouched; every native scenario ends in exit.
 
 ## Artifacts and Notes
+
+GPU step, cap 16, median ms per run (banked default vs `GPU_BENCH_CLASSIC_HEADING=1`):
+
+| Case | Banked run 1 / 2 | Classic run 1 / 2 |
+|---|---|---|
+| 100k wander | 0.583 / 0.634 | 0.624 / 0.606 |
+| 100k follow | 3.234 / 3.184 | 3.077 / 2.699 |
+| 1M wander | 4.508 / 4.491 | 4.472 / 4.345 |
+| 1M follow | 7.801 / 7.861 | 7.931 / 8.157 |
+
+Banking adds no measurable GPU step cost; 1M wander still matches the 4.5–4.6 ms baseline.
+
+CPU `flocking_benchmark` at 10k, runs 1 / 2: naive 15.21 / 15.15 ms, octree 1.85 / 1.91 ms. Octree matches the 1.89 / 1.91 ms baseline. Naive is higher than the 12.4 / 12.9 ms baseline. Octree's flat result rules out per-vehicle orientation as the cause, since it runs in both modes. The likely cause is the wall-drag fix (`e7ee5e9`): faster wandering changes how many neighbors fall in range in the O(n²) scan. This was not isolated.
 
 Logs/scripts: `/tmp/vehicle-motion/`. Screenshots use the owner-specified `shots/motion/` directory. Timing details and exact settings will be recorded after each milestone.
 
