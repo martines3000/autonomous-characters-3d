@@ -163,6 +163,7 @@ impl HeadingPalette {
 #[derive(Resource)]
 pub struct Appearance {
     pub style: SceneStyle,
+    pub environment: crate::environment::Environment,
     pub palette: HeadingPalette,
     pub vehicles: crate::vehicle_appearance::VehicleAppearance,
     pub auto_frame: bool,
@@ -176,6 +177,7 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             style: SceneStyle::default(),
+            environment: default(),
             palette: HeadingPalette::default(),
             vehicles: default(),
             auto_frame: true,
@@ -190,7 +192,8 @@ impl Default for Appearance {
 pub struct ScenePlugin;
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Appearance>()
+        app.add_plugins(crate::environment::EnvironmentPlugin)
+            .init_resource::<Appearance>()
             .add_systems(Startup, (setup_scene, setup_studio).chain())
             .add_systems(
                 PostUpdate,
@@ -227,16 +230,21 @@ pub(crate) fn sync_glow_camera(
                     },
                 ));
             }
-        } else if hdr || bloom {
-            commands.entity(entity).remove::<(Bloom, Hdr)>();
+        } else {
+            if bloom {
+                commands.entity(entity).remove::<Bloom>();
+            }
+            if hdr && appearance.environment == crate::environment::Environment::Off {
+                commands.entity(entity).remove::<Hdr>();
+            }
         }
     }
 }
 
 #[derive(Component)]
-struct KeyLight;
+pub(crate) struct KeyLight;
 #[derive(Component)]
-struct FillLight;
+pub(crate) struct FillLight;
 
 pub fn setup_scene(
     mut commands: Commands,
@@ -479,7 +487,9 @@ fn update_studio(
                 materials.get_mut(&handle.0).unwrap().base_color = tint;
             }
         }
-        *visibility = if appearance.style != SceneStyle::Classic {
+        *visibility = if appearance.style != SceneStyle::Classic
+            && appearance.environment == crate::environment::Environment::Off
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -592,7 +602,7 @@ pub(crate) fn frame_world(
 
 // Wall outline and a floor grid for orientation; fog follows the world size.
 #[allow(clippy::too_many_arguments)]
-fn draw_world(
+pub(crate) fn draw_world(
     mut gizmos: Gizmos,
     state: Res<GlobalState>,
     appearance: Res<Appearance>,
@@ -605,7 +615,11 @@ fn draw_world(
     let look = appearance.style.settings();
     if appearance.is_changed() {
         clear.0 = look.background;
-        ambient.brightness = look.ambient;
+        ambient.brightness = if appearance.environment == crate::environment::Environment::Off {
+            look.ambient
+        } else {
+            0.0
+        };
         for (mut light, key, fill) in &mut lights {
             if key {
                 light.illuminance = look.key;
@@ -617,7 +631,9 @@ fn draw_world(
         }
     }
     let walls = vehicle::walls(state.vehicle_count);
-    if appearance.style == SceneStyle::Classic {
+    if appearance.environment != crate::environment::Environment::Off {
+        // HDRI scenes need no box or grid. Simulation walls remain unchanged.
+    } else if appearance.style == SceneStyle::Classic {
         gizmos.cube(Transform::from_scale(walls * 2.0), look.wall);
         let cell = walls.z / 2.5;
         gizmos.grid(

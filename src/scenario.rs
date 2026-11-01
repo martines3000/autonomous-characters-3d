@@ -110,6 +110,7 @@ enum Setting {
     OrbitSpeed(f32),
     Mode(SimulationMode),
     Style(SceneStyle),
+    Environment(crate::environment::Environment),
     Glow(f32),
     Streak(f32),
     Dof(bool),
@@ -238,6 +239,7 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("style", "studio") => Setting::Style(SceneStyle::Studio),
         ("style", "classic") => Setting::Style(SceneStyle::Classic),
         ("style", "glow") => Setting::Style(SceneStyle::Glow),
+        ("environment", _) => Setting::Environment(value.parse()?),
         ("glow", _) => Setting::Glow(number(value, 0.0, 20.0)?),
         ("streak", _) => Setting::Streak(number(value, 0.0, 3.0)?),
         ("dof", _) => Setting::Dof(switch(value)?),
@@ -728,6 +730,7 @@ fn apply_setting(world: &mut World, setting: Setting) {
             }
         }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
+        Setting::Environment(value) => world.resource_mut::<Appearance>().environment = value,
         Setting::Glow(value) => world.resource_mut::<Appearance>().glow = value,
         Setting::Streak(value) => world.resource_mut::<Appearance>().streak = value,
         Setting::Dof(value) => world.resource_mut::<Presentation>().follow.dof = value,
@@ -877,6 +880,30 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn environment_commands_are_validated_and_independent_of_style() {
+        use crate::environment::Environment;
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        for (name, expected) in [
+            ("off", Environment::Off),
+            ("sunset", Environment::Sunset),
+            ("midday", Environment::Midday),
+        ] {
+            let parsed = parse(&format!("0 set environment {name}")).unwrap();
+            assert_eq!(
+                parsed[0].command,
+                Command::Set(Setting::Environment(expected))
+            );
+            apply_setting(&mut world, Setting::Environment(expected));
+            assert_eq!(world.resource::<Appearance>().environment, expected);
+            assert_eq!(world.resource::<Appearance>().style, SceneStyle::Studio);
+        }
+        for bad in ["underwater", "Sunset", "", "on", "NaN"] {
+            assert!(parse(&format!("0 set environment {bad}")).is_err());
+        }
+    }
+
     #[test]
     fn predator_commands_validate_masks_capacity_paths_and_changed_only_setters() {
         let commands=parse("0 predator add 1 -2 3 20\n0 set predator_strength 8\n0 set predator_path orbit\n0 set predator_groups 5\n0 set predator_path_radius 50\n0 set predator_path_speed -30\n0 predator_center 4 5 6\n0 set predators_visible off\n1 predator clear").unwrap();

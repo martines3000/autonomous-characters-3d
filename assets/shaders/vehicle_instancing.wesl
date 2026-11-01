@@ -187,6 +187,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     pbr_input.world_normal = normalize(in.world_normal);
     pbr_input.N = pbr_input.world_normal;
     pbr_input.V = calculate_view(in.world_position, false);
+    // ENVIRONMENT_MAP comes from MeshPipelineKey; Bevy applies diffuse/specular IBL and the sun here.
     var lit = apply_pbr_lighting(pbr_input);
     let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
