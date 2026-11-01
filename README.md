@@ -102,13 +102,13 @@ menu when it has focus.
 - **Classic** retains the original flat background, box/grid colors and layout, lighting, material
   roughness and HSV heading palette. It hides the Studio sky and floor.
 - **Glow** is optional: a darker Studio environment with speed-based vehicle emission, additive
-  HDR bloom and a forward speed streak. It keeps TonyMcMapface tonemapping and 4× MSAA. Vehicle
+  HDR bloom and a forward speed streak. With Environment Off, it keeps TonyMcMapface tonemapping and 4× MSAA. Vehicle
   color modes, built-in shapes, imported materials and baked animation all share the same effect.
   **Vehicles → glow** (0–20, default 4) controls emission; **streak** (0–3, default 0.8) controls
   maximum forward stretch. For normalized speed s, emission is `glow * (0.25 + 0.75*s*s)` and
   stretch is `1 + streak*s`. Normals receive the inverse stretch before rotation. These settings
   do not change physical size, separation or steering. Glow-only shader code compiles out of
-  Studio/Classic; leaving Glow removes Hdr and Bloom.
+  Studio/Classic; leaving Glow removes Bloom; Hdr remains while an HDRI environment is active.
 - Heading palettes are independent of scene style. Six distinct stops plus a repeated first stop
   make the new palettes continuous around the heading wheel:
   **Ocean** (deep blue, cyan, seafoam, sand, coral, violet), **Dusk** (indigo, magenta, orange, gold,
@@ -142,6 +142,23 @@ force weights are unchanged; visual speed tuning remains an owner decision. See
 | Studio (default) | Navy gradient, warm/cool lighting, rough floor | Restrained rim and 15% emission | No bloom; optional boid-camera DoF |
 | Classic | Original flat background, box/grid and material | Original shading | No bloom; optional boid-camera DoF |
 | Glow | Dark tinted Studio sky/floor/fog | Speed emission and forward streak | HDR, additive bloom; optional boid-camera DoF |
+
+### Sky environments
+
+**Scene → Environment** selects **Off** (default), **Sunset** or **Midday**, independently of Style.
+Sunset and Midday use the bundled CC0 Poly Haven HDRIs; attribution is in
+[assets/environment/CREDITS.md](assets/environment/CREDITS.md).
+Each sky loads on first selection, then caches a 512px HDR cubemap, cosine-convolved diffuse lighting
+and a GGX-filtered specular mip chain. First selection can briefly pause while CPU conversion runs;
+subsequent switches reuse the maps. No environment assets load while Off.
+
+The HDRI's brightest upper-sky region sets the directional sun's direction and color. Horizon-tinted
+fog replaces the Studio haze; the box, grid and Studio floor disappear. Simulation walls stay active.
+AgX tonemapping and fixed EV100 10 retain bright clouds and sunset color without exposure pumping
+while riding a bird. Off restores the original camera tonemapping/exposure and scene rig.
+Glow bloom, bank/flap motion, boid chase and its depth of field remain available with either sky.
+The instanced PBR path inherits Bevy's environment-map view key and both view bind groups, so birds
+receive diffuse sky color, roughness-dependent reflections and directional sunlight in the same draw.
 
 ### Swarm mechanics
 
@@ -785,6 +802,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |
+| `set environment` | `off` (default), `sunset`, `midday`; independent of Style |
 | `set glow` | Emission strength 0–20, default 4; Glow only |
 | `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
 | `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |

@@ -1,5 +1,6 @@
 mod capture;
 mod director;
+mod environment;
 mod follow;
 mod formation;
 mod gpu_flock;
@@ -402,6 +403,13 @@ fn ui(
                         ui.selectable_value(&mut appearance.palette, palette, palette.name());
                     }
                 });
+                egui::ComboBox::from_label("Environment")
+                    .selected_text(appearance.environment.name())
+                    .show_ui(ui, |ui| {
+                        for environment in environment::Environment::ALL {
+                            ui.selectable_value(&mut appearance.environment, environment, environment.name());
+                        }
+                    });
                 ui.checkbox(&mut appearance.auto_frame, "Auto-frame on count change");
                 if ui.button("Frame world").clicked() {
                     appearance.frame_requested = true;

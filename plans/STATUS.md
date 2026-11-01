@@ -41,6 +41,7 @@ CI (finding F12) is not wanted by the owner.
 ## Completed
 
 - [Cinematic Director and fixed-step capture](completed/2026-11-01-director-capture.md) (2026-11-01): five tracked shots, C/UI/scenario controls, subject DoF, shake and reversible flyby ramp; serialized numbered PNG capture with fixed simulation/camera timing. 152 normal and 15 GPU tests pass; five Bird stills and a verified 90-frame/30-fps MP4 captured.
+- [HDRI sky environments](completed/2026-11-01-hdri-environment.md) (2026-11-01): independent Off/Sunset/Midday, cached 512px HDR sky and diffuse/GGX IBL, aligned sun, horizon fog, AgX; Off round trip is pixel-identical. 147 release and 15 GPU tests pass; Clippy remains at seven baseline warnings.
 
 - [Natural vehicle motion](completed/2026-11-01-vehicle-motion.md) (2026-11-01): stable-up orientation, turn banking, procedural bird flap and fish swim on simulation time; positions and velocities stay bit-identical; Classic heading restores the old rotation exactly. Benchmarks deferred to an idle machine.
 - [Glow style and boid-camera depth of field](completed/2026-11-01-glow-style-and-dof.md) (2026-11-01): optional HDR/additive bloom, speed emission/streak, Gaussian DoF with live focus, a small chase marker and UI-free capture. Studio stays default; old shaders compile out Glow. At 1667×1390 on RX 7900 XT, Glow adds about 0.28 ms at 20k/100k; DoF full-frame differences are within noise; heavy 100k Glider averages 11.656 ms. 135 normal and 14 GPU tests pass.

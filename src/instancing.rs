@@ -486,6 +486,8 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        // Preserve ENVIRONMENT_MAP, directional-light and fog definitions from the view key.
+        // Both Bevy view bind groups below provide the corresponding PBR textures/uniforms.
         let mut descriptor = self.mesh_pipeline.specialize(key.0, layout)?;
         let material = layout.0.contains(ATTRIBUTE_MATERIAL);
         let mut attributes = vec![
@@ -651,6 +653,28 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 mod tests {
     use super::*;
     use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn environment_off_keeps_pipeline_keys_and_ibl_keeps_view_specialization() {
+        use crate::environment::Environment;
+        let view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba8UnormSrgb);
+        for style in SceneStyle::ALL {
+            let appearance = Appearance {
+                style,
+                environment: Environment::Off,
+                ..default()
+            };
+            let uniform = AppearanceUniform::from_settings(&appearance, &GlobalState::default());
+            let key = flock_pipeline_key(view, false, uniform.modes.z != 0, false);
+            assert_eq!(key, (view, false, style == SceneStyle::Glow, false));
+            assert!(!key.0.contains(MeshPipelineKey::ENVIRONMENT_MAP));
+            let lit_view = view | MeshPipelineKey::ENVIRONMENT_MAP;
+            assert!(flock_pipeline_key(lit_view, true, true, true)
+                .0
+                .contains(MeshPipelineKey::ENVIRONMENT_MAP));
+        }
+    }
 
     #[test]
     fn glow_keeps_old_uniforms_and_view_keys_and_uses_hdr_msaa_specialization() {
