@@ -1,7 +1,7 @@
 # Add optional swarm mechanics with one CPU/GPU contract
 
 This ExecPlan is a living document maintained according to `PLANS.md`. It designs all of Stage 7;
-Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; 7c is committed as `4e0d5a6`; 7d is committed as `77406a4`; the current worker implements **7e only**. The orchestrator owns review, commits and authorization of
+Stage 7a is committed as `d657d5d`; 7b is committed as `fd9921a`; 7c is committed as `4e0d5a6`; 7d is committed as `77406a4`; 7e is committed as `a0d3ed7`. Stage 7 is complete. The orchestrator owns review, commits and authorization of
 subsequent workers. Owner order: 7a attractor, 7b groups, 7c obstacles, 7d formations, 7e predators.
 
 ## Purpose
@@ -31,9 +31,9 @@ CPU Naive/Octree remain the behavior reference; GPU stays the high-count impleme
 - [x] (2026-10-31 23:49Z) Stage 7e: shared flee law, path snapshots, arena upload lifecycle, UI/gizmos/scenarios.
 - [x] (2026-10-31 23:49Z) Stage 7e: 122 release tests and the single final 13-test GPU gate pass; parser/path/mask/force/arena regressions included.
 - [x] (2026-10-31 23:58Z) Stage 7e: formatting, 122 release tests, warning-free build, Clippy 7, native smoke, desktop/pause proof and diff check. Repeated diagnostics recorded.
-- [ ] Stage 7e: required idle-machine Off/On/combined/rendered rerun; unrelated Blender remained active (224% CPU sampled at 23:58Z). Provisional diagnostics cannot close this acceptance condition.
-- [ ] Stage 7 complete (all five optional mechanics verified; owner review/commit separate).
-- [ ] Orchestrator review and commits.
+- [x] (2026-11-01 01:06Z) Stage 7e: orchestrator final rerun at load average 1.2–1.5 on 24 cores (the unrelated Blender process still used about 2 cores). GPU cap-16 medians, runs 1/2: 100k wander 0.718/0.695 ms, 100k follow 3.654/2.802, 1M wander 4.575/4.615, 1M follow 7.744/8.072, matching the pre-7b 64-byte baseline. Combined 100k (groups 2, four spheres, sphere formation, attractor, four predators): 40.626 ms uncapped, 7.102 ms at cap 16.
+- [x] (2026-11-01 01:10Z) Stage 7 complete: all five optional mechanics verified.
+- [x] (2026-11-01 01:10Z) Orchestrator review and commits: `d657d5d`, `fd9921a`, `4e0d5a6`, `77406a4`, `a0d3ed7`.
 
 ## Surprises & Discoveries
 

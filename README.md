@@ -153,7 +153,7 @@ capacity and 40 MiB at 1M capacity. They share the eighth storage binding with f
 Instance stride stays 48 bytes and the draw count stays one. Animation phase keeps its original bits
 and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headless Off step medians
 are within 5% of the original baseline in 100k/1M wander/follow. See the
-[swarm plan](plans/planned/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
+[swarm plan](plans/completed/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
 
 New vehicles use ID modulo the enabled count; while Off they retain dormant ID-modulo-eight
 membership. Enabling or changing the group count maps current membership modulo the new count.
@@ -519,7 +519,7 @@ A matching 100k static Dart control measures 1.005/0.998 ms before versus 1.010/
 (+0.3%, smaller than run variation). These frame intervals include CPU/GPU/presentation overlap;
 they do not isolate animation GPU time or guarantee similar cost for heavy models. Existing PCG
 spawn starts at frame zero; real frame deltas and GPU scatter vary. No ignored benchmark was run.
-See the [model plan](plans/planned/2026-10-31-custom-vehicle-models.md) for complete evidence, limits
+See the [model plan](plans/completed/2026-10-31-custom-vehicle-models.md) for complete evidence, limits
 and four explicitly rejected runs that accidentally selected the built-in Bird.
 
 ### RX 7900 XT, Stage 4 (2026-10-31)
@@ -537,7 +537,7 @@ Dart has **14 triangles**; heavy is a deterministic **3,456-triangle** subdivisi
 glider, preserving its surface/normals/colors. Table means average the two per-run means;
 FPS below is 1000 / that mean. Full per-run mean/p50/p95, FPS, settings, loads, rejected attempts,
 Bird (24 triangles), small glider (24), MSAA-off, Classic and no-draw controls are in the
-[Stage 4 plan](plans/planned/2026-10-31-rendering-optimization.md).
+[Stage 4 plan](plans/completed/2026-10-31-rendering-optimization.md).
 
 | Vehicles | View | Model | Before mean ms / FPS | After mean ms / FPS |
 | ---: | --- | --- | ---: | ---: |

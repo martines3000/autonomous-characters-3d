@@ -20,7 +20,7 @@ flock size with real-time auto-orbit and five smoothly animated camera presets.
 - [x] (2026-10-31 19:12Z) Final format check, 76 release tests, warning-free release build,
   Clippy (7 existing warnings), startup smoke and diff check pass. Strengthened input/focus test passes.
   No Cargo/compiler/app processes remain.
-- [ ] Orchestrator review and commit (owner task).
+- [x] Orchestrator review and commit: `2ec4dbe`.
 
 ## Surprises & Discoveries
 

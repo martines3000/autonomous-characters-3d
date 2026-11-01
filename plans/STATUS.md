@@ -2,29 +2,21 @@
 
 ## Current work
 
-- [Swarm mechanics](planned/2026-10-31-swarm-mechanics.md): 7a–7d committed (`77406a4` latest); 7e predators implemented and behavior-verified (122 release / 13 GPU tests, Clippy 7), uncommitted. All five mechanics exist. Idle performance acceptance is pending: unrelated Blender activity contaminated post-change timings; repeated diagnostics, combined measurements and desktop/pause evidence are recorded in the plan. Stage 7 completion remains open until idle rerun and owner review.
-
-- [Presentation controls](planned/2026-10-31-presentation-controls.md): Stage 5 done: simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
-
-- [Visual showcase, custom models and swarm mechanics](planned/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, started 2026-10-31, branch `feat/visual-showcase-and-swarm-features`): seven owner-authorized stages, each with a linked stage plan.
-
-- [Custom glTF vehicle models](planned/2026-10-31-custom-vehicle-models.md): Stage 3 committed (`7e66fd3`); Stage 6 done: baked animation, stable phases and one-draw materials.
-
-- [Rendering optimization](planned/2026-10-31-rendering-optimization.md): Stage 4 done: 54 before / 32 after timings; exact import indexing halves heavy-model frame time.
+None. The visual showcase and swarm features branch `feat/visual-showcase-and-swarm-features` is complete and awaits owner review (not merged).
 
 ## Prioritized future tasks
 
 Items without a linked ExecPlan need one from `TEMPLATE.md` when starting.
 
 1. **Follow-mode density at 100,000+ vehicles.** With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
-2. **Rendering budgets for heavy custom models and other GPUs.** [Stage 4](planned/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
+2. **Rendering budgets for heavy custom models and other GPUs.** [Stage 4](completed/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
 3. **Wall avoidance acts as drag inside the walls.** Both CPU and GPU apply the wall-avoidance term every step, even in bounds, steering toward zero velocity. Wander speed settles near 29 units/s rather than the configured 40. The owner should decide the intended behavior before changing both implementations together.
 
 Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye after the wall-drag decision (wander currently settles near 29 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS).
 
 CI (finding F12) is not wanted by the owner.
 
-- **Feature expansion roadmap — 2026-10-30:** see [report section 12](../review-report.html#feature-expansion). On 2026-10-31 the owner authorized seven stages (visuals, appearance, custom models, rendering optimization, presentation, animated models, swarm mechanics); see Current work.
+- **Feature expansion roadmap — 2026-10-30:** see [report section 12](../review-report.html#feature-expansion). On 2026-10-31 the owner authorized seven stages (visuals, appearance, custom models, rendering optimization, presentation, animated models, swarm mechanics); see Completed.
 
 ## Original review findings
 
@@ -48,6 +40,13 @@ CI (finding F12) is not wanted by the owner.
 | F14 | Advisory matches in the lockfile | Resolved in `262dc33`: `cargo deny check advisories` passes for the native target |
 
 ## Completed
+
+- [Visual showcase, custom models and swarm mechanics](completed/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, 2026-11-01): seven stages on `feat/visual-showcase-and-swarm-features`, `e635c6d`..`a0d3ed7`, pushed, not merged; all new features optional and off by default; GPU steps unchanged with them off (1M wander about 4.6 ms, follow about 7.9 ms at cap 16).
+- [Swarm mechanics](completed/2026-10-31-swarm-mechanics.md) (2026-11-01): cursor attractor/repulsor, 2–8 groups, up to 8 sphere obstacles, sphere/helix formations and up to 4 predators; one CPU/GPU contract with parity tests; identity and scene records share one storage arena; everything on at 100k costs 7.1 ms at cap 16 (40.6 ms exact).
+- [Presentation controls](completed/2026-10-31-presentation-controls.md) (2026-10-31): simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
+- [Custom glTF vehicle models](completed/2026-10-31-custom-vehicle-models.md) (2026-10-31): static GLB/glTF import, then baked rigid/skinned animation with stable per-vehicle phases and per-part materials in one draw.
+- [Rendering optimization](completed/2026-10-31-rendering-optimization.md) (2026-10-31): exact import vertex sharing halves heavy-model frame time (24 to 11.5 ms at 100k); no LOD, culling or MSAA change justified.
+- [Visual foundation and vehicle appearance](completed/2026-10-31-visual-foundation-and-appearance.md) (2026-10-31): studio style, palettes, count-aware framing, vehicle shapes, proportions and color modes.
 
 - [Flock on the GPU](completed/2026-10-30-gpu-flocking.md) (2026-10-30): GPU default at 20,000 / follow cap 16; M3 Pro headless wander/follow steps 0.67/1.4 ms at 20k, 7.4/13.2 ms at 300k, 26.1/44.9 ms at one million; default app about 107–120 FPS wandering, scaled target and camera; CPU parity and complete separation tested on the GPU. Large follow density, rendering cost and wall drag remain above.
 - [Keep vehicles apart when they follow the target](completed/2026-10-30-follow-mode-separation.md) (2026-10-30): separation pushes add up and grow with closeness; followers at 1,000 and 5,000 go from 100% overlapping to none; wander flocks keep their look with no overlapping pairs; follow-mode cost at large counts deferred.

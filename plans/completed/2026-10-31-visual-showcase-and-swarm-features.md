@@ -35,7 +35,7 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 - [x] (2026-10-31 23:50Z) Stage 7c: sphere obstacles with soft avoidance (see the swarm-mechanics plan). Up to 8 spheres; one simulated second of look-ahead, smoothstep falloff, summed normals clamped to V*k, added to seek, the attractor and groups. A `SwarmScene` resource owns the list; GPU records sit in the binding-8 arena tail and upload only on edits or capacity growth. Steering is specialized, so off costs nothing measurable; 8 spheres cost about 0.6 ms at 1M wander and 1.6 ms at 1M follow. Orchestrator review: accepted unchanged. Soft steering still allows penetration; spheres are static. Ignored GPU tests pass (9/9).
 - [x] (2026-11-01 01:10Z) Stage 7d: sphere/helix formations (see the swarm-mechanics plan). Analytic slot targets (Fibonacci sphere blended with a three-turn helix) shared by Rust and WGSL, so no per-slot upload; dense unique slots in metadata `z`, rebuilt in O(N) on enable and count/group-count edits; each group gets its own range and center. Formation replaces seek/wander and enables the neighbor cap. Off costs nothing measurable; capped sphere at 1M wander costs about 6.9 ms against 4.6 ms off. Orchestrator review: accepted unchanged. Competing forces keep slots from settling exactly (1M p95 slot error 289–726 units). Ignored GPU tests pass (11/11).
 - [x] (2026-11-01 01:20Z) Stage 7e: predators with fleeing (see the swarm-mechanics plan). One to four control objects, static or orbiting, each with a threat radius and a prey-group mask; outward smoothstep flee, summed and clamped to V*k, added to every other term and never hidden by neighbor caps. Orbit advances per simulated substep from one snapshot shared by CPU and GPU (512-byte record upload per frame). Off costs nothing measurable; four orbiting predators add about 0.2 ms at 100k and 0.75 ms at 1M wander. Every mechanic on at 100k: 41.8 ms uncapped, 6.8 ms with the neighbor cap. Orchestrator review: accepted unchanged. The worker measured while an unrelated Blender process used about 2 CPU cores, so these timings are provisional until the final idle runs. Ignored GPU tests pass (13/13).
-- [ ] Independent review, full gate, GPU regressions, Clippy, repeated performance runs, desktop checks.
+- [x] (2026-11-01 01:10Z) Final pass: the orchestrator reviewed every stage diff (the optional Codex reviewer was skipped by the owner); full gate passes (fmt, 122 release tests, warning-free release build, native smoke, diff check); Clippy at the 7 existing warnings; 13 ignored GPU tests plus the GPU benchmark pass; CPU and GPU benchmarks run twice; one desktop tour of every stage ended with `exit`, and paused frames are pixel-identical.
 
 ## Surprises & Discoveries
 
@@ -100,7 +100,29 @@ The owner authorized all seven stages on 2026-10-31, in this order, with the roa
 
 ## Outcomes & Retrospective
 
-Filled at stage checkpoints and at completion.
+Completed 2026-11-01 on `feat/visual-showcase-and-swarm-features` (13 commits from `e635c6d` to
+`a0d3ed7`, pushed, not merged). All seven stages shipped; every new feature is optional and the
+defaults still reproduce the earlier simulation (the CPU/GPU parity tests prove it).
+
+Final measurements (RX 7900 XT, 24 cores, load average 1.2–1.5 with an unrelated Blender process
+using about 2 cores): GPU cap-16 step medians, runs 1/2, 20k wander 0.352/0.403 ms, 20k follow
+0.602/0.602, 100k wander 0.718/0.695, 100k follow 3.654/2.802, 1M wander 4.575/4.615, 1M follow
+7.744/8.072. These match the numbers before Stage 7, so the swarm features cost nothing measurable
+when off. CPU benchmark at 10k: naive 12.4/12.9 ms, octree 1.89/1.91 ms. Every swarm mechanic on at
+100k: 40.6 ms with exact neighbors, 7.1 ms at the default cap of 16.
+
+What worked: one storage arena on binding 8 holds identity, order maps and every scene record, so
+the GPU stayed within the portable eight-binding limit and the 64-byte Boid. Specializing `steer`
+per feature kept disabled features free.
+
+Review changes the orchestrator made or required: fixed 1/30 s sub-steps (Stage 5) replaced by
+ceil(speed) steps; a per-frame appearance rebuild (Stage 6) and per-frame `GlobalState` writes
+(Stage 7a) removed; the first 7b design (80-byte Boid, 24–32% slower with groups off) reworked.
+
+Left open: raising the group count does not rebalance existing members; avoidance is soft, so
+vehicles can enter obstacles; formation slots do not settle exactly under competing forces; dense
+attraction and uncapped combined cases are expensive; close-up fragment cost, 4× speed at 1M and
+other GPUs are unmeasured.
 
 ## Context and Orientation
 
