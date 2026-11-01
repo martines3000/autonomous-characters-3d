@@ -7,15 +7,26 @@
 use std::sync::Arc;
 
 use bevy::{
-    core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d},
+    core_pipeline::{
+        core_3d::{
+            Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d, TransparentSortingInfo3d,
+            CORE_3D_DEPTH_FORMAT,
+        },
+        prepass::{
+            prepass_target_descriptors, DepthPrepass, MotionVectorPrepass, NormalPrepass,
+            Opaque3dPrepass, OpaqueNoLightmap3dBatchSetKey, OpaqueNoLightmap3dBinKey,
+        },
+    },
     ecs::{
         query::QueryItem,
         system::{lifetimeless::SRes, SystemParamItem},
     },
     mesh::{MeshVertexBufferLayoutRef, VertexBufferLayout},
     pbr::{
-        MeshPipeline, MeshPipelineKey, MeshPipelineSystems, RenderMeshInstances, SetMeshBindGroup,
-        SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup, ViewKeyCache,
+        MeshPipeline, MeshPipelineKey, MeshPipelineSystems, PrepassPipeline, RenderMeshInstances,
+        SetMeshBindGroup, SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup,
+        SetPrepassViewBindGroup, SetPrepassViewEmptyBindGroup, Shadow, ShadowBatchSetKey,
+        ShadowBinKey, ShadowView, ViewKeyCache,
     },
     prelude::*,
     render::{
@@ -24,8 +35,9 @@ use bevy::{
         mesh::{allocator::MeshAllocator, RenderMesh, RenderMeshBufferInfo},
         render_asset::RenderAssets,
         render_phase::{
-            AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-            RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
+            AddRenderCommand, BinnedRenderPhaseType, DrawFunctions, PhaseItem, PhaseItemExtraIndex,
+            RenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass,
+            ViewBinnedRenderPhases, ViewSortedRenderPhases,
         },
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -80,31 +92,83 @@ impl Default for FlockDraw {
     }
 }
 
+/// Extract only render policy; simulation and instance layouts remain untouched.
+#[derive(Resource, ExtractResource, Clone, Default)]
+#[extract_app(RenderApp)]
+struct FlockRenderSettings {
+    shadows: bool,
+    opaque: bool,
+    count: usize,
+    cap: usize,
+}
+impl FlockRenderSettings {
+    fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
+        Self {
+            shadows: appearance.shadows,
+            opaque: appearance.shadows || appearance.ambient_occlusion,
+            count: state.vehicle_count,
+            cap: appearance.shadow_cap,
+        }
+    }
+    fn casts_shadows(&self) -> bool {
+        self.shadows && self.count > 0 && self.count <= self.cap
+    }
+}
+fn update_render_settings(
+    appearance: Res<Appearance>,
+    state: Res<GlobalState>,
+    mut settings: ResMut<FlockRenderSettings>,
+) {
+    *settings = FlockRenderSettings::from_settings(&appearance, &state);
+}
+
 pub struct InstancingPlugin;
 
 impl Plugin for InstancingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AppearanceUniform>()
             .init_resource::<FlockDraw>()
+            .init_resource::<FlockRenderSettings>()
             .init_resource::<AnimationRender>()
             .add_plugins((
                 ExtractComponentPlugin::<VehicleInstances>::default(),
                 ExtractResourcePlugin::<AppearanceUniform>::default(),
                 ExtractResourcePlugin::<FlockDraw>::default(),
+                ExtractResourcePlugin::<FlockRenderSettings>::default(),
                 ExtractResourcePlugin::<AnimationRender>::default(),
             ))
-            .add_systems(PostUpdate, (update_appearance, update_animation));
+            .add_systems(
+                PostUpdate,
+                (update_appearance, update_animation, update_render_settings),
+            );
 
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawInstanced>()
+            .add_render_command::<Opaque3d, DrawInstancedOpaque>()
+            .add_render_command::<Opaque3dPrepass, DrawInstancedDepth>()
+            .add_render_command::<Shadow, DrawInstancedDepth>()
+            .init_resource::<SpecializedMeshPipelines<InstancingDepthPipeline>>()
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
             .insert_resource(InstanceBuffer(RawBufferVec::new(BufferUsages::VERTEX)))
             .init_resource::<FlockInstances>()
-            .add_systems(RenderStartup, init_pipeline.after(MeshPipelineSystems))
+            .add_systems(
+                RenderStartup,
+                init_pipeline
+                    .after(MeshPipelineSystems)
+                    .after(bevy::pbr::init_prepass_pipeline),
+            )
             .add_systems(
                 Render,
                 (
-                    queue_instanced.in_set(RenderSystems::QueueMeshes),
+                    // Stock queues remove dirty Mesh3d entries before checking materials.
+                    // Run afterwards so they cannot erase our material-free flock bins.
+                    queue_instanced
+                        .in_set(RenderSystems::QueueMeshes)
+                        .after(bevy::pbr::queue_material_meshes),
+                    queue_instanced_depth
+                        .in_set(RenderSystems::QueueMeshes)
+                        .after(bevy::pbr::queue_prepass_material_meshes)
+                        .after(bevy::pbr::queue_shadows),
                     prepare_instance_buffer.in_set(RenderSystems::PrepareResources),
                     prepare_appearance.in_set(RenderSystems::PrepareBindGroups),
                 ),
@@ -358,9 +422,16 @@ fn prepare_instance_buffer(
     };
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn queue_instanced(
     draw: Res<FlockDraw>,
+    settings: Res<FlockRenderSettings>,
+    (opaque_functions, mut opaque_phases, allocator): (
+        Res<DrawFunctions<Opaque3d>>,
+        ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+        Res<MeshAllocator>,
+    ),
+    mut previous: Local<Vec<MainEntity>>,
     animation: Res<AnimationRender>,
     draw_functions: Res<DrawFunctions<Transparent3d>>,
     pipeline: Res<InstancingPipeline>,
@@ -374,6 +445,14 @@ fn queue_instanced(
     view_key_cache: Res<ViewKeyCache>,
     appearance: Res<AppearanceUniform>,
 ) {
+    // Binned entries persist. Remove our previous entries even when disabled or despawned.
+    for phase in opaque_phases.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    previous.clear();
+    previous.extend(flocks.iter().map(|(_, main)| *main));
     if !draw.0 {
         return;
     }
@@ -401,16 +480,43 @@ fn queue_instanced(
             let Ok(pipeline) = pipelines.specialize(
                 &pipeline_cache,
                 &pipeline,
-                flock_pipeline_key(
-                    key,
-                    animation.mesh == Some(mesh_instance.mesh_asset_id()),
-                    appearance.modes.z != 0,
-                    appearance.modes.w != 0,
+                (
+                    flock_pipeline_key(
+                        key,
+                        animation.mesh == Some(mesh_instance.mesh_asset_id()),
+                        appearance.modes.z != 0,
+                        appearance.modes.w != 0,
+                    ),
+                    settings.shadows,
+                    settings.opaque,
                 ),
                 &mesh.layout,
             ) else {
                 continue;
             };
+            if settings.opaque {
+                if let (Some(opaque), Some(slabs)) = (
+                    opaque_phases.get_mut(&view.retained_view_entity),
+                    allocator.mesh_slabs(&mesh_instance.mesh_asset_id()),
+                ) {
+                    opaque.add(
+                        Opaque3dBatchSetKey {
+                            pipeline,
+                            draw_function: opaque_functions.read().id::<DrawInstancedOpaque>(),
+                            material_bind_group_index: None,
+                            slabs,
+                            lightmap_slab: None,
+                        },
+                        Opaque3dBinKey {
+                            asset_id: mesh_instance.mesh_asset_id().into(),
+                        },
+                        (entity, *main_entity),
+                        mesh_instance.current_uniform_index,
+                        BinnedRenderPhaseType::NonMesh,
+                    );
+                }
+                continue;
+            }
             // Queued every frame, so the item goes away with the flock entity.
             phase.add_transient(Transparent3d {
                 // The flock is opaque and writes depth; sorting it first means
@@ -436,37 +542,57 @@ struct InstancingPipeline {
     shader: Handle<Shader>,
     mesh_pipeline: MeshPipeline,
     appearance_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
 }
 
 fn init_pipeline(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mesh_pipeline: Res<MeshPipeline>,
+    prepass: Res<PrepassPipeline>,
 ) {
+    commands.insert_resource(InstancingDepthPipeline {
+        shader: asset_server.load(SHADER_ASSET_PATH),
+        mesh_pipeline: mesh_pipeline.clone(),
+        view_layout: prepass.view_layout_no_motion_vectors.clone(),
+        motion_view_layout: prepass.view_layout_motion_vectors.clone(),
+        empty_layout: prepass.empty_layout.clone(),
+    });
     commands.insert_resource(InstancingPipeline {
         shader: asset_server.load(SHADER_ASSET_PATH),
         mesh_pipeline: mesh_pipeline.clone(),
-        appearance_layout: BindGroupLayoutDescriptor::new(
-            "vehicle_appearance",
-            &BindGroupLayoutEntries::with_indices(
-                ShaderStages::VERTEX_FRAGMENT,
+        appearance_layout: appearance_layout(),
+        empty_layout: prepass.empty_layout.clone(),
+    });
+}
+
+fn appearance_layout() -> BindGroupLayoutDescriptor {
+    BindGroupLayoutDescriptor::new(
+        "vehicle_appearance",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::VERTEX_FRAGMENT,
+            (
+                (0, binding_types::uniform_buffer::<AppearanceUniform>(false)),
                 (
-                    (0, binding_types::uniform_buffer::<AppearanceUniform>(false)),
-                    (
-                        1,
-                        binding_types::storage_buffer_read_only_sized(false, None),
-                    ),
-                    (2, binding_types::uniform_buffer::<AnimationUniform>(false)),
+                    1,
+                    binding_types::storage_buffer_read_only_sized(false, None),
                 ),
+                (2, binding_types::uniform_buffer::<AnimationUniform>(false)),
             ),
         ),
-    });
+    )
 }
 
 fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'static str> {
     [(animated, "ANIMATED"), (material, "MODEL_MATERIALS")]
         .into_iter()
         .filter_map(|(enabled, name)| enabled.then_some(name))
+}
+
+fn shadow_shader_defs(receives_shadows: bool) -> impl Iterator<Item = &'static str> {
+    receives_shadows
+        .then_some("FLOCK_SHADOW_RECEIVER")
+        .into_iter()
 }
 
 fn flock_pipeline_key(
@@ -479,13 +605,14 @@ fn flock_pipeline_key(
 }
 
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = (MeshPipelineKey, bool, bool, bool);
+    type Key = ((MeshPipelineKey, bool, bool, bool), bool, bool);
 
     fn specialize(
         &self,
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let (key, receives_shadows, opaque) = key;
         // Preserve ENVIRONMENT_MAP, directional-light and fog definitions from the view key.
         // Both Bevy view bind groups below provide the corresponding PBR textures/uniforms.
         let mut descriptor = self.mesh_pipeline.specialize(key.0, layout)?;
@@ -522,6 +649,15 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         if key.3 {
             descriptor.vertex.shader_defs.push("PROCEDURAL".into());
         }
+        descriptor
+            .fragment
+            .as_mut()
+            .unwrap()
+            .shader_defs
+            .extend(shadow_shader_defs(receives_shadows).map(Into::into));
+        if opaque {
+            descriptor.layout[2] = self.empty_layout.clone();
+        }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
         descriptor.vertex.buffers.push(VertexBufferLayout {
@@ -550,6 +686,215 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         Ok(descriptor)
     }
 }
+
+/// Depth-only and normal-prepass pipelines reuse the exact color vertex specialization.
+#[derive(Resource)]
+struct InstancingDepthPipeline {
+    shader: Handle<Shader>,
+    mesh_pipeline: MeshPipeline,
+    view_layout: BindGroupLayoutDescriptor,
+    motion_view_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
+}
+impl SpecializedMeshPipeline for InstancingDepthPipeline {
+    // base vertex key, normal attachment, motion-view layout, shadow depth clamp.
+    type Key = ((MeshPipelineKey, bool, bool, bool), bool, bool, bool);
+    fn specialize(
+        &self,
+        key: Self::Key,
+        layout: &MeshVertexBufferLayoutRef,
+    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let color = InstancingPipeline {
+            shader: self.shader.clone(),
+            mesh_pipeline: self.mesh_pipeline.clone(),
+            appearance_layout: appearance_layout(),
+            empty_layout: self.empty_layout.clone(),
+        };
+        let mut descriptor = color.specialize((key.0, false, false), layout)?;
+        descriptor.label = Some("flock_depth_prepass".into());
+        descriptor.layout[0] = if key.2 {
+            self.motion_view_layout.clone()
+        } else {
+            self.view_layout.clone()
+        };
+        descriptor.layout[1] = self.empty_layout.clone();
+        descriptor.layout[2] = self.empty_layout.clone();
+        let mut defs = descriptor.vertex.shader_defs.clone();
+        if key.1 {
+            defs.push("FLOCK_NORMAL".into());
+        }
+        // Directional cascades need unclipped depth for casters between sun and view.
+        // Clamp in the fragment shader, matching Bevy's depth-clip-control fallback.
+        if key.3 {
+            defs.push("FLOCK_SHADOW".into());
+        }
+        descriptor.fragment = (key.1 || key.3).then(|| FragmentState {
+            shader: self.shader.clone(),
+            shader_defs: defs,
+            entry_point: Some("depth_fragment".into()),
+            targets: if key.1 {
+                prepass_target_descriptors(true, false, false)
+            } else {
+                vec![]
+            },
+            ..default()
+        });
+        if key.3 {
+            descriptor.vertex.shader_defs.push("FLOCK_SHADOW".into());
+        }
+        descriptor.depth_stencil = Some(DepthStencilState {
+            format: CORE_3D_DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(CompareFunction::GreaterEqual),
+            stencil: default(),
+            bias: default(),
+        });
+        Ok(descriptor)
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn queue_instanced_depth(
+    draw: Res<FlockDraw>,
+    settings: Res<FlockRenderSettings>,
+    animation: Res<AnimationRender>,
+    appearance: Res<AppearanceUniform>,
+    pipeline: Res<InstancingDepthPipeline>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<InstancingDepthPipeline>>,
+    cache: Res<PipelineCache>,
+    meshes: Res<RenderAssets<RenderMesh>>,
+    instances: Res<RenderMeshInstances>,
+    allocator: Res<MeshAllocator>,
+    flocks: Query<(Entity, &MainEntity), With<VehicleInstances>>,
+    views: Query<(
+        &ExtractedView,
+        Has<DepthPrepass>,
+        Has<NormalPrepass>,
+        Has<MotionVectorPrepass>,
+        Has<ShadowView>,
+        Option<&Msaa>,
+    )>,
+    mut prepasses: ResMut<ViewBinnedRenderPhases<Opaque3dPrepass>>,
+    mut shadows: ResMut<ViewBinnedRenderPhases<Shadow>>,
+    (prepass_functions, shadow_functions): (
+        Res<DrawFunctions<Opaque3dPrepass>>,
+        Res<DrawFunctions<Shadow>>,
+    ),
+    mut previous: Local<Vec<MainEntity>>,
+) {
+    for phase in prepasses.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    for phase in shadows.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    previous.clear();
+    previous.extend(flocks.iter().map(|(_, main)| *main));
+    if !draw.0 {
+        return;
+    }
+    for (view, depth, normal, motion, shadow, msaa) in &views {
+        if shadow {
+            if !settings.casts_shadows() {
+                continue;
+            }
+        } else if !depth && !normal {
+            continue;
+        }
+        for (entity, main) in &flocks {
+            let Some(instance) = instances.render_mesh_queue_data(*main) else {
+                continue;
+            };
+            let mesh_id = instance.mesh_asset_id();
+            let (Some(mesh), Some(slabs)) = (meshes.get(mesh_id), allocator.mesh_slabs(&mesh_id))
+            else {
+                continue;
+            };
+            let key = MeshPipelineKey::from_msaa_samples(if shadow {
+                1
+            } else {
+                msaa.map_or(1, Msaa::samples)
+            }) | MeshPipelineKey::from_primitive_topology_and_strip_index(
+                mesh.primitive_topology(),
+                mesh.index_format(),
+            );
+            let Ok(id) = pipelines.specialize(
+                &cache,
+                &pipeline,
+                (
+                    flock_pipeline_key(
+                        key,
+                        animation.mesh == Some(mesh_id),
+                        appearance.modes.z != 0,
+                        appearance.modes.w != 0,
+                    ),
+                    normal,
+                    motion,
+                    shadow,
+                ),
+                &mesh.layout,
+            ) else {
+                continue;
+            };
+            if shadow {
+                if let Some(phase) = shadows.get_mut(&view.retained_view_entity) {
+                    phase.add(
+                        ShadowBatchSetKey {
+                            pipeline: id,
+                            draw_function: shadow_functions.read().id::<DrawInstancedDepth>(),
+                            material_bind_group_index: None,
+                            slabs,
+                        },
+                        ShadowBinKey {
+                            asset_id: mesh_id.into(),
+                        },
+                        (entity, *main),
+                        instance.current_uniform_index,
+                        BinnedRenderPhaseType::NonMesh,
+                    );
+                }
+            } else if let Some(phase) = prepasses.get_mut(&view.retained_view_entity) {
+                phase.add(
+                    OpaqueNoLightmap3dBatchSetKey {
+                        pipeline: id,
+                        draw_function: prepass_functions.read().id::<DrawInstancedDepth>(),
+                        material_bind_group_index: None,
+                        slabs,
+                    },
+                    OpaqueNoLightmap3dBinKey {
+                        asset_id: mesh_id.into(),
+                    },
+                    (entity, *main),
+                    instance.current_uniform_index,
+                    BinnedRenderPhaseType::NonMesh,
+                );
+            }
+        }
+    }
+}
+
+type DrawInstancedDepth = (
+    SetItemPipeline,
+    SetPrepassViewBindGroup<0>,
+    SetPrepassViewEmptyBindGroup<1>,
+    SetPrepassViewEmptyBindGroup<2>,
+    SetAppearanceBindGroup,
+    DrawMeshInstanced,
+);
+
+// Opaque NonMesh bins own their instance buffer; they have no Bevy mesh-uniform batch.
+type DrawInstancedOpaque = (
+    SetItemPipeline,
+    SetMeshViewBindGroup<0>,
+    SetMeshViewBindingArrayBindGroup<1>,
+    SetPrepassViewEmptyBindGroup<2>,
+    SetAppearanceBindGroup,
+    DrawMeshInstanced,
+);
 
 type DrawInstanced = (
     SetItemPipeline,
@@ -653,6 +998,48 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 mod tests {
     use super::*;
     use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn shadow_gating_keeps_default_uniforms_keys_and_skips_over_cap() {
+        let mut appearance = Appearance::default();
+        let mut state = GlobalState::default();
+        let old_uniform = AppearanceUniform::from_settings(&appearance, &state);
+        let off = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(!off.opaque && !off.casts_shadows());
+        assert!(shadow_shader_defs(off.shadows).next().is_none());
+        let key = flock_pipeline_key(MeshPipelineKey::from_msaa_samples(4), false, false, false);
+        appearance.shadow_cap = 10;
+        assert!(!FlockRenderSettings::from_settings(&appearance, &state).casts_shadows());
+        assert_eq!(
+            old_uniform,
+            AppearanceUniform::from_settings(&appearance, &state)
+        );
+        appearance.shadows = true;
+        for (count, expected) in [
+            (0, false),
+            (1, true),
+            (10, true),
+            (11, false),
+            (1_000_000, false),
+        ] {
+            state.vehicle_count = count;
+            let settings = FlockRenderSettings::from_settings(&appearance, &state);
+            assert!(settings.opaque);
+            assert_eq!(settings.casts_shadows(), expected);
+        }
+        assert_eq!(
+            shadow_shader_defs(true).collect::<Vec<_>>(),
+            ["FLOCK_SHADOW_RECEIVER"]
+        );
+        appearance.shadows = false;
+        appearance.ambient_occlusion = true;
+        let settings = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(settings.opaque && !settings.casts_shadows());
+        assert_eq!(
+            key,
+            flock_pipeline_key(MeshPipelineKey::from_msaa_samples(4), false, false, false)
+        );
+    }
 
     #[test]
     fn environment_off_keeps_pipeline_keys_and_ibl_keeps_view_specialization() {

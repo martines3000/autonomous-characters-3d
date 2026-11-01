@@ -410,6 +410,13 @@ fn ui(
                             ui.selectable_value(&mut appearance.environment, environment, environment.name());
                         }
                     });
+                ui.checkbox(&mut appearance.shadows, "Shadows");
+                ui.add(egui::Slider::new(&mut appearance.shadow_cap, 0..=1_000_000).text("Flock shadow cap"));
+                if appearance.shadows && state.vehicle_count > appearance.shadow_cap {
+                    ui.label("Flock shadows paused: vehicle count exceeds cap");
+                }
+                ui.checkbox(&mut appearance.ambient_occlusion, "Ambient occlusion");
+                if appearance.ambient_occlusion { ui.label("Ambient occlusion uses MSAA Off"); }
                 ui.checkbox(&mut appearance.auto_frame, "Auto-frame on count change");
                 if ui.button("Frame world").clicked() {
                     appearance.frame_requested = true;

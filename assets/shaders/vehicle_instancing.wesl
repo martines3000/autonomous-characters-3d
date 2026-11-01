@@ -1,9 +1,15 @@
 // One instance per vehicle; lit with Bevy's PBR functions so scene lights and fog apply.
 import bevy_pbr::render::{
     view_transformations::position_world_to_clip,
+    mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
     pbr_types::{pbr_input_new, STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT},
     pbr_functions::{apply_pbr_lighting, calculate_view, main_pass_post_lighting_processing},
 };
+
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION)
+import bevy_pbr::render::mesh_view_bindings::{screen_space_ambient_occlusion_texture, view};
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION)
+import bevy_pbr::ssao::utils::ssao_multibounce;
 
 struct Appearance {
     colors: array<vec4<f32>, 7>,
@@ -41,6 +47,8 @@ struct Vertex {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
+    @if(FLOCK_SHADOW)
+    @location(5) unclipped_depth: f32,
     @location(0) world_position: vec4<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) color: vec3<f32>,
@@ -146,6 +154,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     @if(MODEL_MATERIALS) { out.material = vertex.material; }
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
+    @if(FLOCK_SHADOW) {
+        out.unclipped_depth = out.clip_position.z;
+        out.clip_position.z = min(out.clip_position.z, 1.0);
+    }
     // Inverse-transpose of the non-uniform local scale, then rotation; fragment normalizes it.
     out.world_normal = rotate(q, normal / appearance.proportions.xyz);
     // The cone's apex points along local +Y, so that is the heading.
@@ -186,11 +198,37 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     pbr_input.world_position = in.world_position;
     pbr_input.world_normal = normalize(in.world_normal);
     pbr_input.N = pbr_input.world_normal;
+    @if(FLOCK_SHADOW_RECEIVER) { pbr_input.flags |= MESH_FLAGS_SHADOW_RECEIVER_BIT; }
     pbr_input.V = calculate_view(in.world_position, false);
+    @if(SCREEN_SPACE_AMBIENT_OCCLUSION) {
+        let texel = vec2<i32>(in.clip_position.xy - view.viewport.xy);
+        let ao = textureLoad(screen_space_ambient_occlusion_texture, texel, 0i).r;
+        pbr_input.diffuse_occlusion = ssao_multibounce(ao, in.color);
+        let roughness = pbr_input.material.perceptual_roughness * pbr_input.material.perceptual_roughness;
+        let ndotv = max(dot(pbr_input.N, pbr_input.V), 0.0001);
+        pbr_input.specular_occlusion = clamp(pow(ndotv + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    }
     // ENVIRONMENT_MAP comes from MeshPipelineKey; Bevy applies diffuse/specular IBL and the sun here.
     var lit = apply_pbr_lighting(pbr_input);
     let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
     @if(GLOW) { lit = vec4<f32>(lit.rgb + in.color * in.glow_emission, lit.a); }
     return main_pass_post_lighting_processing(pbr_input, lit);
+}
+
+// Both depth passes run the same vertex entry point, including every deformation.
+@if(FLOCK_NORMAL || FLOCK_SHADOW)
+struct DepthOutput {
+    @if(FLOCK_NORMAL)
+    @location(0) normal: vec4<f32>,
+    @if(FLOCK_SHADOW)
+    @builtin(frag_depth) depth: f32,
+};
+@if(FLOCK_NORMAL || FLOCK_SHADOW)
+@fragment
+fn depth_fragment(in: VertexOutput) -> DepthOutput {
+    var out: DepthOutput;
+    @if(FLOCK_NORMAL) { out.normal = vec4<f32>(normalize(in.world_normal) * 0.5 + vec3<f32>(0.5), 1.0); }
+    @if(FLOCK_SHADOW) { out.depth = in.unclipped_depth; }
+    return out;
 }

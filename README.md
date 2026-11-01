@@ -160,6 +160,24 @@ Glow bloom, bank/flap motion, boid chase and its depth of field remain available
 The instanced PBR path inherits Bevy's environment-map view key and both view bind groups, so birds
 receive diffuse sky color, roughness-dependent reflections and directional sunlight in the same draw.
 
+### Flock shadows and ambient occlusion
+
+**Scene → Shadows** (default Off; scenario `set shadows on|off`) enables three cascades on the
+Studio key light or HDRI sun. Birds cast onto each other and the Studio floor. Environment skies
+still hide the floor. Cascade reach follows world size/camera distance, with a tighter first cascade
+while riding. Animation, procedural flap/swim and Glow streak share one vertex shader across passes.
+
+Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows and Ambient occlusion both Off,
+the original color pipeline, MSAA and scene defaults remain unchanged. **Flock shadow cap** defaults
+to 200,000 (`set shadow_cap 0..1000000`); counts above it skip flock casting automatically, while
+other scene shadows remain enabled. Zero disables flock casting. Lowering the count resumes it.
+The cap counts vehicles, not triangles; heavy imported models can need a much lower cap.
+
+**Ambient occlusion** (default Off; `set ambient_occlusion on|off`) enables SSAO and the flock's
+opaque depth/normal prepass. SSAO forces `Msaa::Off`; disabling it restores the prior MSAA setting.
+Shadows alone retain 4× MSAA. Motion-vector history is not implemented by this step.
+See [shadow validation](plans/completed/2026-11-01-flock-shadows.md) for captures and quick frame intervals.
+
 ### Swarm mechanics
 
 **Swarm → Cursor field** selects **Off** (default), **Attract** or **Repel**. Hold **F** over the
@@ -822,6 +840,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
 | `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `group`, `model_colors` (alias `model`) |
 | `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
+| `set shadows`, `set ambient_occlusion` | `on` / `off` (both default Off); SSAO temporarily disables MSAA |
+| `set shadow_cap` | Integer 0–1,000,000 (default 200,000); skip flock casting above this count |
 | `set msaa` | Developer measurement control: `4` (default) or `off`; changes the camera only |
 | `set flock_draw` | Developer measurement control: `on` (default) / `off`; skips only flock drawing, retains GPU simulation and scene |
 | `set auto_frame` | `on` / `off` (also `true` / `false`) |

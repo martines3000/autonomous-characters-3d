@@ -116,6 +116,9 @@ enum Setting {
     Mode(SimulationMode),
     Style(SceneStyle),
     Environment(crate::environment::Environment),
+    Shadows(bool),
+    ShadowCap(usize),
+    AmbientOcclusion(bool),
     Glow(f32),
     Streak(f32),
     Dof(bool),
@@ -252,6 +255,9 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("style", "classic") => Setting::Style(SceneStyle::Classic),
         ("style", "glow") => Setting::Style(SceneStyle::Glow),
         ("environment", _) => Setting::Environment(value.parse()?),
+        ("shadows", _) => Setting::Shadows(switch(value)?),
+        ("shadow_cap", _) => Setting::ShadowCap(integer(value, 0, 1_000_000)?),
+        ("ambient_occlusion", _) => Setting::AmbientOcclusion(switch(value)?),
         ("glow", _) => Setting::Glow(number(value, 0.0, 20.0)?),
         ("streak", _) => Setting::Streak(number(value, 0.0, 3.0)?),
         ("dof", _) => Setting::Dof(switch(value)?),
@@ -779,6 +785,11 @@ fn apply_setting(world: &mut World, setting: Setting) {
         }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
         Setting::Environment(value) => world.resource_mut::<Appearance>().environment = value,
+        Setting::Shadows(value) => world.resource_mut::<Appearance>().shadows = value,
+        Setting::ShadowCap(value) => world.resource_mut::<Appearance>().shadow_cap = value,
+        Setting::AmbientOcclusion(value) => {
+            world.resource_mut::<Appearance>().ambient_occlusion = value
+        }
         Setting::Glow(value) => world.resource_mut::<Appearance>().glow = value,
         Setting::Streak(value) => world.resource_mut::<Appearance>().streak = value,
         Setting::Dof(value) => world.resource_mut::<Presentation>().follow.dof = value,
@@ -928,6 +939,43 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shadows_ao_and_cap_parse_validate_and_apply() {
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        assert!(!world.resource::<Appearance>().shadows);
+        assert!(!world.resource::<Appearance>().ambient_occlusion);
+        for timed in
+            parse("0 set shadows on\n0 set shadow_cap 100000\n0 set ambient_occlusion on").unwrap()
+        {
+            if let Command::Set(setting) = timed.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(world.resource::<Appearance>().shadows);
+        assert!(world.resource::<Appearance>().ambient_occlusion);
+        assert_eq!(world.resource::<Appearance>().shadow_cap, 100_000);
+        for timed in
+            parse("0 set shadows off\n0 set ambient_occlusion off\n0 set shadow_cap 0").unwrap()
+        {
+            if let Command::Set(setting) = timed.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(!world.resource::<Appearance>().shadows);
+        assert!(!world.resource::<Appearance>().ambient_occlusion);
+        for bad in [
+            "shadows yes",
+            "ambient_occlusion maybe",
+            "shadow_cap -1",
+            "shadow_cap 1000001",
+            "shadow_cap 1.5",
+            "shadow_cap NaN",
+        ] {
+            assert!(parse(&format!("0 set {bad}")).is_err());
+        }
+    }
+
     #[test]
     fn environment_commands_are_validated_and_independent_of_style() {
         use crate::environment::Environment;

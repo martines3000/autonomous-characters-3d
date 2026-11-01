@@ -5,8 +5,10 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::{visibility::NoFrustumCulling, Hdr},
     camera_controller::pan_orbit_camera::prelude::*,
-    light::{NotShadowCaster, NotShadowReceiver},
+    core_pipeline::prepass::{DepthPrepass, NormalPrepass},
+    light::{CascadeShadowConfig, CascadeShadowConfigBuilder, NotShadowCaster, NotShadowReceiver},
     mesh::VertexAttributeValues,
+    pbr::ScreenSpaceAmbientOcclusion,
     post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
     prelude::*,
     render::{
@@ -171,6 +173,9 @@ pub struct Appearance {
     pub count_editing: bool,
     pub glow: f32,
     pub streak: f32,
+    pub shadows: bool,
+    pub shadow_cap: usize,
+    pub ambient_occlusion: bool,
 }
 
 impl Default for Appearance {
@@ -185,6 +190,9 @@ impl Default for Appearance {
             count_editing: false,
             glow: 4.0,
             streak: 0.8,
+            shadows: false,
+            shadow_cap: 200_000,
+            ambient_occlusion: false,
         }
     }
 }
@@ -195,6 +203,13 @@ impl Plugin for ScenePlugin {
         app.add_plugins(crate::environment::EnvironmentPlugin)
             .init_resource::<Appearance>()
             .add_systems(Startup, (setup_scene, setup_studio).chain())
+            .add_systems(
+                PostUpdate,
+                (sync_shadow_camera, sync_shadow_lights, sync_shadow_floor)
+                    .after(frame_world)
+                    .after(crate::presentation::animate_camera)
+                    .before(bevy::camera::CameraUpdateSystems),
+            )
             .add_systems(
                 PostUpdate,
                 sync_glow_camera.before(bevy::camera::CameraUpdateSystems),
@@ -237,6 +252,132 @@ pub(crate) fn sync_glow_camera(
             if hdr && appearance.environment == crate::environment::Environment::Off {
                 commands.entity(entity).remove::<Hdr>();
             }
+        }
+    }
+}
+
+/// Remember only components added by this feature, and restore the camera's MSAA.
+#[derive(Component)]
+struct ShadowCameraState {
+    added_depth: bool,
+    added_normal: bool,
+    msaa: Option<Msaa>,
+}
+#[allow(clippy::type_complexity)]
+fn sync_shadow_camera(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    cameras: Query<
+        (
+            Entity,
+            Has<DepthPrepass>,
+            Has<NormalPrepass>,
+            &Msaa,
+            Has<ScreenSpaceAmbientOcclusion>,
+            Option<&ShadowCameraState>,
+        ),
+        With<Camera3d>,
+    >,
+) {
+    for (entity, depth, normal, msaa, ao, saved) in &cameras {
+        let mut camera = commands.entity(entity);
+        if appearance.shadows || appearance.ambient_occlusion {
+            let mut next = saved.map_or(
+                ShadowCameraState {
+                    added_depth: !depth,
+                    added_normal: !normal,
+                    msaa: None,
+                },
+                |old| ShadowCameraState {
+                    added_depth: old.added_depth,
+                    added_normal: old.added_normal,
+                    msaa: old.msaa,
+                },
+            );
+            if !depth {
+                camera.insert(DepthPrepass);
+            }
+            if !normal {
+                camera.insert(NormalPrepass);
+            }
+            if appearance.ambient_occlusion {
+                if next.msaa.is_none() {
+                    next.msaa = Some(*msaa);
+                }
+                if *msaa != Msaa::Off {
+                    camera.insert(Msaa::Off);
+                }
+                if !ao {
+                    camera.insert(ScreenSpaceAmbientOcclusion {
+                        radius: 4.0,
+                        constant_object_thickness: 0.5,
+                        ..default()
+                    });
+                }
+            } else if let Some(old) = next.msaa.take() {
+                camera.insert(old).remove::<ScreenSpaceAmbientOcclusion>();
+            }
+            camera.insert(next);
+        } else if let Some(saved) = saved {
+            if saved.added_depth {
+                camera.remove::<DepthPrepass>();
+            }
+            if saved.added_normal {
+                camera.remove::<NormalPrepass>();
+            }
+            if let Some(old) = saved.msaa {
+                camera.insert(old);
+            }
+            camera.remove::<(ScreenSpaceAmbientOcclusion, ShadowCameraState)>();
+        }
+    }
+}
+
+fn shadow_cascades(count: usize, eye: Vec3, riding: bool) -> CascadeShadowConfig {
+    let scale = vehicle::world_scale(count);
+    CascadeShadowConfigBuilder {
+        num_cascades: 3,
+        minimum_distance: 0.1,
+        first_cascade_far_bound: if riding { 25.0 * scale } else { 100.0 * scale },
+        maximum_distance: far_wall_distance(eye, vehicle::walls(count)).max(200.0 * scale) * 1.15,
+        overlap_proportion: 0.2,
+    }
+    .build()
+}
+fn sync_shadow_floor(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    floors: Query<(Entity, &StudioSurface, Has<NotShadowReceiver>)>,
+) {
+    for (entity, surface, no_receiver) in &floors {
+        if !matches!(surface, StudioSurface::Ground) {
+            continue;
+        }
+        if appearance.shadows && no_receiver {
+            commands.entity(entity).remove::<NotShadowReceiver>();
+        }
+        if !appearance.shadows && !no_receiver {
+            commands.entity(entity).insert(NotShadowReceiver);
+        }
+    }
+}
+
+fn sync_shadow_lights(
+    appearance: Res<Appearance>,
+    state: Res<GlobalState>,
+    presentation: Res<crate::presentation::Presentation>,
+    cameras: Query<&Transform, With<Camera3d>>,
+    mut lights: Query<(&mut DirectionalLight, &mut CascadeShadowConfig), With<KeyLight>>,
+) {
+    let eye = cameras.iter().next().map_or(Vec3::ZERO, |t| t.translation);
+    let riding = presentation.follow.mode != crate::follow::FollowMode::Off;
+    for (mut light, mut cascades) in &mut lights {
+        light.shadow_maps_enabled = appearance.shadows;
+        if appearance.shadows {
+            *cascades = shadow_cascades(state.vehicle_count, eye, riding);
+            // Much smaller than Bevy's 1.8-unit default: the birds are only a few units long.
+            light.shadow_normal_bias = 0.15;
+            light.shadow_depth_bias = 0.01;
         }
     }
 }
@@ -673,6 +814,104 @@ pub(crate) fn draw_world(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_camera_and_floor_round_trip_and_preserve_external_prepasses() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .add_systems(Update, (sync_shadow_camera, sync_shadow_floor));
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample4, DepthPrepass))
+            .id();
+        let floor = app
+            .world_mut()
+            .spawn((StudioSurface::Ground, NotShadowReceiver))
+            .id();
+        app.update();
+        assert!(!app.world().entity(camera).contains::<ShadowCameraState>());
+        app.world_mut().resource_mut::<Appearance>().shadows = true;
+        app.update();
+        assert!(app.world().entity(camera).contains::<NormalPrepass>());
+        assert!(!app.world().entity(floor).contains::<NotShadowReceiver>());
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .ambient_occlusion = true;
+        app.update();
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Off));
+        assert!(app
+            .world()
+            .entity(camera)
+            .contains::<ScreenSpaceAmbientOcclusion>());
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .ambient_occlusion = false;
+        app.update();
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+        assert!(app.world().entity(camera).contains::<NormalPrepass>());
+        app.world_mut().resource_mut::<Appearance>().shadows = false;
+        app.update();
+        assert!(app.world().entity(camera).contains::<DepthPrepass>());
+        assert!(!app.world().entity(camera).contains::<NormalPrepass>());
+        assert!(!app
+            .world()
+            .entity(camera)
+            .contains::<ScreenSpaceAmbientOcclusion>());
+        assert!(app.world().entity(floor).contains::<NotShadowReceiver>());
+    }
+
+    #[test]
+    fn cascades_cover_world_and_riding_near_field_and_only_key_casts() {
+        for count in [3_000, 20_000, 100_000, 1_000_000] {
+            let scale = vehicle::world_scale(count);
+            let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
+            let overview = shadow_cascades(count, eye, false);
+            let riding = shadow_cascades(count, Vec3::ZERO, true);
+            assert_eq!(overview.bounds.len(), 3);
+            assert!(
+                overview.bounds.last().unwrap() > &far_wall_distance(eye, vehicle::walls(count))
+            );
+            assert!(riding.bounds[0] < overview.bounds[0]);
+            assert_eq!(riding.minimum_distance, 0.1);
+        }
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .add_systems(Update, sync_shadow_lights);
+        let key = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), KeyLight))
+            .id();
+        let fill = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), FillLight))
+            .id();
+        for environment in crate::environment::Environment::ALL {
+            for enabled in [false, true, false] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.environment = environment;
+                    appearance.shadows = enabled;
+                }
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .get::<DirectionalLight>(key)
+                        .unwrap()
+                        .shadow_maps_enabled,
+                    enabled
+                );
+                assert!(
+                    !app.world()
+                        .get::<DirectionalLight>(fill)
+                        .unwrap()
+                        .shadow_maps_enabled
+                );
+            }
+        }
+    }
 
     #[test]
     fn glow_camera_components_are_optional_and_msaa_is_preserved() {
