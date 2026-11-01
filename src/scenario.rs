@@ -66,6 +66,7 @@ enum Command {
     FollowId(u32),
     Pause(bool),
     Preset(CameraPreset),
+    Showcase(crate::showcase::Showcase),
     Target(Vec3),
     Attractor(Option<Vec3>),
     ObstacleAdd(Vec3, f32),
@@ -462,6 +463,14 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
+                ["showcase", name] => {
+                    let showcase = crate::showcase::Showcase::parse(name)?;
+                    let settings = showcase.settings();
+                    mode = settings.state.mode;
+                    predator_count = settings.swarm.predators.objects.len();
+                    obstacle_count = settings.swarm.obstacles.len();
+                    Command::Showcase(showcase)
+                }
                 ["boidcam", "chase"] => Command::BoidFollow(crate::follow::FollowMode::Chase),
                 ["boidcam", "first"] => Command::BoidFollow(crate::follow::FollowMode::FirstPerson),
                 ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
@@ -550,6 +559,7 @@ fn run_scenario(world: &mut World) {
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
+                Command::Showcase(showcase) => crate::showcase::apply(world, showcase),
                 Command::Director(enabled) => {
                     world.resource_mut::<Presentation>().set_director(enabled)
                 }
@@ -939,6 +949,47 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showcase_commands_validate_names_and_reset_validation_state() {
+        use crate::showcase::Showcase;
+        for (name, showcase) in [
+            ("starling", Showcase::Starling),
+            ("fish-school", Showcase::Fish),
+            ("swallow", Showcase::Swallow),
+            ("neon-swarm", Showcase::Neon),
+            ("calm", Showcase::Calm),
+        ] {
+            let commands = parse(&format!("0 showcase {name}\n1 exit")).unwrap();
+            assert_eq!(commands[0].command, Command::Showcase(showcase));
+        }
+        for command in [
+            "showcase unknown",
+            "showcase",
+            "showcase fish extra",
+            "preset neon",
+        ] {
+            assert!(parse(&format!("0 {command}")).is_err(), "{command}");
+        }
+        // A showcase switches back to GPU and replaces bounded scene lists.
+        assert!(parse("0 set mode naive\n0 showcase neon\n0 set count 200000").is_ok());
+        let adds = "0 predator add 0 0 0 20\n";
+        assert!(parse(&format!("0 showcase starling\n{}", adds.repeat(2))).is_ok());
+        assert!(parse(&format!("0 showcase starling\n{}", adds.repeat(3))).is_err());
+        assert!(parse(&format!(
+            "{}0 showcase calm\n{}",
+            adds.repeat(4),
+            adds.repeat(4)
+        ))
+        .is_ok());
+        let obstacles = "0 obstacle add 0 0 0 20\n";
+        assert!(parse(&format!(
+            "{}0 showcase calm\n{}",
+            obstacles.repeat(8),
+            obstacles.repeat(8)
+        ))
+        .is_ok());
+    }
     #[test]
     fn shadows_ao_and_cap_parse_validate_and_apply() {
         let mut world = World::new();
