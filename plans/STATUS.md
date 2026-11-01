@@ -2,7 +2,7 @@
 
 ## Current work
 
-- AAA look track on `feat/boid-camera-and-fixes`: environment, opaque flock with shadows, hero models, cinematic camera (in progress).
+- AAA look track on `feat/boid-camera-and-fixes`: motion, environments, shadows, Director, showcase, underwater, motion blur and volumetric light are done. The first hero model (low-poly swallow, branch `feat/aaa-hero-model`, not merged) awaits owner review before LOD or further models.
 
 ## Prioritized future tasks
 
