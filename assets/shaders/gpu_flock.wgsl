@@ -285,7 +285,7 @@ fn update_groups(@builtin(global_invocation_id) id: vec3<u32>) {
     var group = 0u;
     if params.groups.x != 0u {
         let record = read_order(params.groups.z, index);
-        arena[record].y %= params.groups.x;
+        arena[record].y = arena[record].x % params.groups.x;
         group = arena[record].y;
     }
     let speed = bitcast<u32>(instances[index].position_speed_group.w) & 0xffffu;
@@ -618,9 +618,9 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             let wander = normalize_or_zero(wander_target - position) * params.wander_speed - velocity;
             acceleration += limit(wander, params.max_speed * params.wander_factor) / params.mass;
         }
-        let back = select(vec3<f32>(0.0), select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
-        if !FORMATION_ENABLED || !seeking {
-            acceleration += limit(back - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
+        let desired = select(velocity, select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
+        if any(outside) && (!FORMATION_ENABLED || !seeking) {
+            acceleration += limit(desired - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
         }
     }
 

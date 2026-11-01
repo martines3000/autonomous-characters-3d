@@ -180,7 +180,7 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
         return;
     }
     ui.small("All groups separate; alignment/cohesion stay within each group.");
-    ui.small("Increasing groups keeps survivors; new groups fill on vehicle growth.");
+    ui.small("Group-count edits reassign existing members from their spawn IDs.");
     for (index, group) in groups.table[..groups.count as usize].iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.label(format!("Group {index}"));

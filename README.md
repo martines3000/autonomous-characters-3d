@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 122 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 124 regression tests, GPU parity tests, seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -115,6 +115,14 @@ menu when it has focus.
 - Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
   `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
 
+Wandering vehicles apply wall steering only after crossing a wall. An outside axis desires inward
+max speed; an in-bounds axis retains its current velocity component. The difference is capped at
+max speed × wall-avoid factor. Fully in-bounds vehicles receive no wall force, so walls no longer
+brake wandering vehicles. Global/group seek and formation wall gating remain unchanged. Walls
+steer softly rather than clamp positions, so a vehicle may briefly overshoot. Default speeds and
+force weights are unchanged; visual speed tuning remains an owner decision. See
+[containment measurements](plans/completed/2026-11-01-wall-containment.md).
+
 ### Swarm mechanics
 
 **Swarm → Cursor field** selects **Off** (default), **Attract** or **Repel**. Hold **F** over the
@@ -155,11 +163,12 @@ and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headle
 are within 5% of the original baseline in 100k/1M wander/follow. See the
 [swarm plan](plans/completed/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
 
-New vehicles use ID modulo the enabled count; while Off they retain dormant ID-modulo-eight
-membership. Enabling or changing the group count maps current membership modulo the new count.
-Off preserves membership while ignoring group targets/filtering and writing group zero to instances.
-Increasing the count preserves survivors and can leave new groups empty until vehicle growth;
-there is no automatic rebalancing or exact population quota. Shrinking retains surviving IDs/groups;
+New vehicles use spawn ID modulo the enabled count; Off spawns use dormant ID-modulo-eight
+membership. Enabling or changing the group count reassigns every existing member by spawn ID
+modulo the new count, once per edit. New groups can receive existing members without vehicle growth. Off preserves latent membership while ignoring group targets/filtering and
+writing group zero to instances; re-enabling recomputes assignment from IDs. Contiguous spawn IDs
+balance group populations within one vehicle; sparse surviving ID sets have no exact population
+quota. Shrinking vehicle count retains surviving IDs/groups;
 regrowth uses fresh IDs, rather than sorted indices or reused count values. Zero count and CPU/GPU
 backend transitions start a new ID lifetime. Naive/Octree switches preserve membership. Group edits,
 colors and membership maintenance remain live while paused; motion still follows the simulation clock.
@@ -197,7 +206,7 @@ Each enabled vehicle has a dense unique metadata slot. Count/group-count edits a
 slots by current record order within each group. Sorts, shape edits and Naive/Octree switches retain
 slots; backend switches respawn. Off preserves latent slots and assigns no new ones until enabled.
 Groups get separate shapes on an XY grid, spaced 2.25 extents apart. Raising group count keeps the
-existing membership policy; empty groups can have no shape until growth.
+spawn-ID rebalance policy; groups without members have no shape.
 
 Targets are analytic: a Fibonacci sphere or a three-turn helix, linearly blended. The sphere uses an
 integer golden-angle phase so million-slot longitudes retain precision; animation phase is independent.
@@ -241,8 +250,7 @@ mechanic enable bits; no per-frame pipeline creation occurs.
 All five Stage 7 mechanics are optional and implemented. Disabled mechanics preserve original
 steering arithmetic. Attraction
 retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
-attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
-are retuned.
+attraction can substantially increase neighbor cost. No separation, speed or density defaults are retuned.
 
 ### Presentation
 
@@ -747,6 +755,10 @@ sandboxes.
 # GPU regression tests: CPU parity, complete separation, spawn/grow/truncate, bounds
 CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
 
+# Wall speed/containment probe: seeded initial world, CPU Octree + GPU at 200 and current default/20k.
+# 60 simulated seconds; mean speed over 50–60 s, maximum overshoot sampled every step.
+CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::wall_containment_probe -- --exact --ignored --nocapture --test-threads=1
+
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
 # Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
 # Optional GPU_BENCH_FORMATION=off (default), sphere or helix; active shapes use the chosen cap.
@@ -787,7 +799,7 @@ Open issues are listed in
 
 - crowding in very large follow flocks;
 - rendering cost up close;
-- wall avoidance acting as drag.
+- optional speed retuning by the owner, by eye, after the wall-drag fix.
 
 ## Sources
 

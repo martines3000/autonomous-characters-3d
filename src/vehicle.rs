@@ -324,47 +324,42 @@ fn movement(
                     acceleration.apply_force(force, state.vehicle_mass);
                 }
 
-                // Calculate force
-                let mut force = Vector3::new(
-                    if fx {
-                        if transform.translation.x < -walls.x {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                    if fy {
-                        if transform.translation.y < -walls.y {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                    if fz {
-                        if transform.translation.z < -walls.z {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                );
-
-                force -= velocity.0;
-
-                // Limit force
-                limit(&mut force, limit_wall_avoid);
-
-                // Apply force
-                acceleration.apply_force(force, state.vehicle_mass);
+                if fx || fy || fz {
+                    let force = wall_force(
+                        transform.translation,
+                        velocity.0,
+                        walls,
+                        state.vehicle_max_speed,
+                        limit_wall_avoid,
+                    );
+                    // Apply force
+                    acceleration.apply_force(force, state.vehicle_mass);
+                }
             },
         );
     }
+}
+
+fn wall_force(
+    position: Vec3,
+    velocity: Vector3<f32>,
+    bounds: Vec3,
+    max_speed: f32,
+    max_force: f32,
+) -> Vector3<f32> {
+    // Calculate force
+    let mut desired = velocity;
+    for axis in 0..3 {
+        if position[axis] < -bounds[axis] {
+            desired[axis] = max_speed;
+        } else if position[axis] > bounds[axis] {
+            desired[axis] = -max_speed;
+        }
+    }
+    let mut force = desired - velocity;
+    // Limit force
+    limit(&mut force, max_force);
+    force
 }
 
 // Half-extents of the box that wandering vehicles steer back into.
@@ -431,7 +426,7 @@ fn update_membership(
         return;
     }
     for mut metadata in &mut vehicles {
-        let group = state.groups.mapped_group(metadata.0.y);
+        let group = state.groups.spawn_group(metadata.0.x);
         if metadata.0.y != group {
             metadata.0.y = group;
         }
@@ -879,6 +874,154 @@ mod tests {
                     "count={count} mode={mode} median_ms={median:.3} p95_ms={p95:.3} steps={steps}"
                 );
             }
+        }
+    }
+
+    #[derive(Default)]
+    struct WallProbeStats {
+        speed_windows: [f64; 6],
+        worst_overshoot: f32,
+    }
+
+    impl WallProbeStats {
+        fn sample(
+            &mut self,
+            step: usize,
+            bounds: Vec3,
+            vehicles: impl Iterator<Item = (Vec3, Vec3)>,
+        ) {
+            let mut speed = 0.0_f64;
+            let mut count = 0;
+            for (position, velocity) in vehicles {
+                assert!(position.is_finite() && velocity.is_finite());
+                speed += velocity.length() as f64;
+                count += 1;
+                self.worst_overshoot = self
+                    .worst_overshoot
+                    .max((position.abs() - bounds).max_element());
+            }
+            self.speed_windows[step / 600] += speed / count as f64 / 600.0;
+        }
+
+        fn report(&self, count: usize, backend: &str) {
+            println!("wall_containment count={count} backend={backend} mean_speed_30_40={:.6} mean_speed_40_50={:.6} settled_mean_speed_50_60={:.6} worst_overshoot={:.6}",
+                self.speed_windows[3], self.speed_windows[4], self.speed_windows[5], self.worst_overshoot);
+        }
+    }
+
+    #[test]
+    #[ignore = "headless wall measurement; run in release with --nocapture --test-threads=1"]
+    fn wall_containment_probe() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        const SEED: u64 = 0xB01D5;
+        const STEPS: usize = 3600;
+        let dt = Duration::from_secs_f64(1.0 / 60.0);
+        bevy::tasks::ComputeTaskPool::get_or_init(|| {
+            bevy::tasks::TaskPoolBuilder::new().num_threads(9).build()
+        });
+        let default_count = GlobalState::default().vehicle_count;
+        let mut counts = vec![200, 20_000, default_count];
+        counts.sort_unstable();
+        counts.dedup();
+        println!("wall_containment_probe seed={SEED:#x} default_count={default_count} steps={STEPS} dt={:.9} mean_window=50..60s peak_window=0..60s CPU_initial_world_seeded_GPU_frame_index_PCG threads=9", dt.as_secs_f64());
+        let mut worlds = Vec::new();
+        for count in counts {
+            let state = GlobalState {
+                vehicle_count: count,
+                mode: SimulationMode::Octree,
+                ..default()
+            };
+            let mut rng = StdRng::seed_from_u64(SEED);
+            let boids: Vec<BoidData> = (0..count)
+                .map(|id| {
+                    let position = (Vec3::new(rng.random(), rng.random(), rng.random())
+                        - Vec3::splat(0.5))
+                        * spawn_size(count);
+                    let z: f32 = rng.random_range(-1.0..=1.0);
+                    let angle: f32 = rng.random_range(0.0..2.0 * PI);
+                    let radius = (1.0 - z * z).sqrt();
+                    let velocity = Vec3::new(radius * angle.cos(), radius * angle.sin(), z)
+                        * state.vehicle_max_speed;
+                    let mut boid: BoidData = [
+                        position.extend(0.0),
+                        velocity.extend(0.0),
+                        Vec4::from(Quat::IDENTITY),
+                        Vec4::ZERO,
+                    ]
+                    .into();
+                    boid.metadata =
+                        UVec4::new(id as u32, state.groups.spawn_group(id as u32), 0, 0);
+                    boid
+                })
+                .collect();
+            let mut app = App::new();
+            app.insert_resource(state)
+                .init_resource::<Time>()
+                .init_resource::<SwarmScene>()
+                .init_resource::<FormationFrame>()
+                .init_resource::<PredatorFrame>()
+                .add_systems(Update, (movement, update).chain());
+            app.world_mut()
+                .spawn((Target, TargetSelection(false), Transform::default()));
+            for boid in &boids {
+                app.world_mut().spawn((
+                    Vehicle,
+                    VehicleMetadata(boid.metadata),
+                    VehicleVelocity(boid[1].truncate().into()),
+                    VehicleAcceleration::default(),
+                    VehicleWanderRotation::default(),
+                    Transform::from_translation(boid[0].truncate()),
+                ));
+            }
+            let mut stats = WallProbeStats::default();
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(&Transform, &VehicleVelocity), With<Vehicle>>();
+            for step in 0..STEPS {
+                app.world_mut().resource_mut::<Time>().advance_by(dt);
+                app.update();
+                stats.sample(
+                    step,
+                    walls(count),
+                    query
+                        .iter(app.world())
+                        .map(|(p, v)| (p.translation, Vec3::from(v.0))),
+                );
+                if (step + 1) % 600 == 0 {
+                    println!("wall_containment_progress count={count} backend=octree simulated_seconds={}",(step+1)/60);
+                }
+            }
+            stats.report(count, "octree");
+            worlds.push((count, boids));
+        }
+        let (device, queue) = gpu_device();
+        for (count, boids) in worlds {
+            let state = GlobalState {
+                vehicle_count: count,
+                ..default()
+            };
+            let mut flock = GpuFlock::new(&device);
+            flock.upload(&device, &queue, &boids);
+            let params = gpu_params(&state, Vec3::ZERO, false, dt.as_secs_f32());
+            let mut stats = WallProbeStats::default();
+            for step in 0..STEPS {
+                gpu_step(&mut flock, &device, &queue, &params);
+                stats.sample(
+                    step,
+                    walls(count),
+                    flock
+                        .read_boids(&device, &queue)
+                        .iter()
+                        .map(|b| (b[0].truncate(), b[1].truncate())),
+                );
+                if (step + 1) % 600 == 0 {
+                    println!(
+                        "wall_containment_progress count={count} backend=gpu simulated_seconds={}",
+                        (step + 1) / 60
+                    );
+                }
+            }
+            stats.report(count, "gpu");
         }
     }
 
@@ -1647,6 +1790,7 @@ mod tests {
         );
         assert!(initial.values().all(|v| v.0.y == v.0.x % 8));
         for count in [2, 8, 0, 3] {
+            let previous = snapshot(app.world_mut());
             app.world_mut().resource_mut::<GlobalState>().groups.count = count;
             app.update();
             let current = snapshot(app.world_mut());
@@ -1655,7 +1799,14 @@ mod tests {
                 assert_eq!((meta.x, meta.z, meta.w), (before.0.x, 0, 0));
                 assert_eq!(*transform, before.1);
                 assert_eq!(*phase, before.2);
-                assert_eq!(meta.y, before.0.y % 2);
+                assert_eq!(
+                    meta.y,
+                    if count == 0 {
+                        previous[entity].0.y
+                    } else {
+                        meta.x % count
+                    }
+                );
             }
         }
         let retained = snapshot(app.world_mut());
@@ -2437,7 +2588,13 @@ mod tests {
                         Vec4::W,
                         Vec4::ZERO,
                     ],
-                    metadata: UVec4::new(id, group, 0, 0),
+                    // Sparse IDs keep this adversarial fixture's intended spawn-rule groups.
+                    metadata: UVec4::new(
+                        if id < 2 { id * 2 } else { (id - 2) * 2 + 1 },
+                        group,
+                        0,
+                        0,
+                    ),
                 }
             })
             .collect();
@@ -2539,9 +2696,27 @@ mod tests {
         assert!(grown[128..]
             .iter()
             .all(|b| b.metadata == UVec4::new(b.metadata.x, b.metadata.x % 8, 0, 0)));
-        for count in [3, 0, 2, 8] {
+        let mut cpu = App::new();
+        cpu.insert_resource(GlobalState {
+            mode: SimulationMode::Naive,
+            ..state
+        })
+        .add_systems(Update, update_membership);
+        for boid in &grown {
+            cpu.world_mut()
+                .spawn((Vehicle, VehicleMetadata(boid.metadata)));
+        }
+        for count in [2, 5, 3, 0, 2, 8] {
             let before = flock.read_boids(&device, &queue);
             state.groups.count = count;
+            cpu.world_mut().resource_mut::<GlobalState>().groups.count = count;
+            cpu.update();
+            let cpu_metadata: std::collections::HashMap<_, _> = cpu
+                .world_mut()
+                .query::<&VehicleMetadata>()
+                .iter(cpu.world())
+                .map(|m| (m.0.x, m.0))
+                .collect();
             gpu_step(
                 &mut flock,
                 &device,
@@ -2551,6 +2726,7 @@ mod tests {
             let after = flock.read_boids(&device, &queue);
             let instances = flock.read_instances(&device, &queue);
             for ((a, b), instance) in before.iter().zip(&after).zip(&instances) {
+                assert_eq!(b.metadata, cpu_metadata[&b.metadata.x]);
                 assert_eq!(a.state, b.state);
                 assert_eq!(
                     (a.metadata.x, a.metadata.z, a.metadata.w),
@@ -2561,7 +2737,7 @@ mod tests {
                     if count == 0 {
                         a.metadata.y
                     } else {
-                        a.metadata.y % count
+                        state.groups.spawn_group(b.metadata.x)
                     }
                 );
                 assert_eq!(
@@ -3181,7 +3357,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(id, &(mut position, velocity))| {
-                    // Exercise both signs of every wall, as well as the inside-wall drag.
+                    // Exercise both signs of every wall, as well as drag-free in-bounds axes.
                     if id < 6 {
                         let axis = id / 2;
                         position[axis] = walls(count)[axis] * if id % 2 == 0 { -1.1 } else { 1.1 };
@@ -3597,6 +3773,89 @@ mod tests {
                     .paused
             );
             retained = current;
+        }
+    }
+
+    #[test]
+    fn wall_force_is_zero_inside_and_only_changes_outside_axes() {
+        let bounds = Vec3::new(200.0, 200.0, 100.0);
+        let velocity = Vector3::new(60.0, -30.0, 20.0);
+        for position in [Vec3::ZERO, bounds, -bounds] {
+            assert_eq!(
+                wall_force(position, velocity, bounds, 80.0, 120.0).map(f32::to_bits),
+                Vector3::<f32>::zeros().map(f32::to_bits)
+            );
+        }
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                let mut position = Vec3::ZERO;
+                position[axis] = sign * (bounds[axis] + 1.0);
+                let force = wall_force(position, velocity, bounds, 80.0, 120.0);
+                let mut expected = Vector3::zeros();
+                expected[axis] = (-sign * 80.0 - velocity[axis]).clamp(-120.0, 120.0);
+                assert_eq!(force, expected);
+            }
+        }
+        let force = wall_force(bounds * 2.0, velocity, bounds, 80.0, 120.0);
+        assert!((force.magnitude() - 120.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn group_count_edits_rebalance_from_spawn_ids_once() {
+        let mut app = App::new();
+        let mut state = cpu_state();
+        state.groups.count = 2;
+        app.insert_resource(state)
+            .add_systems(Update, update_membership);
+        for id in 0..61 {
+            app.world_mut()
+                .spawn((Vehicle, VehicleMetadata(UVec4::new(id, 99, id + 100, 71))));
+        }
+        let snapshot = |world: &mut World| {
+            let mut records: Vec<_> = world
+                .query::<&VehicleMetadata>()
+                .iter(world)
+                .map(|m| m.0)
+                .collect();
+            records.sort_by_key(|m| m.x);
+            records
+        };
+        let mut previous = snapshot(app.world_mut());
+        for count in [2, 5, 3, 0, 5] {
+            app.world_mut().resource_mut::<GlobalState>().groups.count = count;
+            app.update();
+            let current = snapshot(app.world_mut());
+            let mut populations = [0_usize; 8];
+            for (metadata, before) in current.iter().zip(&previous) {
+                assert_eq!(
+                    (metadata.x, metadata.z, metadata.w),
+                    (before.x, before.z, before.w)
+                );
+                assert_eq!(
+                    metadata.y,
+                    if count == 0 {
+                        before.y
+                    } else {
+                        metadata.x % count
+                    }
+                );
+                if count > 0 {
+                    populations[metadata.y as usize] += 1;
+                }
+            }
+            if count > 0 {
+                let populations = &populations[..count as usize];
+                assert!(populations.iter().max().unwrap() - populations.iter().min().unwrap() <= 1);
+            }
+            previous = current;
+            app.world_mut().clear_trackers();
+            app.update();
+            assert_eq!(snapshot(app.world_mut()), previous);
+            assert!(app
+                .world_mut()
+                .query::<Ref<VehicleMetadata>>()
+                .iter(app.world())
+                .all(|m| !m.is_changed()));
         }
     }
 

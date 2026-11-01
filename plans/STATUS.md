@@ -2,7 +2,7 @@
 
 ## Current work
 
-None. The visual showcase and swarm features branch `feat/visual-showcase-and-swarm-features` is complete and awaits owner review (not merged).
+- Boid follow camera on `feat/boid-camera-and-fixes` (in progress). Wall containment and group rebalance are committed there; see Completed.
 
 ## Prioritized future tasks
 
@@ -10,9 +10,8 @@ Items without a linked ExecPlan need one from `TEMPLATE.md` when starting.
 
 1. **Follow-mode density at 100,000+ vehicles.** With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
 2. **Rendering budgets for heavy custom models and other GPUs.** [Stage 4](completed/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
-3. **Wall avoidance acts as drag inside the walls.** Both CPU and GPU apply the wall-avoidance term every step, even in bounds, steering toward zero velocity. Wander speed settles near 29 units/s rather than the configured 40. The owner should decide the intended behavior before changing both implementations together.
 
-Smaller follow-ups (no plan needed): retune `vehicle_max_speed` and `vehicle_wander_speed` by eye after the wall-drag decision (wander currently settles near 29 units/s against a max of 80; behavior is frame-rate independent, so tuning holds at any FPS).
+Smaller follow-ups (no plan needed): speed retuning (`vehicle_max_speed` / `vehicle_wander_speed`) remains owner-by-eye after the outside-only wall fix. No defaults were retuned.
 
 CI (finding F12) is not wanted by the owner.
 
@@ -41,14 +40,15 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Outside-only wall containment and group rebalance](completed/2026-11-01-wall-containment.md) (2026-11-01): 20k settled wander speed rises from roughly 29.3 to 39.2 units/s; maximum measured GPU overshoot is 23.399 units and the existing <50 assertion passes. Group-count edits spread existing members by spawn ID; Off handling and carried metadata remain intact.
 - [Visual showcase, custom models and swarm mechanics](completed/2026-10-31-visual-showcase-and-swarm-features.md) (umbrella, 2026-11-01): seven stages on `feat/visual-showcase-and-swarm-features`, `e635c6d`..`a0d3ed7`, pushed, not merged; all new features optional and off by default; GPU steps unchanged with them off (1M wander about 4.6 ms, follow about 7.9 ms at cap 16).
-- [Swarm mechanics](completed/2026-10-31-swarm-mechanics.md) (2026-11-01): cursor attractor/repulsor, 2–8 groups, up to 8 sphere obstacles, sphere/helix formations and up to 4 predators; one CPU/GPU contract with parity tests; identity and scene records share one storage arena; everything on at 100k costs 7.1 ms at cap 16 (40.6 ms exact).
+- [Swarm mechanics](completed/2026-10-31-swarm-mechanics.md) (2026-11-01): cursor attractor/repulsor, 2–8 groups, up to 8 sphere obstacles, sphere/helix formations and up to 4 predators; one CPU/GPU contract with parity tests; identity and scene records share one storage arena; everything on at 100k costs 7.1 ms at cap 16 (40.6 ms exact). Known group-growth limitation resolved on 2026-11-01: enabling/group-count edits rebalance existing members by spawn ID; no need to wait for vehicle growth.
 - [Presentation controls](completed/2026-10-31-presentation-controls.md) (2026-10-31): simulation clock, pause, 0.1–4× speed (ceil(speed) steps above 1×), real-time orbit and five camera presets.
 - [Custom glTF vehicle models](completed/2026-10-31-custom-vehicle-models.md) (2026-10-31): static GLB/glTF import, then baked rigid/skinned animation with stable per-vehicle phases and per-part materials in one draw.
 - [Rendering optimization](completed/2026-10-31-rendering-optimization.md) (2026-10-31): exact import vertex sharing halves heavy-model frame time (24 to 11.5 ms at 100k); no LOD, culling or MSAA change justified.
 - [Visual foundation and vehicle appearance](completed/2026-10-31-visual-foundation-and-appearance.md) (2026-10-31): studio style, palettes, count-aware framing, vehicle shapes, proportions and color modes.
 
-- [Flock on the GPU](completed/2026-10-30-gpu-flocking.md) (2026-10-30): GPU default at 20,000 / follow cap 16; M3 Pro headless wander/follow steps 0.67/1.4 ms at 20k, 7.4/13.2 ms at 300k, 26.1/44.9 ms at one million; default app about 107–120 FPS wandering, scaled target and camera; CPU parity and complete separation tested on the GPU. Large follow density, rendering cost and wall drag remain above.
+- [Flock on the GPU](completed/2026-10-30-gpu-flocking.md) (2026-10-30): GPU default at 20,000 / follow cap 16; M3 Pro headless wander/follow steps 0.67/1.4 ms at 20k, 7.4/13.2 ms at 300k, 26.1/44.9 ms at one million; default app about 107–120 FPS wandering, scaled target and camera; CPU parity and complete separation tested on the GPU. Large follow density and rendering cost remain above; in-bounds wall drag is resolved by the 2026-11-01 containment fix.
 - [Keep vehicles apart when they follow the target](completed/2026-10-30-follow-mode-separation.md) (2026-10-30): separation pushes add up and grow with closeness; followers at 1,000 and 5,000 go from 100% overlapping to none; wander flocks keep their look with no overlapping pairs; follow-mode cost at large counts deferred.
 - [Instanced vehicle rendering and a visual pass](completed/2026-10-30-instanced-rendering-and-visuals.md) (2026-10-30): one instanced draw for the flock; 30,000 vehicles 53 → about 80 FPS, 10,000 about 138 → 220 FPS; heading colors, directional light, fog, wall box and floor grid; separation retune investigated, follow-mode collapse deferred to future task 1.
 - [What limits frame time at 30,000 vehicles](completed/2026-10-30-high-count-frame-limit.md) (2026-10-30): CPU critical path, not GPU; 30,000 vehicles at about 53 FPS and 10,000 at about 138 FPS at low machine load; no code change; GPU time unmeasurable with available tools.
