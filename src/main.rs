@@ -1,3 +1,5 @@
+mod capture;
+mod director;
 mod follow;
 mod formation;
 mod gpu_flock;
@@ -75,6 +77,7 @@ fn main() {
             scenario::ScenarioPlugin,
             presentation::PresentationPlugin,
             follow::FollowPlugin,
+            capture::CapturePlugin,
             swarm::SwarmPlugin,
         ))
         .add_systems(
@@ -116,7 +119,7 @@ fn camera_input(
     let blocked = contexts
         .ctx_mut()
         .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
-    let following = presentation.is_some_and(|p| p.follow.enabled());
+    let following = presentation.is_some_and(|p| p.follow.enabled() && !p.director.enabled);
     let mode = if blocked {
         0
     } else if buttons.pressed(MouseButton::Right) {
@@ -457,6 +460,7 @@ fn ui(
                     ("Hold F", "Apply cursor field (Swarm)"),
                     ("P / O", "Pause / auto-orbit"),
                     ("B / N", "Boid camera / next boid"),
+                    ("C", "Toggle Director"),
                     (
                         "1 / 2 / 3 / 4 / 5",
                         "Front / side / top / overview / target",

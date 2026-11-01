@@ -325,7 +325,7 @@ struct FollowScene<'w> {
 
 fn follow_camera(
     mut commands: Commands,
-    presentation: Res<Presentation>,
+    mut presentation: ResMut<Presentation>,
     mut runtime: ResMut<FollowRuntime>,
     clock: Res<SimulationClock>,
     real: Res<Time<Real>>,
@@ -368,7 +368,11 @@ fn follow_camera(
     if runtime.projection.is_none() {
         runtime.projection = Some(projection.clone());
     }
+    if presentation.camera_delta == Some(0.0) {
+        return;
+    }
     if runtime.blend.is_none() {
+        presentation.director.reset_subject();
         runtime.blend = Some((*transform, 0.0));
         runtime.position = transform.translation;
         runtime.spring_velocity = Vec3::ZERO;
@@ -379,7 +383,7 @@ fn follow_camera(
         runtime.orbit_yaw = 0.0;
     }
     let dt_sim = clock.delta_secs_f64() as f32;
-    let dt = real.delta_secs();
+    let dt = presentation.camera_dt(&real);
     if let Some(heading) = sample.velocity.try_normalize() {
         let turn = Quat::from_rotation_arc(runtime.heading, heading);
         runtime.heading = (Quat::IDENTITY.slerp(turn, 1.0 - (-dt_sim / 0.2).exp())
@@ -399,43 +403,64 @@ fn follow_camera(
         1.0
     };
     let mut desired = *transform;
-    match presentation.follow.mode {
-        FollowMode::Chase => {
-            if presentation.orbit {
-                runtime.orbit_yaw += presentation.orbit_speed.to_radians() * dt;
+    if presentation.director.enabled {
+        let target = presentation.director.eye(position, heading, size * scale);
+        let FollowRuntime {
+            position: camera,
+            spring_velocity,
+            ..
+        } = &mut *runtime;
+        spring(camera, spring_velocity, target, dt);
+        desired.translation = *camera;
+        desired.look_at(
+            position,
+            if heading.dot(Vec3::Y).abs() > 0.98 {
+                Vec3::Z
+            } else {
+                Vec3::Y
+            },
+        );
+        projection.fov = runtime.projection.as_ref().unwrap().fov;
+        projection.near = size * 0.05;
+    } else {
+        match presentation.follow.mode {
+            FollowMode::Chase => {
+                if presentation.orbit {
+                    runtime.orbit_yaw += presentation.orbit_speed.to_radians() * dt;
+                }
+                let distance = presentation.follow.distance.max(2.0) * size * scale;
+                let offset = Quat::from_rotation_y(runtime.orbit_yaw)
+                    * (-heading * distance + Vec3::Y * distance * 0.3);
+                let target = position + offset;
+                let FollowRuntime {
+                    position: camera,
+                    spring_velocity,
+                    ..
+                } = &mut *runtime;
+                // Real time keeps bullet-time orbit live. Heading/prediction still use simulated time.
+                spring(camera, spring_velocity, target, dt);
+                desired.translation = *camera;
+                desired.look_at(position + sample.velocity * 0.25, Vec3::Y);
+                projection.fov = runtime.projection.as_ref().unwrap().fov;
+                // PanOrbitCamera scales near by the old world-view anchor depth. At a
+                // boid-sized chase distance that inherited plane would clip the boid away.
+                projection.near = size * 0.05;
             }
-            let distance = presentation.follow.distance.max(2.0) * size * scale;
-            let offset = Quat::from_rotation_y(runtime.orbit_yaw)
-                * (-heading * distance + Vec3::Y * distance * 0.3);
-            let target = position + offset;
-            let FollowRuntime {
-                position: camera,
-                spring_velocity,
-                ..
-            } = &mut *runtime;
-            // Real time keeps bullet-time orbit live. Heading/prediction still use simulated time.
-            spring(camera, spring_velocity, target, dt);
-            desired.translation = *camera;
-            desired.look_at(position + sample.velocity * 0.25, Vec3::Y);
-            projection.fov = runtime.projection.as_ref().unwrap().fov;
-            // PanOrbitCamera scales near by the old world-view anchor depth. At a
-            // boid-sized chase distance that inherited plane would clip the boid away.
-            projection.near = size * 0.05;
+            FollowMode::FirstPerson => {
+                desired.translation = position + heading * (size * body_scale * 2.0);
+                desired.look_to(
+                    heading,
+                    if heading.dot(Vec3::Y).abs() > 0.98 {
+                        Vec3::Z
+                    } else {
+                        Vec3::Y
+                    },
+                );
+                projection.fov = 75.0_f32.to_radians();
+                projection.near = size * 0.05;
+            }
+            FollowMode::Off => return,
         }
-        FollowMode::FirstPerson => {
-            desired.translation = position + heading * (size * body_scale * 2.0);
-            desired.look_to(
-                heading,
-                if heading.dot(Vec3::Y).abs() > 0.98 {
-                    Vec3::Z
-                } else {
-                    Vec3::Y
-                },
-            );
-            projection.fov = 75.0_f32.to_radians();
-            projection.near = size * 0.05;
-        }
-        FollowMode::Off => return,
     }
     desired.rotation = transform
         .rotation
@@ -477,7 +502,7 @@ fn followed_marker(
     state: Res<GlobalState>,
     mut gizmos: Gizmos,
 ) {
-    if presentation.follow.mode == FollowMode::Chase {
+    if presentation.follow.mode == FollowMode::Chase && !presentation.director.enabled {
         if let Some(sample) = runtime.sample {
             let position = sample.predicted(clock.elapsed_secs());
             let normal = sample.velocity.try_normalize().unwrap_or(Vec3::Y);

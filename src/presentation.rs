@@ -20,7 +20,7 @@ pub const MIN_SPEED: f32 = 0.1;
 pub const MAX_SPEED: f32 = 4.0;
 
 #[derive(Resource, Default)]
-pub(crate) struct SimulationClock(Time<Virtual>);
+pub(crate) struct SimulationClock(pub(crate) Time<Virtual>);
 impl SimulationClock {
     pub(crate) fn elapsed_secs(&self) -> f32 {
         self.0.elapsed_secs()
@@ -149,6 +149,8 @@ pub struct Presentation {
     pub preset: Option<CameraPreset>,
     pub(crate) ui_visible: bool,
     pub(crate) follow: crate::follow::Follow,
+    pub(crate) director: crate::director::Director,
+    pub(crate) camera_delta: Option<f32>,
     manual_camera: bool,
     transition: Option<CameraTransition>,
 }
@@ -163,6 +165,8 @@ impl Default for Presentation {
             preset: None,
             ui_visible: true,
             follow: default(),
+            director: default(),
+            camera_delta: None,
             manual_camera: false,
             transition: None,
         }
@@ -170,7 +174,19 @@ impl Default for Presentation {
 }
 
 impl Presentation {
+    pub(crate) fn set_director(&mut self, enabled: bool) {
+        self.cancel_camera_transition();
+        if enabled {
+            self.director.start();
+            self.follow.mode = crate::follow::FollowMode::Chase;
+            self.follow.next();
+        }
+    }
+    pub(crate) fn camera_dt(&self, real: &Time<Real>) -> f32 {
+        self.camera_delta.unwrap_or_else(|| real.delta_secs())
+    }
     pub fn cancel_camera_transition(&mut self) {
+        self.director.enabled = false;
         self.transition = None;
         self.preset = None;
         self.follow.mode = crate::follow::FollowMode::Off;
@@ -188,6 +204,9 @@ impl Plugin for PresentationPlugin {
             .add_systems(
                 Update,
                 prepare_simulation
+                    // Capture's PreUpdate camera and simulation must see the same
+                    // pending request; apply readback acknowledgements afterwards.
+                    .before(bevy::render::view::screenshot::trigger_screenshots)
                     .before(crate::vehicle::step_cpu)
                     .before(crate::gpu_flock::update_gpu_params),
             )
@@ -196,20 +215,37 @@ impl Plugin for PresentationPlugin {
 }
 
 pub(crate) fn prepare_simulation(
-    presentation: Res<Presentation>,
+    mut presentation: ResMut<Presentation>,
     real: Res<Time<Real>>,
+    capture: Option<ResMut<crate::capture::Capture>>,
     mut clock: ResMut<SimulationClock>,
     mut frame: ResMut<SimulationFrame>,
 ) {
-    clock.0.set_relative_speed(presentation.speed);
+    let fixed = capture.and_then(|mut capture| capture.frame_delta());
+    presentation.camera_delta = fixed.map(|dt| dt.as_secs_f32());
+    let dt = presentation.camera_dt(&real);
+    if presentation.director.advance(dt) {
+        presentation.follow.next();
+    }
+    let speed = presentation.speed * presentation.director.speed_multiplier();
+    clock.0.set_relative_speed(speed);
     if presentation.paused {
         clock.0.pause();
     } else {
         clock.0.unpause();
     }
-    let mut generic = Time::default();
-    update_virtual_time(&mut generic, &mut clock.0, &real);
-    *frame = SimulationFrame::from_delta(clock.0.delta(), presentation.speed);
+    if let Some(dt) = fixed {
+        let delta = if presentation.paused {
+            Duration::ZERO
+        } else {
+            dt.mul_f64(speed as f64)
+        };
+        clock.0.advance_by(delta);
+    } else {
+        let mut generic = Time::default();
+        update_virtual_time(&mut generic, &mut clock.0, &real);
+    }
+    *frame = SimulationFrame::from_delta(clock.0.delta(), speed);
 }
 
 fn presentation_input(
@@ -228,9 +264,10 @@ fn presentation_input(
     presentation.manual_camera = !pointer
         && (buttons.pressed(MouseButton::Right)
             || buttons.pressed(MouseButton::Middle)
-            || (scroll.delta != Vec2::ZERO && !presentation.follow.enabled()));
+            || (scroll.delta != Vec2::ZERO
+                && (!presentation.follow.enabled() || presentation.director.enabled)));
     if presentation.manual_camera {
-        presentation.follow.mode = crate::follow::FollowMode::Off;
+        presentation.cancel_camera_transition();
     }
     if !pointer && presentation.follow.enabled() {
         presentation.follow.distance =
@@ -239,7 +276,12 @@ fn presentation_input(
     if keyboard {
         return;
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        let enabled = !presentation.director.enabled;
+        presentation.set_director(enabled);
+    }
     if keys.just_pressed(KeyCode::KeyB) {
+        presentation.director.enabled = false;
         presentation.follow.mode = presentation.follow.mode.cycle();
         presentation.transition = None;
     }
@@ -263,7 +305,7 @@ fn presentation_input(
     .zip(CameraPreset::ALL)
     {
         if keys.just_pressed(key) {
-            presentation.follow.mode = crate::follow::FollowMode::Off;
+            presentation.cancel_camera_transition();
             presentation.preset = Some(preset);
         }
     }
@@ -299,8 +341,9 @@ pub(crate) fn animate_camera(
         });
         orbit.current_motion = default();
     }
+    let presentation_dt = presentation.camera_dt(&real);
     if let Some(transition) = &mut presentation.transition {
-        transition.elapsed += real.delta_secs();
+        transition.elapsed += presentation_dt;
         let t = (transition.elapsed / 0.6).min(1.0);
         let smooth = transition_smoothstep(transition.elapsed);
         transform.translation = transition
@@ -323,7 +366,9 @@ pub(crate) fn animate_camera(
         orbit.current_motion = default();
         let focus =
             transform.translation + transform.forward() * orbit.last_anchor_depth().abs() as f32;
-        let yaw = Quat::from_rotation_y(presentation.orbit_speed.to_radians() * real.delta_secs());
+        let yaw = Quat::from_rotation_y(
+            presentation.orbit_speed.to_radians() * presentation.camera_dt(&real),
+        );
         transform.translation = focus + yaw * (transform.translation - focus);
         transform.rotation = yaw * transform.rotation;
     }
@@ -358,6 +403,24 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
             }
         }
     });
+    let mut director = presentation.director.enabled;
+    if ui.checkbox(&mut director, "Director (C)").changed() {
+        presentation.set_director(director);
+    }
+    if director {
+        ui.label(presentation.director.shot.name());
+        ui.add(
+            egui::Slider::new(
+                &mut presentation.director.shot_length,
+                crate::director::MIN_SHOT_LENGTH..=crate::director::MAX_SHOT_LENGTH,
+            )
+            .text("shot seconds"),
+        );
+        ui.add(
+            egui::Slider::new(&mut presentation.director.shake, 0.0..=1.0).text("handheld shake"),
+        );
+        ui.checkbox(&mut presentation.director.speed_ramp, "Flyby speed ramp");
+    }
     let previous_follow = presentation.follow.mode;
     ui.horizontal(|ui| {
         ui.label("Boid camera (B)");
@@ -379,9 +442,12 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
                 .logarithmic(true)
                 .text("aperture f-stop"),
         )
-        .on_hover_text("Lower f-stop gives stronger blur; applies only in the boid camera.");
+        .on_hover_text(
+            "Lower f-stop gives stronger blur; applies in the boid camera and Director.",
+        );
     });
     if previous_follow != presentation.follow.mode {
+        presentation.director.enabled = false;
         presentation.transition = None;
         presentation.preset = None;
     }
@@ -401,7 +467,7 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
                 .button(format!("{} {}", index + 1, preset.name()))
                 .clicked()
             {
-                presentation.follow.mode = crate::follow::FollowMode::Off;
+                presentation.cancel_camera_transition();
                 presentation.preset = Some(preset);
             }
         }
@@ -504,6 +570,109 @@ pub(crate) mod tests {
                 .resource_mut::<ButtonInput<MouseButton>>()
                 .reset_all();
         }
+    }
+
+    #[test]
+    fn director_ramp_scales_clock_without_overwriting_user_speed() {
+        let mut app = clock_app();
+        {
+            let mut p = app.world_mut().resource_mut::<Presentation>();
+            p.speed = 2.0;
+            p.set_director(true);
+            p.director.shot = crate::director::Shot::Flyby;
+            p.director.eye(Vec3::ZERO, Vec3::X, 1.0);
+            p.director.eye(Vec3::X * 28.0, Vec3::X, 1.0);
+        }
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+        assert!(
+            (app.world().resource::<SimulationClock>().delta_secs_f64() - 0.06).abs() < 0.000001
+        );
+        assert_eq!(app.world().resource::<Presentation>().speed, 2.0);
+        app.world_mut()
+            .resource_mut::<Presentation>()
+            .set_director(false);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+        assert!(
+            (app.world().resource::<SimulationClock>().delta_secs_f64() - 0.2).abs() < 0.000001
+        );
+        assert_eq!(app.world().resource::<Presentation>().speed, 2.0);
+    }
+
+    #[test]
+    fn director_shortcuts_exit_on_manual_input_and_presets_and_keep_user_speed() {
+        let mut app = App::new();
+        app.init_resource::<Presentation>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_systems(Update, presentation_input);
+        assert!(!app.world().resource::<Presentation>().director.enabled);
+        app.world_mut().resource_mut::<Presentation>().speed = 1.7;
+        for enabled in [true, false] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyC);
+            app.update();
+            assert_eq!(
+                app.world().resource::<Presentation>().director.enabled,
+                enabled
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        }
+        for key in [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::KeyB,
+        ] {
+            app.world_mut()
+                .resource_mut::<Presentation>()
+                .set_director(true);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            assert!(!app.world().resource::<Presentation>().director.enabled);
+            assert_eq!(app.world().resource::<Presentation>().speed, 1.7);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        }
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            app.world_mut()
+                .resource_mut::<Presentation>()
+                .set_director(true);
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(button);
+            app.update();
+            assert!(!app.world().resource::<Presentation>().director.enabled);
+            assert!(!app.world().resource::<Presentation>().follow.enabled());
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .reset_all();
+        }
+        app.world_mut()
+            .resource_mut::<Presentation>()
+            .set_director(true);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta
+            .y = 1.0;
+        app.update();
+        assert!(!app.world().resource::<Presentation>().director.enabled);
+        assert_eq!(app.world().resource::<Presentation>().speed, 1.7);
     }
 
     #[test]

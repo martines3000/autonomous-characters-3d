@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 160 tests, including GPU parity tests and seeded benchmarks |
+| Tests | None | 170 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -77,6 +77,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | O | Toggle real-time auto-orbit |
 | B | Boid camera: Off → Chase → First person → Off |
 | N | Pick a random boid for the camera |
+| C | Toggle cinematic Director |
 | Vehicles → Motion | Banking, Classic heading, Flap/Swim and speed-frequency controls |
 | Presentation → Depth of field | Toggle boid-camera blur; aperture controls strength |
 | Scroll while riding | Change chase distance |
@@ -348,6 +349,48 @@ the predicted followed position in Chase; first person omits it.
 
 See the [Glow/DoF measurements](plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
 verification and screenshot evidence.
+
+### Director and video capture
+
+**C**, **Presentation → Director**, or scenario `director on|off` enables automatic cinematography
+(off by default). Shots cycle through close chase with lateral drift, side tracking, fixed-ahead
+flyby, slow orbit and high establishing push-in. Each shot selects a new boid using the existing
+CPU/GPU tracker and eases from the current camera through the follow spring and 0.6-second blend.
+DoF follows the subject; Director omits the chase marker. Right/middle drag, scroll, preset **1–5**,
+or changing boid-camera mode exits Director. Auto-orbit stays stored but Director owns composition.
+
+Presentation controls and scenario settings: `set shot_length 8` (**6–10 seconds**), `set shake 0.2`
+(**0–1**, default 0), and `set speed_ramp on|off` (default on). Shake is subtle, smooth and deterministic.
+The flyby eases effective simulation speed toward **0.3× the user's speed** near the pass and back
+as the subject departs. It never overwrites the speed slider; disabling the ramp or leaving Director
+restores the latest user speed immediately. Pausing freezes vehicles while the camera stays live.
+
+Scenario `record <absolute-directory> <frames> <fps>` saves **00000.png** onward through Bevy's
+Screenshot API. FPS must be an integer **1–240**; frames **1–100000**. Existing frame names are refused.
+Each output advances presentation time by exactly **1/fps**, including camera smoothing and shots.
+Simulation uses that fixed base delta with the current pause, speed and Director ramp; unpaused 1×
+without ramp advances exactly N fixed deltas. Nanosecond rounding follows Rust `Duration`.
+Only one screenshot is in flight. Both clocks freeze on waiting updates; numbering advances only
+after PNG encoding and saving succeeds. Later script commands wait until recording finishes.
+Normal wall time resumes afterwards without catching up the capture's wait time.
+
+Example `AC3D_SCRIPT` (timestamps are wall seconds; recording blocks subsequent commands):
+
+```text
+0 set count 10000
+0 set shape bird
+0 ui off
+0 set speed_ramp off
+1 director on
+3 record /tmp/boids-frames 90 30
+4 exit
+```
+
+When ffmpeg is installed, encode from the frame directory (match `-framerate` to recording FPS):
+
+```sh
+ffmpeg -framerate 60 -i %05d.png -c:v libx264 -pix_fmt yuv420p out.mp4
+```
 
 ### Natural vehicle motion
 

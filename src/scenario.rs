@@ -59,6 +59,8 @@ enum Command {
     Set(Setting),
     Follow(bool),
     Ui(bool),
+    Director(bool),
+    Record(PathBuf, u32, u32),
     BoidFollow(crate::follow::FollowMode),
     FollowNext,
     FollowId(u32),
@@ -106,6 +108,9 @@ enum Setting {
     ObstacleClearance(f32),
     ObstaclesVisible(bool),
     Speed(f32),
+    ShotLength(f32),
+    Shake(f32),
+    SpeedRamp(bool),
     Orbit(bool),
     OrbitSpeed(f32),
     Mode(SimulationMode),
@@ -228,6 +233,13 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("obstacle_strength", _) => Setting::ObstacleStrength(number(value, 0.0, 20.0)?),
         ("obstacle_clearance", _) => Setting::ObstacleClearance(number(value, 0.1, 200.0)?),
         ("obstacles_visible", _) => Setting::ObstaclesVisible(switch(value)?),
+        ("shot_length", _) => Setting::ShotLength(number(
+            value,
+            crate::director::MIN_SHOT_LENGTH,
+            crate::director::MAX_SHOT_LENGTH,
+        )?),
+        ("shake", _) => Setting::Shake(number(value, 0.0, 1.0)?),
+        ("speed_ramp", _) => Setting::SpeedRamp(switch(value)?),
         ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
         ("orbit", _) => Setting::Orbit(switch(value)?),
         ("orbit_speed", _) => Setting::OrbitSpeed(number(value, -45.0, 45.0)?),
@@ -426,6 +438,18 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
                     hex_color(color)?,
                 )),
+                ["director", value] => Command::Director(switch(value)?),
+                ["record", directory, frames, fps] => {
+                    let directory = PathBuf::from(directory);
+                    if !directory.is_absolute() {
+                        return Err("record directory must be absolute".into());
+                    }
+                    Command::Record(
+                        directory,
+                        integer(frames, 1, 100_000)? as u32,
+                        integer(fps, 1, 240)? as u32,
+                    )
+                }
                 ["ui", value] => Command::Ui(switch(value)?),
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
@@ -498,6 +522,10 @@ struct Measurement {
 }
 
 fn run_scenario(world: &mut World) {
+    // A recording is a barrier: later commands (especially exit) wait for every saved PNG.
+    if world.resource::<crate::capture::Capture>().active() {
+        return;
+    }
     // This system exists only when AC3D_SCRIPT was supplied; no normal-frame harness overhead.
     let now = world.resource::<Time<Real>>().elapsed_secs_f64();
     let delta_ms = world.resource::<Time<Real>>().delta_secs_f64() * 1000.0;
@@ -514,11 +542,24 @@ fn run_scenario(world: &mut World) {
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
+                Command::Director(enabled) => {
+                    world.resource_mut::<Presentation>().set_director(enabled)
+                }
+                Command::Record(directory, frames, fps) => {
+                    if let Err(error) = world
+                        .resource_mut::<crate::capture::Capture>()
+                        .start(directory, frames, fps)
+                    {
+                        error!("{error}");
+                        world.write_message(AppExit::error());
+                    }
+                    break;
+                }
                 Command::Ui(visible) => world.resource_mut::<Presentation>().ui_visible = visible,
                 Command::Pause(paused) => world.resource_mut::<Presentation>().paused = paused,
                 Command::Preset(preset) => {
                     let mut presentation = world.resource_mut::<Presentation>();
-                    presentation.follow.mode = crate::follow::FollowMode::Off;
+                    presentation.cancel_camera_transition();
                     presentation.preset = Some(preset)
                 }
                 Command::BoidFollow(mode) => {
@@ -714,6 +755,13 @@ fn apply_setting(world: &mut World, setting: Setting) {
             if scene.show_obstacles != value {
                 scene.show_obstacles = value;
             }
+        }
+        Setting::ShotLength(value) => {
+            world.resource_mut::<Presentation>().director.shot_length = value
+        }
+        Setting::Shake(value) => world.resource_mut::<Presentation>().director.shake = value,
+        Setting::SpeedRamp(value) => {
+            world.resource_mut::<Presentation>().director.speed_ramp = value
         }
         Setting::Speed(value) => world.resource_mut::<Presentation>().speed = value,
         Setting::Orbit(value) => world.resource_mut::<Presentation>().orbit = value,
@@ -1167,6 +1215,35 @@ mod tests {
         assert_eq!(world.resource::<GlobalState>(), &before);
         assert_eq!(world.resource::<Appearance>().glow, 8.0);
         assert!(!world.resource::<Presentation>().follow.dof);
+    }
+
+    #[test]
+    fn director_and_record_commands_validate_before_startup() {
+        let commands = parse("0 director on\n0 set shot_length 6\n0 set shake 0.5\n0 set speed_ramp off\n1 record /tmp/ac3d-video 90 30\n2 director off\n3 exit").unwrap();
+        assert_eq!(commands[0].command, Command::Director(true));
+        assert_eq!(
+            commands[4].command,
+            Command::Record("/tmp/ac3d-video".into(), 90, 30)
+        );
+        for line in [
+            "director maybe",
+            "director on extra",
+            "set shot_length 5.9",
+            "set shot_length 10.1",
+            "set shot_length NaN",
+            "set shake -0.1",
+            "set shake 1.1",
+            "set shake inf",
+            "set speed_ramp maybe",
+            "record relative 90 30",
+            "record /tmp/x 0 30",
+            "record /tmp/x 90 0",
+            "record /tmp/x 90 241",
+            "record /tmp/x 1.5 30",
+            "record /tmp/x 90 30 extra",
+        ] {
+            assert!(parse(&format!("0 {line}")).is_err(), "{line}");
+        }
     }
 
     #[test]
