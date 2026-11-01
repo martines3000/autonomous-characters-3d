@@ -343,7 +343,7 @@ pub(crate) fn sync_shadow_camera(
             if !depth {
                 camera.insert(DepthPrepass);
             }
-            if !normal && (appearance.shadows || appearance.ambient_occlusion) {
+            if !normal && (appearance.effective_shadows() || appearance.ambient_occlusion) {
                 camera.insert(NormalPrepass);
             }
             if appearance.ambient_occlusion {
