@@ -130,7 +130,7 @@ pub(crate) struct GpuParams {
     pub predator_settings: Vec4,
     // mode (0 off, 1 spawn ID, 2 index), selector, simulated-time bits, arena tail offset.
     pub track: UVec4,
-    // bank strength, exact legacy flag, response rate, reserved. Render orientation only.
+    // bank strength, exact legacy flag, response rate, history substep (-1 disables history).
     pub motion: Vec4,
 }
 
@@ -310,8 +310,9 @@ fn init_gpu_flock(mut commands: Commands, device: Res<RenderDevice>) {
 }
 
 #[derive(SystemParam)]
-struct FlockFrame<'w> {
+struct FlockFrame<'w, 's> {
     simulation: Res<'w, crate::presentation::SimulationFrame>,
+    motion_views: Query<'w, 's, (), With<bevy::core_pipeline::prepass::MotionVectorPrepass>>,
     formation: Res<'w, FormationFrame>,
     predators: Res<'w, PredatorFrame>,
     tracking: Option<Res<'w, crate::follow::TrackBuffer>>,
@@ -331,6 +332,7 @@ fn run_gpu_flock(
     // egui edits in PostUpdate: derive count/settings from the same extracted scene as records.
     let mut params = (*params).with_scene(&scene);
     let frame = &frames.simulation;
+    let motion_history = !frames.motion_views.is_empty();
     flock.set_scene(&scene);
     flock.set_predators(&frames.predators);
     let device = context.render_device().clone();
@@ -360,6 +362,8 @@ fn run_gpu_flock(
             if params.predators.y != 0 {
                 params.predators.z = index;
             }
+            // Preserve the start of the rendered frame across every simulation substep.
+            params.motion.w = if motion_history { index as f32 } else { -1.0 };
             flock.encode(&device, &queue, context.command_encoder(), &params);
         }
     }
@@ -379,6 +383,12 @@ fn run_gpu_flock(
                 .buffers
                 .as_ref()
                 .map(|buffers| buffers.instances.clone()),
+            previous: flock.buffers.as_ref().map(|buffers| {
+                (
+                    buffers.arena.clone(),
+                    buffers.output_offset() as u64 * METADATA_SIZE,
+                )
+            }),
             count: flock.count,
         };
     }
@@ -436,6 +446,10 @@ pub(crate) struct FlockBuffers {
 }
 
 impl FlockBuffers {
+    fn output_offset(&self) -> u32 {
+        self.track_offset() + 5 + self.capacity * 2
+    }
+
     fn track_offset(&self) -> u32 {
         self.capacity * 5 / 2 + 24 + PREDATOR_RECORDS as u32
     }
@@ -489,14 +503,15 @@ impl FlockBuffers {
         );
         let arena = buffer(
             "gpu_flock_metadata_arena",
-            // Two metadata tables and two packed u32 order maps; scene data shares this binding.
-            capacity as u64 * METADATA_SIZE * 5 / 2
+            // Metadata/order maps, plus two Vec4s each for frame-start history and sorted output.
+            // Scene data and tracking keep their existing offsets before the history tail.
+            capacity as u64 * METADATA_SIZE * (5 + 8) / 2
                 + (MAX_OBSTACLES as u64 * 2
                     + crate::swarm::MAX_GROUPS as u64
                     + PREDATOR_RECORDS as u64
                     + 5)
                     * METADATA_SIZE,
-            BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
         );
         let bind_group = device.create_bind_group(
             "gpu_flock",
@@ -769,7 +784,12 @@ impl GpuFlock {
             table_mask: buffers.table_size - 1,
             frame: self.frame,
             block_count,
-            obstacles: UVec4::new(buffers.capacity * 5 / 2, params.obstacles.y, 0, 0),
+            obstacles: UVec4::new(
+                buffers.capacity * 5 / 2,
+                params.obstacles.y,
+                buffers.track_offset() + 5,
+                buffers.output_offset(),
+            ),
             predators: UVec4::new(
                 buffers.capacity * 5 / 2 + 24 + params.predators.z * 8,
                 params.predators.y,
@@ -1101,6 +1121,24 @@ impl GpuFlock {
             self.read_arena(device, queue, offset, PREDATOR_RECORDS as u64),
             self.predator_uploads,
         )
+    }
+
+    #[cfg(test)]
+    pub fn read_previous(&self, device: &RenderDevice, queue: &RenderQueue) -> Vec<[Vec4; 2]> {
+        let buffers = self.buffers.as_ref().unwrap();
+        self.read_arena(
+            device,
+            queue,
+            buffers.output_offset() as u64 * METADATA_SIZE,
+            self.count as u64 * 2,
+        )
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            std::array::from_fn(|i| Vec4::from_array(pair[i].to_array().map(f32::from_bits)))
+        })
+        .collect()
     }
 
     /// Copies the first `count` boids back to the CPU (blocking).

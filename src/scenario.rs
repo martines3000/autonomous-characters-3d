@@ -112,6 +112,8 @@ enum Setting {
     ShotLength(f32),
     Shake(f32),
     SpeedRamp(bool),
+    MotionBlur(bool),
+    Shutter(f32),
     Orbit(bool),
     OrbitSpeed(f32),
     Mode(SimulationMode),
@@ -244,6 +246,8 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
             crate::director::MAX_SHOT_LENGTH,
         )?),
         ("shake", _) => Setting::Shake(number(value, 0.0, 1.0)?),
+        ("motion_blur", _) => Setting::MotionBlur(switch(value)?),
+        ("shutter", _) => Setting::Shutter(number(value, 0.0, 1.0)?),
         ("speed_ramp", _) => Setting::SpeedRamp(switch(value)?),
         ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
         ("orbit", _) => Setting::Orbit(switch(value)?),
@@ -781,6 +785,8 @@ fn apply_setting(world: &mut World, setting: Setting) {
         Setting::SpeedRamp(value) => {
             world.resource_mut::<Presentation>().director.speed_ramp = value
         }
+        Setting::MotionBlur(value) => world.resource_mut::<Presentation>().motion_blur = value,
+        Setting::Shutter(value) => world.resource_mut::<Presentation>().shutter = value,
         Setting::Speed(value) => world.resource_mut::<Presentation>().speed = value,
         Setting::Orbit(value) => world.resource_mut::<Presentation>().orbit = value,
         Setting::OrbitSpeed(value) => world.resource_mut::<Presentation>().orbit_speed = value,
@@ -949,6 +955,25 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_blur_and_shutter_parse_validate_and_apply() {
+        let commands =
+            parse("0 set motion_blur on\n0 set shutter 0.75\n1 set motion_blur off").unwrap();
+        assert_eq!(commands[0].command, Command::Set(Setting::MotionBlur(true)));
+        assert_eq!(commands[1].command, Command::Set(Setting::Shutter(0.75)));
+        for value in ["-0.01", "1.01", "NaN", "inf"] {
+            assert!(parse(&format!("0 set shutter {value}")).is_err());
+        }
+        assert!(parse("0 set motion_blur maybe").is_err());
+        assert!(parse("0 set shutter 0\n0 set shutter 1").is_ok());
+        let mut world = World::new();
+        world.init_resource::<Presentation>();
+        apply_setting(&mut world, Setting::MotionBlur(true));
+        apply_setting(&mut world, Setting::Shutter(0.75));
+        assert!(world.resource::<Presentation>().motion_blur);
+        assert_eq!(world.resource::<Presentation>().shutter, 0.75);
+    }
 
     #[test]
     fn showcase_commands_validate_names_and_reset_validation_state() {

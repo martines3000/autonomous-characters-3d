@@ -258,15 +258,16 @@ pub(crate) fn sync_glow_camera(
 
 /// Remember only components added by this feature, and restore the camera's MSAA.
 #[derive(Component)]
-struct ShadowCameraState {
+pub(crate) struct ShadowCameraState {
     added_depth: bool,
     added_normal: bool,
     msaa: Option<Msaa>,
 }
 #[allow(clippy::type_complexity)]
-fn sync_shadow_camera(
+pub(crate) fn sync_shadow_camera(
     mut commands: Commands,
     appearance: Res<Appearance>,
+    presentation: Option<Res<crate::presentation::Presentation>>,
     cameras: Query<
         (
             Entity,
@@ -281,7 +282,10 @@ fn sync_shadow_camera(
 ) {
     for (entity, depth, normal, msaa, ao, saved) in &cameras {
         let mut camera = commands.entity(entity);
-        if appearance.shadows || appearance.ambient_occlusion {
+        if appearance.shadows
+            || appearance.ambient_occlusion
+            || presentation.as_ref().is_some_and(|p| p.motion_blur)
+        {
             let mut next = saved.map_or(
                 ShadowCameraState {
                     added_depth: !depth,
@@ -297,7 +301,7 @@ fn sync_shadow_camera(
             if !depth {
                 camera.insert(DepthPrepass);
             }
-            if !normal {
+            if !normal && (appearance.shadows || appearance.ambient_occlusion) {
                 camera.insert(NormalPrepass);
             }
             if appearance.ambient_occlusion {

@@ -189,7 +189,7 @@ Studio key light or HDRI sun. Birds cast onto each other and the Studio floor. E
 still hide the floor. Cascade reach follows world size/camera distance, with a tighter first cascade
 while riding. Animation, procedural flap/swim and Glow streak share one vertex shader across passes.
 
-Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows and Ambient occlusion both Off,
+Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows, Ambient occlusion and Motion blur all Off,
 the original color pipeline, MSAA and scene defaults remain unchanged. **Flock shadow cap** defaults
 to 200,000 (`set shadow_cap 0..1000000`); counts above it skip flock casting automatically, while
 other scene shadows remain enabled. Zero disables flock casting. Lowering the count resumes it.
@@ -197,7 +197,7 @@ The cap counts vehicles, not triangles; heavy imported models can need a much lo
 
 **Ambient occlusion** (default Off; `set ambient_occlusion on|off`) enables SSAO and the flock's
 opaque depth/normal prepass. SSAO forces `Msaa::Off`; disabling it restores the prior MSAA setting.
-Shadows alone retain 4× MSAA. Motion-vector history is not implemented by this step.
+Shadows alone retain 4× MSAA. Motion blur adds flock motion vectors to the prepass.
 See [shadow validation](plans/completed/2026-11-01-flock-shadows.md) for captures and quick frame intervals.
 **Underwater** is fully procedural: a cached 128px turquoise-to-deep-blue cubemap, diffuse/GGX
 water IBL, green-tinted overhead sun and exponential distance fog. The existing floor becomes sand
@@ -413,6 +413,25 @@ the predicted followed position in Chase; first person omits it.
 
 See the [Glow/DoF measurements](plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
 verification and screenshot evidence.
+
+### Motion blur
+
+**Presentation → Motion blur** (`set motion_blur on|off`, default Off) adds Bevy motion blur,
+motion vectors and a depth prepass without enabling shadows. **Shutter angle / 360°**
+(`set shutter 0..1`, default 0.5) controls exposure as a fraction of each rendered frame.
+MSAA stays unchanged. Camera motion enters the vectors, so chase and Director shots can keep
+the subject sharp while the background streams past. Pause suppresses flock vectors and all blur,
+even during live camera orbit. Off restores the previous camera prepasses and flock color path.
+
+CPU poses are saved before the frame's first substep. GPU history follows metadata identity through
+sorting and retains the frame-start pose across speed substeps; GPU boids remain 64 bytes and
+instances 48 bytes. A parallel 32-byte transform stream supplies previous poses. GPU history and
+output share the metadata arena (64 extra bytes per capacity slot); the output is bound directly
+as a vertex stream, without a copy. History writes skip views without motion vectors.
+Both poses use the current animation/procedural deformation, so wing/tail deformation itself adds
+no velocity. Fixed-step `record` uses displacement over each output frame; Bevy multiplies this by
+the shutter fraction, without a wall-time delta. Readback waits hold both poses and camera still.
+Temporal AA is deferred; no temporal accumulation or MSAA override is added.
 
 ### Director and video capture
 
@@ -857,6 +876,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set flap` | Procedural amplitude 0–1.5, default 0.45; 0 disables it |
 | `set flap_frequency` | Speed-frequency factor 0–3, default 1 |
 | `set legacy_heading` | `on` / `off` (default); exact original minimal-arc orientation |
+| `set motion_blur` | `on` / `off` (default); opaque flock and motion/depth prepass, no shadow requirement |
+| `set shutter` | Exposure fraction 0–1, default 0.5; zero exposure while paused |
 | `set dof` | `on` (default) / `off`; applies only while the boid camera is active |
 | `ui` | `off` / `on`; hides/restores Menu, Controls and FPS text for capture |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |

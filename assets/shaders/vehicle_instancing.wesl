@@ -10,6 +10,8 @@ import bevy_pbr::render::{
 import bevy_pbr::render::mesh_view_bindings::{screen_space_ambient_occlusion_texture, view};
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION)
 import bevy_pbr::ssao::utils::ssao_multibounce;
+@if(FLOCK_MOTION) import bevy_pbr::prepass::bindings::previous_view_uniforms;
+@if(FLOCK_MOTION) import bevy_pbr::render::mesh_view_bindings::view as motion_view;
 @if(UNDERWATER) import super::underwater_caustics::caustics;
 
 struct Appearance {
@@ -21,6 +23,7 @@ struct Appearance {
     solid_color: vec4<f32>,
     group_colors: array<vec4<f32>, 8>,
     motion: vec4<f32>,
+    history: vec4<u32>,
 };
 @group(3) @binding(0) var<uniform> appearance: Appearance;
 
@@ -30,6 +33,8 @@ struct Animation { playback: vec4<f32>, geometry: vec4<u32> };
 @group(3) @binding(2) var<uniform> animation: Animation;
 
 struct Vertex {
+    @if(FLOCK_MOTION) @location(11) previous_position: vec4<f32>,
+    @if(FLOCK_MOTION) @location(12) previous_rotation: vec4<f32>,
     @if(ANIMATED)
     @builtin(vertex_index) index: u32,
     @if(MODEL_MATERIALS)
@@ -47,6 +52,7 @@ struct Vertex {
 };
 
 struct VertexOutput {
+    @if(FLOCK_MOTION) @location(6) previous_world: vec4<f32>,
     @builtin(position) clip_position: vec4<f32>,
     @if(FLOCK_SHADOW)
     @location(5) unclipped_depth: f32,
@@ -153,6 +159,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         out.glow_emission = appearance.shading.y + appearance.shading.z * glow_speed * glow_speed;
     }
     @if(MODEL_MATERIALS) { out.material = vertex.material; }
+    @if(FLOCK_MOTION) {
+        // Reuse current deformation for both poses: no animation-only velocity.
+        let previous = rotate(vertex.previous_rotation, position * appearance.proportions.xyz * appearance.material.w) + vertex.previous_position.xyz;
+        out.previous_world = vec4<f32>(previous, 1.0);
+    }
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
     @if(FLOCK_SHADOW) {
@@ -222,17 +233,26 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // Both depth passes run the same vertex entry point, including every deformation.
-@if(FLOCK_NORMAL || FLOCK_SHADOW)
+@if(FLOCK_NORMAL || FLOCK_MOTION || FLOCK_SHADOW)
 struct DepthOutput {
+    @if(FLOCK_MOTION) @location(1) motion: vec2<f32>,
     @if(FLOCK_NORMAL)
     @location(0) normal: vec4<f32>,
     @if(FLOCK_SHADOW)
     @builtin(frag_depth) depth: f32,
 };
-@if(FLOCK_NORMAL || FLOCK_SHADOW)
+@if(FLOCK_NORMAL || FLOCK_MOTION || FLOCK_SHADOW)
 @fragment
 fn depth_fragment(in: VertexOutput) -> DepthOutput {
     var out: DepthOutput;
+    @if(FLOCK_MOTION) {
+        let current = motion_view.unjittered_clip_from_world * in.world_position;
+        let previous = previous_view_uniforms.unjittered_clip_from_world * in.previous_world;
+        out.motion = vec2<f32>(0.0);
+        if appearance.history.x == 0u && abs(current.w) > 1e-6 && abs(previous.w) > 1e-6 {
+            out.motion = (current.xy / current.w - previous.xy / previous.w) * vec2<f32>(0.5, -0.5);
+        }
+    }
     @if(FLOCK_NORMAL) { out.normal = vec4<f32>(normalize(in.world_normal) * 0.5 + vec3<f32>(0.5), 1.0); }
     @if(FLOCK_SHADOW) { out.depth = in.unclipped_depth; }
     return out;

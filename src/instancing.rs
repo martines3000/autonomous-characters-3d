@@ -65,7 +65,7 @@ pub type InstanceData = [Vec4; 3];
 
 /// Instance data for every vehicle, drawn with this entity's `Mesh3d`.
 #[derive(Component, Default, Clone)]
-pub struct VehicleInstances(pub Vec<InstanceData>);
+pub struct VehicleInstances(pub Vec<InstanceData>, pub Vec<[Vec4; 2]>);
 
 impl SyncComponent<RenderApp> for VehicleInstances {
     type Target = Self;
@@ -118,8 +118,10 @@ fn update_render_settings(
     appearance: Res<Appearance>,
     state: Res<GlobalState>,
     mut settings: ResMut<FlockRenderSettings>,
+    presentation: Res<crate::presentation::Presentation>,
 ) {
     *settings = FlockRenderSettings::from_settings(&appearance, &state);
+    settings.opaque |= presentation.motion_blur;
 }
 
 pub struct InstancingPlugin;
@@ -149,7 +151,10 @@ impl Plugin for InstancingPlugin {
             .add_render_command::<Shadow, DrawInstancedDepth>()
             .init_resource::<SpecializedMeshPipelines<InstancingDepthPipeline>>()
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
-            .insert_resource(InstanceBuffer(RawBufferVec::new(BufferUsages::VERTEX)))
+            .insert_resource(InstanceBuffer(
+                RawBufferVec::new(BufferUsages::VERTEX),
+                RawBufferVec::new(BufferUsages::VERTEX),
+            ))
             .init_resource::<FlockInstances>()
             .add_systems(
                 RenderStartup,
@@ -193,6 +198,8 @@ struct AppearanceUniform {
     group_colors: [Vec4; crate::swarm::MAX_GROUPS],
     // simulated seconds, procedural amplitude, speed-frequency gain, underwater specialization.
     motion: Vec4,
+    // x: pause; camera motion must also produce zero flock vectors while paused.
+    history: UVec4,
 }
 
 impl AppearanceUniform {
@@ -200,6 +207,7 @@ impl AppearanceUniform {
         let look = appearance.style.settings();
         let underwater = appearance.environment == crate::environment::Environment::Underwater;
         Self {
+            history: UVec4::ZERO,
             colors: appearance.palette.colors(),
             material: Vec4::new(
                 look.roughness,
@@ -261,13 +269,16 @@ fn update_appearance(
     state: Res<GlobalState>,
     mut uniform: ResMut<AppearanceUniform>,
     clock: Option<Res<crate::presentation::SimulationClock>>,
+    presentation: Option<Res<crate::presentation::Presentation>>,
 ) {
     if appearance.is_changed()
         || state.is_changed()
         || uniform.modes.w != 0
         || uniform.motion.w != 0.0
+        || presentation.as_ref().is_some_and(|p| p.is_changed())
     {
         let mut next = AppearanceUniform::from_settings(&appearance, &state);
+        next.history.x = u32::from(presentation.as_ref().is_some_and(|p| p.paused));
         if next.modes.w != 0 || next.motion.w != 0.0 {
             next.motion.x = clock.as_ref().map_or(0.0, |c| c.elapsed_secs());
         }
@@ -404,11 +415,12 @@ fn prepare_appearance(
 pub(crate) struct FlockInstances {
     pub buffer: Option<Buffer>,
     pub count: u32,
+    pub previous: Option<(Buffer, u64)>,
 }
 
 // Reused across frames; it grows only when the flock outgrows it.
 #[derive(Resource)]
-struct InstanceBuffer(RawBufferVec<InstanceData>);
+struct InstanceBuffer(RawBufferVec<InstanceData>, RawBufferVec<[Vec4; 2]>);
 
 fn prepare_instance_buffer(
     flocks: Query<&VehicleInstances>,
@@ -422,12 +434,16 @@ fn prepare_instance_buffer(
         return;
     }
     buffer.0.clear();
+    buffer.1.clear();
     for flock in &flocks {
         buffer.0.extend(flock.0.iter().copied());
+        buffer.1.extend(flock.1.iter().copied());
     }
     buffer.0.write_buffer(&device, &queue);
+    buffer.1.write_buffer(&device, &queue);
     *draw = FlockInstances {
         buffer: buffer.0.buffer().cloned(),
+        previous: buffer.1.buffer().cloned().map(|buffer| (buffer, 0)),
         count: buffer.0.len() as u32,
     };
 }
@@ -744,6 +760,26 @@ impl SpecializedMeshPipeline for InstancingDepthPipeline {
         descriptor.layout[1] = self.empty_layout.clone();
         descriptor.layout[2] = self.empty_layout.clone();
         let mut defs = descriptor.vertex.shader_defs.clone();
+        if key.2 {
+            descriptor.vertex.shader_defs.push("FLOCK_MOTION".into());
+            defs.push("FLOCK_MOTION".into());
+            descriptor.vertex.buffers.push(VertexBufferLayout {
+                array_stride: 32,
+                step_mode: VertexStepMode::Instance,
+                attributes: vec![
+                    VertexAttribute {
+                        format: VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 11,
+                    },
+                    VertexAttribute {
+                        format: VertexFormat::Float32x4,
+                        offset: 16,
+                        shader_location: 12,
+                    },
+                ],
+            });
+        }
         if key.1 {
             defs.push("FLOCK_NORMAL".into());
         }
@@ -752,12 +788,12 @@ impl SpecializedMeshPipeline for InstancingDepthPipeline {
         if key.3 {
             defs.push("FLOCK_SHADOW".into());
         }
-        descriptor.fragment = (key.1 || key.3).then(|| FragmentState {
+        descriptor.fragment = (key.1 || key.2 || key.3).then(|| FragmentState {
             shader: self.shader.clone(),
             shader_defs: defs,
             entry_point: Some("depth_fragment".into()),
-            targets: if key.1 {
-                prepass_target_descriptors(true, false, false)
+            targets: if key.1 || key.2 {
+                prepass_target_descriptors(key.1, key.2, false)
             } else {
                 vec![]
             },
@@ -826,7 +862,7 @@ fn queue_instanced_depth(
             if !settings.casts_shadows() {
                 continue;
             }
-        } else if !depth && !normal {
+        } else if !depth && !normal && !motion {
             continue;
         }
         for (entity, main) in &flocks {
@@ -994,6 +1030,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 
         pass.set_vertex_buffer(0, vertex_slice.buffer.slice(..));
         pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        if let Some((previous, offset)) = &instances.previous {
+            pass.set_vertex_buffer(2, previous.slice(*offset..));
+        }
 
         match &gpu_mesh.buffer_info {
             RenderMeshBufferInfo::Indexed {
@@ -1024,6 +1063,48 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 mod tests {
     use super::*;
     use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn blur_only_forces_opaque_without_shadow_keys_and_off_restores_policy() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .init_resource::<FlockRenderSettings>()
+            .add_systems(Update, update_render_settings);
+        app.update();
+        assert!(!app.world().resource::<FlockRenderSettings>().opaque);
+        let key = flock_pipeline_key(
+            MeshPipelineKey::from_msaa_samples(4),
+            false,
+            false,
+            false,
+            false,
+        );
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .motion_blur = true;
+        app.update();
+        let settings = app.world().resource::<FlockRenderSettings>();
+        assert!(settings.opaque && !settings.casts_shadows());
+        assert!(shadow_shader_defs(settings.shadows).next().is_none());
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .motion_blur = false;
+        app.update();
+        assert!(!app.world().resource::<FlockRenderSettings>().opaque);
+        assert_eq!(
+            key,
+            flock_pipeline_key(
+                MeshPipelineKey::from_msaa_samples(4),
+                false,
+                false,
+                false,
+                false
+            )
+        );
+        assert_eq!(size_of::<InstanceData>(), 48);
+    }
 
     #[test]
     fn shadow_gating_keeps_default_uniforms_keys_and_skips_over_cap() {
@@ -1344,7 +1425,7 @@ mod tests {
                 .x,
             0
         );
-        assert_eq!(AppearanceUniform::min_size().get(), 336);
+        assert_eq!(AppearanceUniform::min_size().get(), 352);
     }
 
     #[test]
@@ -1364,7 +1445,7 @@ mod tests {
         let mut buffer =
             bevy::render::render_resource::encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&after).unwrap();
-        assert_eq!(buffer.as_ref().len(), 336);
+        assert_eq!(buffer.as_ref().len(), 352);
         for (axis, value) in expected.to_array().into_iter().enumerate() {
             let offset = 192 + 16 + axis * 4;
             assert_eq!(&buffer.as_ref()[offset..offset + 4], &value.to_le_bytes());

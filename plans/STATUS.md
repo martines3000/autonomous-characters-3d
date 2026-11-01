@@ -40,6 +40,8 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Flock motion vectors and blur](completed/2026-11-02-motion-blur.md) (2026-11-02): identity-safe frame-start history, opt-in shutter controls, paused zero vectors and verified 90-frame/30-fps capture; 176 release and 16 GPU tests pass, no new warnings.
+
 - [Procedural underwater environment](completed/2026-11-01-underwater.md) (2026-11-01): cached turquoise/deep-blue sky and water IBL, exponential fog, overhead sun, simulation-clock caustics on fish and sand; other environments compile out caustics. 160 normal and 15 GPU tests pass; seven baseline Clippy warnings; paused water and Off round-trip captures are byte-identical.
 - [Showcase presets](completed/2026-11-01-showcase-presets.md) (2026-11-01): five live menu/script scenes, exact Calm defaults, order-independent settings, screenshot tuning and a 150-frame murmuration video; environment hook reserved. 159 normal and 15 GPU tests pass; no new Clippy warnings.
 - [Opaque flock and sun shadows](completed/2026-11-01-flock-shadows.md) (2026-11-01): optional cascades, shared animated depth/normal/shadow passes, 200k casting cap and SSAO with reversible MSAA; Off round trip pixel-identical; 161 release and 15 GPU tests pass, Clippy remains at seven baseline warnings.

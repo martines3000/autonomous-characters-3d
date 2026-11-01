@@ -144,6 +144,8 @@ struct CameraTransition {
 pub struct Presentation {
     pub paused: bool,
     pub speed: f32,
+    pub motion_blur: bool,
+    pub shutter: f32,
     pub orbit: bool,
     pub orbit_speed: f32,
     pub preset: Option<CameraPreset>,
@@ -160,6 +162,8 @@ impl Default for Presentation {
         Self {
             paused: false,
             speed: 1.0,
+            motion_blur: false,
+            shutter: 0.5,
             orbit: false,
             orbit_speed: 10.0,
             preset: None,
@@ -210,7 +214,10 @@ impl Plugin for PresentationPlugin {
                     .before(crate::vehicle::step_cpu)
                     .before(crate::gpu_flock::update_gpu_params),
             )
-            .add_systems(PostUpdate, animate_camera.before(scene::frame_world));
+            .add_systems(
+                PostUpdate,
+                (animate_camera.before(scene::frame_world), sync_motion_blur),
+            );
     }
 }
 
@@ -379,6 +386,66 @@ pub(crate) fn transition_smoothstep(elapsed: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Pause suppresses camera motion as well as object motion, including live paused orbit.
+#[cfg(test)]
+pub(crate) fn motion_vector(current: Vec4, previous: Vec4, paused: bool) -> Vec2 {
+    if paused || current.w.abs() <= 1e-6 || previous.w.abs() <= 1e-6 {
+        Vec2::ZERO
+    } else {
+        (current.truncate().truncate() / current.w - previous.truncate().truncate() / previous.w)
+            * Vec2::new(0.5, -0.5)
+    }
+}
+
+#[derive(Component)]
+struct BlurCameraState {
+    added_motion: bool,
+}
+
+#[allow(clippy::type_complexity)]
+fn sync_motion_blur(
+    mut commands: Commands,
+    presentation: Res<Presentation>,
+    cameras: Query<
+        (
+            Entity,
+            Has<bevy::core_pipeline::prepass::MotionVectorPrepass>,
+            Option<&BlurCameraState>,
+        ),
+        With<Camera3d>,
+    >,
+) {
+    use bevy::{
+        core_pipeline::prepass::MotionVectorPrepass, post_process::motion_blur::MotionBlur,
+    };
+    for (entity, motion, saved) in &cameras {
+        let mut camera = commands.entity(entity);
+        if presentation.motion_blur {
+            if saved.is_none() {
+                camera.insert(BlurCameraState {
+                    added_motion: !motion,
+                });
+            }
+            camera.insert((
+                MotionVectorPrepass,
+                MotionBlur {
+                    shutter_angle: if presentation.paused {
+                        0.0
+                    } else {
+                        presentation.shutter
+                    },
+                    samples: 3,
+                },
+            ));
+        } else if let Some(saved) = saved {
+            camera.remove::<(MotionBlur, BlurCameraState)>();
+            if saved.added_motion {
+                camera.remove::<MotionVectorPrepass>();
+            }
+        }
+    }
+}
+
 pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
     ui.horizontal(|ui| {
         if ui
@@ -403,6 +470,12 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
             }
         }
     });
+    ui.checkbox(&mut presentation.motion_blur, "Motion blur");
+    if presentation.motion_blur {
+        ui.add(
+            egui::Slider::new(&mut presentation.shutter, 0.0..=1.0).text("shutter angle / 360°"),
+        );
+    }
     let mut director = presentation.director.enabled;
     if ui.checkbox(&mut director, "Director (C)").changed() {
         presentation.set_director(director);
@@ -487,6 +560,77 @@ pub(crate) mod tests {
             .init_resource::<Time>()
             .add_systems(Update, prepare_simulation);
         app
+    }
+
+    #[test]
+    fn motion_vectors_include_camera_motion_and_pause_overrides_it() {
+        let current = Vec4::new(0.6, 0.2, 0.0, 2.0);
+        let previous = Vec4::new(0.1, 0.3, 0.0, 1.0);
+        assert_eq!(motion_vector(current, previous, true), Vec2::ZERO);
+        assert_eq!(motion_vector(current, current, false), Vec2::ZERO);
+        assert!(motion_vector(current, previous, false).distance(Vec2::new(0.1, 0.1)) < 1e-7);
+    }
+
+    #[test]
+    fn blur_camera_off_is_unchanged_and_round_trips_shared_depth_and_msaa() {
+        use bevy::{
+            core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass},
+            post_process::motion_blur::MotionBlur,
+        };
+        let mut app = App::new();
+        app.init_resource::<Presentation>()
+            .init_resource::<scene::Appearance>()
+            .add_systems(Update, (scene::sync_shadow_camera, sync_motion_blur));
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample4))
+            .id();
+        let external = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Msaa::Sample4,
+                DepthPrepass,
+                MotionVectorPrepass,
+            ))
+            .id();
+        app.update();
+        for absent in [
+            app.world().get::<MotionBlur>(camera).is_none(),
+            app.world().get::<MotionVectorPrepass>(camera).is_none(),
+            app.world().get::<DepthPrepass>(camera).is_none(),
+        ] {
+            assert!(absent);
+        }
+        app.world_mut().resource_mut::<Presentation>().motion_blur = true;
+        app.update();
+        assert!(app.world().get::<MotionVectorPrepass>(camera).is_some());
+        assert!(app.world().get::<DepthPrepass>(camera).is_some());
+        assert!(app.world().get::<NormalPrepass>(camera).is_none());
+        assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), Msaa::Sample4);
+        app.world_mut().resource_mut::<Presentation>().paused = true;
+        app.update();
+        assert_eq!(
+            app.world().get::<MotionBlur>(camera).unwrap().shutter_angle,
+            0.0
+        );
+        app.world_mut().resource_mut::<Presentation>().motion_blur = false;
+        app.update();
+        assert!(app.world().get::<MotionBlur>(camera).is_none());
+        assert!(app.world().get::<MotionVectorPrepass>(camera).is_none());
+        assert!(app.world().get::<DepthPrepass>(camera).is_none());
+        assert!(app.world().get::<MotionVectorPrepass>(external).is_some());
+        assert!(app.world().get::<DepthPrepass>(external).is_some());
+        // Depth ownership remains live when shadows are enabled during blur.
+        app.world_mut().resource_mut::<Presentation>().motion_blur = true;
+        app.update();
+        app.world_mut().resource_mut::<scene::Appearance>().shadows = true;
+        app.world_mut().resource_mut::<Presentation>().motion_blur = false;
+        app.update();
+        assert!(app.world().get::<DepthPrepass>(camera).is_some());
+        app.world_mut().resource_mut::<scene::Appearance>().shadows = false;
+        app.update();
+        assert!(app.world().get::<DepthPrepass>(camera).is_none());
     }
 
     #[test]

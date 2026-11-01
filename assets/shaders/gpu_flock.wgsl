@@ -324,6 +324,15 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
     instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
+    // A new boid has no earlier pose, including spawn-only updates at zero delta.
+    if params.motion.w >= 0.0 {
+        let history = params.obstacles.z + index * 2u;
+        let output = params.obstacles.w + index * 2u;
+        arena[history] = bitcast<vec4<u32>>(vec4<f32>(position, 0.0));
+        arena[history + 1u] = bitcast<vec4<u32>>(boids[index].rotation);
+        arena[output] = arena[history];
+        arena[output + 1u] = arena[history + 1u];
+    }
 }
 
 // Settings maintenance remains available while paused, without sorting or changing motion/phase.
@@ -689,6 +698,19 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.
     let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
     let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)) | (group << 16u);
+    // Metadata record follows this boid through both sorts. Keep the rendered frame's
+    // start pose, rather than the preceding integration substep or sorted slot.
+    if params.motion.w >= 0.0 {
+        let record = read_order(stepped_order_base(), index);
+        let history = params.obstacles.z + record * 2u;
+        if params.motion.w == 0.0 {
+            arena[history] = bitcast<vec4<u32>>(vec4<f32>(me.position, 0.0));
+            arena[history + 1u] = bitcast<vec4<u32>>(me.rotation);
+        }
+        let output = params.obstacles.w + index * 2u;
+        arena[output] = arena[history];
+        arena[output + 1u] = arena[history + 1u];
+    }
     instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
 }
 

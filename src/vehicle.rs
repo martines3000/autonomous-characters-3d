@@ -41,6 +41,12 @@ pub(crate) fn step_cpu(world: &mut World) {
         return;
     }
     let frame = *world.resource::<crate::presentation::SimulationFrame>();
+    for (transform, mut previous) in world
+        .query_filtered::<(&Transform, &mut PreviousVehicleTransform), With<Vehicle>>()
+        .iter_mut(world)
+    {
+        previous.0 = *transform;
+    }
     let original = *world.resource::<Time>();
     for index in 0..frame.steps {
         let mut time = Time::default();
@@ -64,8 +70,12 @@ pub(crate) fn step_cpu(world: &mut World) {
 }
 
 #[derive(Component)]
-#[require(VehicleMetadata)]
+#[require(VehicleMetadata, PreviousVehicleTransform)]
 pub struct Vehicle;
+
+/// Pose at the start of the rendered frame, before any simulation substep.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct PreviousVehicleTransform(pub Transform);
 
 // x: spawn ID, y: group, z: formation slot, w: reserved. Travels with the vehicle.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -136,15 +146,33 @@ fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 fn sync_instances(
-    vehicles: Query<(Entity, &Transform, &VehicleVelocity, &VehicleMetadata), With<Vehicle>>,
+    vehicles: Query<
+        (
+            Entity,
+            &Transform,
+            &VehicleVelocity,
+            &VehicleMetadata,
+            &PreviousVehicleTransform,
+        ),
+        With<Vehicle>,
+    >,
     mut flock: Single<&mut VehicleInstances>,
     state: Res<GlobalState>,
 ) {
+    flock.1.clear();
+    flock
+        .1
+        .extend(vehicles.iter().map(|(_, _, _, _, previous)| {
+            [
+                previous.0.translation.extend(0.0),
+                Vec4::from(previous.0.rotation),
+            ]
+        }));
     flock.0.clear();
     flock.0.extend(
         vehicles
             .iter()
-            .map(|(entity, transform, velocity, metadata)| {
+            .map(|(entity, transform, velocity, metadata, _)| {
                 [
                     transform.translation.extend(pack_speed_group(
                         velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
@@ -1069,6 +1097,89 @@ mod tests {
             ))
             .id();
         (app, entity)
+    }
+
+    #[test]
+    fn previous_cpu_transform_is_frame_start_not_last_substep_and_refreshes_when_paused() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let (mut app, entity) = presentation_app(mode);
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .speed = 4.0;
+            for frame in 1..=3 {
+                let before = *app.world().get::<Transform>(entity).unwrap();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_to(Duration::from_millis(frame * 20));
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .get::<PreviousVehicleTransform>(entity)
+                        .unwrap()
+                        .0,
+                    before
+                );
+                assert_ne!(*app.world().get::<Transform>(entity).unwrap(), before);
+            }
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = true;
+            let before = *app.world().get::<Transform>(entity).unwrap();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<PreviousVehicleTransform>(entity)
+                    .unwrap()
+                    .0,
+                before
+            );
+            assert_eq!(*app.world().get::<Transform>(entity).unwrap(), before);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real GPU device"]
+    fn gpu_previous_transforms_follow_identity_across_sorts_and_multiple_substeps() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 600,
+            ..default()
+        };
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.0),
+        );
+        for (boid, pose) in flock
+            .read_boids(&device, &queue)
+            .iter()
+            .zip(flock.read_previous(&device, &queue))
+        {
+            assert_eq!(pose[0].truncate(), boid[0].truncate());
+            assert_eq!(pose[1], boid[2]);
+        }
+        for cap in [0, 16] {
+            state.gpu_max_neighbors = cap;
+            let initial = flock.read_boids(&device, &queue);
+            let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            for substep in 0..4 {
+                params.motion.w = substep as f32;
+                gpu_step(&mut flock, &device, &queue, &params);
+                let current = flock.read_boids(&device, &queue);
+                let previous = flock.read_previous(&device, &queue);
+                for (boid, pose) in current.iter().zip(previous) {
+                    let original = initial
+                        .iter()
+                        .find(|b| b.metadata.x == boid.metadata.x)
+                        .unwrap();
+                    assert_eq!(pose[0].truncate(), original[0].truncate());
+                    assert_eq!(pose[1], original[2]);
+                }
+            }
+        }
     }
 
     #[test]

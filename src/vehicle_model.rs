@@ -1816,7 +1816,10 @@ mod tests {
         let instances = vec![[Vec4::ONE, Vec4::W, Vec4::ZERO]; 200];
         let flock = app
             .world_mut()
-            .spawn((VehicleInstances(instances.clone()), Transform::default()))
+            .spawn((
+                VehicleInstances(instances.clone(), Vec::new()),
+                Transform::default(),
+            ))
             .id();
         let state = app.world().resource::<GlobalState>().clone();
         let encode = |state: &GlobalState| {
