@@ -301,6 +301,9 @@ fn presentation_input(
     if keys.just_pressed(KeyCode::KeyO) {
         presentation.orbit = !presentation.orbit;
     }
+    if keys.just_pressed(KeyCode::KeyH) {
+        presentation.ui_visible = !presentation.ui_visible;
+    }
     for (key, preset) in [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -457,6 +460,9 @@ pub fn ui(ui: &mut egui::Ui, presentation: &mut Presentation) {
             .clicked()
         {
             presentation.paused = !presentation.paused;
+        }
+        if ui.button("Hide UI (H)").clicked() {
+            presentation.ui_visible = false;
         }
         if presentation.paused {
             ui.colored_label(egui::Color32::YELLOW, "PAUSED");
@@ -915,7 +921,7 @@ pub(crate) mod tests {
                 PanOrbitCamera::default().with_initial_anchor_depth(1000.0),
             ))
             .id();
-        for key in [KeyCode::KeyP, KeyCode::KeyO, KeyCode::Digit2] {
+        for key in [KeyCode::KeyP, KeyCode::KeyO, KeyCode::KeyH, KeyCode::Digit2] {
             app.world_mut()
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .press(key);
@@ -937,6 +943,7 @@ pub(crate) mod tests {
         );
         assert!(app.world().resource::<Presentation>().paused);
         assert!(app.world().resource::<Presentation>().orbit);
+        assert!(!app.world().resource::<Presentation>().ui_visible);
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .reset_all();

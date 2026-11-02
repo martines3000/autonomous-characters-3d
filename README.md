@@ -75,6 +75,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
 | P | Pause / resume vehicle simulation |
 | O | Toggle real-time auto-orbit |
+| H, Presentation → Hide UI | Hide the menu, FPS and controls text for an immersive view; H shows them again |
 | B | Boid camera: Off → Chase → First person → Off |
 | N | Pick a random boid for the camera |
 | C | Toggle cinematic Director |

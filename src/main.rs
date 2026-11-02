@@ -491,6 +491,7 @@ fn ui(
                 for (input, action) in [
                     ("Hold F", "Apply cursor field (Swarm)"),
                     ("P / O", "Pause / auto-orbit"),
+                    ("H", "Hide / show UI"),
                     ("B / N", "Boid camera / next boid"),
                     ("C", "Toggle Director"),
                     (
