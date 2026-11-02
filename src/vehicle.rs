@@ -2867,8 +2867,22 @@ mod tests {
                 .expect("GPU_BENCH_PREDATORS must be 0..=4")
         });
         assert!(predator_count <= crate::predator::MAX_PREDATORS);
+        let hunter_count = std::env::var("GPU_BENCH_HUNTERS").map_or(0, |value| {
+            value
+                .parse::<usize>()
+                .expect("GPU_BENCH_HUNTERS must be 0..=16")
+        });
+        assert!(
+            hunter_count <= crate::hunter::MAX_HUNTERS,
+            "GPU_BENCH_HUNTERS must be 0..=16"
+        );
         let combined = std::env::var("GPU_BENCH_COMBINED").is_ok_and(|value| value == "1");
         let groups = if combined { 2 } else { groups };
+        let groups = if hunter_count > 0 {
+            groups.max(2)
+        } else {
+            groups
+        };
         let obstacle_count = if combined { 4 } else { obstacle_count };
         let predator_count = if combined { 4 } else { predator_count };
         let formation_mode = if combined {
@@ -2886,7 +2900,7 @@ mod tests {
             "GPU_BENCH_WARMUP must be 1..=6000"
         );
         let (device, queue) = gpu_device();
-        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups} obstacles={obstacle_count} formation={formation_mode:?} predators={predator_count} combined={combined} warmup={warmup}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
+        println!("gpu_flocking_benchmark device_storage_buffers={} max_storage_binding_bytes={} groups={groups} obstacles={obstacle_count} formation={formation_mode:?} predators={predator_count} hunters={hunter_count} combined={combined} warmup={warmup}", device.limits().max_storage_buffers_per_shader_stage, device.limits().max_storage_buffer_binding_size);
         for count in counts {
             for &following in &modes {
                 for &cap in &caps {
@@ -2900,6 +2914,10 @@ mod tests {
                     };
                     state.motion.classic_heading = classic;
                     state.groups.count = groups;
+                    if hunter_count > 0 {
+                        state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
+                        state.groups.table[1].hunter_count = hunter_count;
+                    }
                     let mut scene = SwarmScene::default();
                     for index in 0..obstacle_count {
                         let center = Vec3::new(
@@ -2996,7 +3014,7 @@ mod tests {
                         "NA".into()
                     };
                     println!(
-                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} track={track} classic_heading={classic} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
+                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} hunters={hunter_count} track={track} classic_heading={classic} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
                         params.max_neighbors, timings.len(), gpu_bench_percentile(&timings, 50), gpu_bench_percentile(&timings, 95),
                         stats.sample_count, stats.nn_p1, stats.nn_p10, stats.nn_median, stats.close_percent, stats.mean_speed,
                     );
