@@ -218,9 +218,15 @@ Volumetrics imply sun shadow maps and flock casting, within the existing **Flock
 The saved Shadows checkbox stays editable; disabling volumetrics restores its current preference.
 Depth/normal prepasses follow the same effective shadow policy. MSAA remains unchanged.
 
-**Ray steps** (`set volumetric_steps 16..128`, default 64) trades ray quality for frame time.
-Lower steps can show bands; no temporal jitter is used without TAA. Medium density scales with
-world size; a cached 32³ density texture shapes underwater particle columns along the sun.
+**Ray steps** (`set volumetric_steps 16..128`, default 16) trades ray quality for frame time.
+The medium covers the central flock region (60% of wall half-extents), rather than the whole world.
+Density scales with world size. Cached 32³ textures form high-contrast, feathered columns aligned
+with each environment's sun in Sunset and Underwater; flock shadows cut through those columns.
+Stronger scattering and light gain reveal beams without raising the sun's surface illuminance.
+No temporal jitter is used without TAA; 16 steps can show bands on thin or moving shadows.
+Quick release measurements at 3816×2110/20k on RX 7900 XT add **2.59 ms Sunset / 1.75 ms
+Underwater**, down from 6.72 / 8.20 ms with 64 steps. These are short frame-interval samples;
+see the [measurement plan](plans/completed/2026-11-03-volumetric-shafts.md) for conditions.
 Any active environment also adds subtle high-threshold sun/bright-sky Bloom;
 Glow retains its original Bloom settings. Showcase presets keep volumetrics Off; enable them
 **after** `showcase fish`, `showcase starling` or another preset. Fish occlude the rays.
@@ -930,7 +936,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `set style` | `studio` (default), `classic`, `glow` |
 | `set environment` | `off` (default), `sunset`, `midday`, `underwater`; independent of Style |
 | `set volumetric` | `on` / `off` (default); active environments imply sun/flock shadows, respecting the casting cap |
-| `set volumetric_steps` | Integer 16–128 (default 64); higher improves shafts and costs more |
+| `set volumetric_steps` | Integer 16–128 (default 16); higher improves shafts and costs more |
 | `set glow` | Emission strength 0–20, default 4; Glow only |
 | `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
 | `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |
