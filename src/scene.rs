@@ -194,7 +194,7 @@ impl Default for Appearance {
             streak: 0.8,
             shadows: false,
             volumetric: false,
-            volumetric_steps: 64,
+            volumetric_steps: 16,
             shadow_cap: 200_000,
             ambient_occlusion: false,
         }
@@ -1013,7 +1013,7 @@ mod tests {
             .init_resource::<GlobalState>()
             .init_resource::<crate::presentation::Presentation>()
             .init_resource::<Assets<Image>>()
-            .init_resource::<crate::volumetric::WaterParticles>()
+            .init_resource::<crate::volumetric::EnvironmentParticles>()
             .add_systems(
                 Update,
                 (
