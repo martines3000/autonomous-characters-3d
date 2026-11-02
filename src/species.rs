@@ -23,6 +23,7 @@ pub enum Species {
     RookRoost,
     SharkAttack,
     FalconStrike,
+    TunaRaid,
 }
 
 /// Everything a species controls. Unlisted steering settings return to their defaults.
@@ -49,7 +50,7 @@ pub struct Behavior {
 impl Species {
     pub const FISH: [Self; 3] = [Self::BaitBall, Self::TunaStream, Self::ReefDrift];
     pub const BIRDS: [Self; 3] = [Self::Murmuration, Self::SwallowHunt, Self::RookRoost];
-    pub const HUNTS: [Self; 2] = [Self::SharkAttack, Self::FalconStrike];
+    pub const HUNTS: [Self; 3] = [Self::SharkAttack, Self::FalconStrike, Self::TunaRaid];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -61,6 +62,7 @@ impl Species {
             Self::RookRoost => "Rook roost",
             Self::SharkAttack => "Shark attack",
             Self::FalconStrike => "Falcon strike",
+            Self::TunaRaid => "Tuna raid",
         }
     }
 
@@ -76,6 +78,9 @@ impl Species {
                 "Three larger sharks pursue a sardine school; prey scatter and regroup."
             }
             Self::FalconStrike => "Two falcons slash through a starling murmuration, then recover.",
+            Self::TunaRaid => {
+                "Twelve fast tuna slash through a sardine bait ball; prey scatter and regroup."
+            }
         }
     }
 
@@ -89,8 +94,9 @@ impl Species {
             "rook" | "rooks" | "rook-roost" => Ok(Self::RookRoost),
             "shark-attack" => Ok(Self::SharkAttack),
             "falcon-strike" => Ok(Self::FalconStrike),
+            "tuna-raid" => Ok(Self::TunaRaid),
             _ => Err(format!(
-                "invalid species '{name}'; expected sardine, tuna, reef, murmuration, swallow, rook, shark-attack or falcon-strike"
+                "invalid species '{name}'; expected sardine, tuna, reef, murmuration, swallow, rook, shark-attack, falcon-strike or tuna-raid"
             )),
         }
     }
@@ -99,7 +105,7 @@ impl Species {
         const FISH: &str = "assets/models/fish.glb";
         const STARLING: &str = "assets/models/starling.glb";
         match self {
-            Self::SharkAttack => Behavior {
+            Self::SharkAttack | Self::TunaRaid => Behavior {
                 predators: 0,
                 predator_strength: 0.0,
                 ..Self::BaitBall.behavior()
@@ -240,7 +246,7 @@ pub(crate) fn apply(world: &mut World, species: Species) {
             count: 2,
             ..default()
         };
-        if species == Species::SharkAttack {
+        if matches!(species, Species::SharkAttack | Species::TunaRaid) {
             state.groups.table[0].target = Some(Vec3::ZERO);
         }
         let hunter = &mut state.groups.table[1];
@@ -257,6 +263,12 @@ pub(crate) fn apply(world: &mut World, species: Species) {
                 hunter.size_scale = 3.0;
                 hunter.speed_scale = 1.5;
                 hunter.hunter_model = crate::hunter::HunterModel::Falcon;
+            }
+            Species::TunaRaid => {
+                hunter.hunter_count = 12;
+                hunter.size_scale = 2.5;
+                hunter.speed_scale = 1.6;
+                hunter.hunter_model = crate::hunter::HunterModel::Tuna;
             }
             _ => unreachable!(),
         }
@@ -420,18 +432,34 @@ mod tests {
                 3.0,
                 1.5,
             ),
+            (
+                Species::TunaRaid,
+                12,
+                crate::hunter::HunterModel::Tuna,
+                2.5,
+                1.6,
+            ),
         ] {
             let mut world = world();
             world.resource_mut::<Appearance>().environment = Environment::Underwater;
             world.resource_mut::<Presentation>().orbit = true;
             apply(&mut world, species);
             let state = world.resource::<GlobalState>();
+            assert_eq!(state.vehicle_count, species.behavior().count);
+            assert_eq!(
+                species.behavior().model,
+                if species == Species::FalconStrike {
+                    "assets/models/starling.glb"
+                } else {
+                    "assets/models/fish.glb"
+                }
+            );
             assert_eq!(state.groups.count, 2);
             assert_eq!(state.groups.hunter_count(), count);
             assert_eq!(state.groups.table[0].role, crate::swarm::GroupRole::Prey);
             assert_eq!(
                 state.groups.table[0].target,
-                (species == Species::SharkAttack).then_some(Vec3::ZERO)
+                matches!(species, Species::SharkAttack | Species::TunaRaid).then_some(Vec3::ZERO)
             );
             let hunter = state.groups.table[1];
             assert_eq!(hunter.role, crate::swarm::GroupRole::Hunter);
@@ -454,6 +482,8 @@ mod tests {
     fn attack_names_parse_and_examples_are_order_independent() {
         assert_eq!(Species::parse("shark-attack"), Ok(Species::SharkAttack));
         assert_eq!(Species::parse("falcon-strike"), Ok(Species::FalconStrike));
+        assert_eq!(Species::parse("tuna-raid"), Ok(Species::TunaRaid));
+        assert_eq!(Species::parse("TUNA-RAID"), Ok(Species::TunaRaid));
         let all: Vec<_> = Species::FISH
             .into_iter()
             .chain(Species::BIRDS)
