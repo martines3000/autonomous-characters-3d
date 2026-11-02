@@ -8,10 +8,14 @@
 
 Items without a linked ExecPlan need one from `TEMPLATE.md` when starting.
 
-1. **Follow-mode density at 100,000+ vehicles.** With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
-2. **Rendering budgets for heavy custom models and other GPUs.** [Stage 4](completed/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
+1. **Follow-mode density at 100,000+ vehicles.** *Parked by the owner on 2026-11-02.* With GPU follow cap 16, 15–42% of sampled vehicles have a neighbor closer than the 1.4-unit dart width after the benchmark warmup (about 19% at 100k, 42% at 300k, 15% at one million). Complete separation does not hold against seek pressure in very large balls. This needs a behavior decision and its own plan, rather than a larger alignment/cohesion sample cap.
+2. **Rendering budgets for heavy custom models and other GPUs.** *Other GPUs will be tested at a later date (owner, 2026-11-02).* [Stage 4](completed/2026-10-31-rendering-optimization.md) measured GPU wander at 1280×720 on the RX 7900 XT: low-poly Dart/Bird/glider cases average about 1 ms, while a 3,456-triangle subdivided glider costs about 24 ms at 100k, near or far; MSAA off barely changes that cost. Exact import indexing now retains 2,119 instead of 10,368 vertices with identical triangle inputs; heavy mean intervals fall from 5.28–5.30 to 2.87–2.89 ms at 20k and 23.87–24.10 to 11.54–11.59 ms at 100k, with 4× MSAA and identical geometry/shading. The historical M3 Pro close-100k observation (~59 FPS) is not remeasured. Fully faceted/unique-attribute models and other GPUs remain open; avoid approximate LOD, culling or extra passes without evidence.
 
-Smaller follow-ups (no plan needed): speed retuning (`vehicle_max_speed` / `vehicle_wander_speed`) remains owner-by-eye after the outside-only wall fix. No defaults were retuned.
+Decisions on 2026-11-02 (no plan needed):
+
+- Default speeds stay as they are after the outside-only wall fix (about 39 units/s settled wander); Species behaviors cover slower and faster looks.
+- The Fish preset keeps the fish model's own colors rather than group tints.
+- Showcase presets keep volumetric light and motion blur off.
 
 CI (finding F12) is not wanted by the owner.
 
