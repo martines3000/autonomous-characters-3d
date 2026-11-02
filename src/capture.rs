@@ -123,6 +123,8 @@ fn not_recording(capture: Res<Capture>) -> bool {
 }
 fn fixed_manual_camera(
     capture: Res<Capture>,
+    appearance: Option<Res<crate::scene::Appearance>>,
+    environments: Option<Res<crate::environment::EnvironmentCache>>,
     mut cameras: Query<(
         &mut Transform,
         &Camera,
@@ -131,6 +133,11 @@ fn fixed_manual_camera(
     )>,
     mut redraw: MessageWriter<RequestRedraw>,
 ) {
+    if appearance.is_some_and(|appearance| {
+        !crate::environment::capture_ready(&appearance, environments.as_deref())
+    }) {
+        return;
+    }
     let Some(dt) = capture.next_delta().filter(|dt| !dt.is_zero()) else {
         return;
     };
@@ -151,6 +158,9 @@ fn request_frame(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
     screenshots: Query<(), With<Screenshot>>,
+    appearance: Option<Res<crate::scene::Appearance>>,
+    environments: Option<Res<crate::environment::EnvironmentCache>>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let Some(session) = &mut capture.session else {
         return;
@@ -163,6 +173,22 @@ fn request_frame(
         );
         capture.session = None;
         return;
+    }
+    if let Some(appearance) = appearance {
+        if environments
+            .as_deref()
+            .is_some_and(|cache| cache.failed(appearance.environment))
+        {
+            error!(
+                "Cannot record failed {} environment",
+                appearance.environment.name()
+            );
+            exit.write(AppExit::error());
+            return;
+        }
+        if !crate::environment::capture_ready(&appearance, environments.as_deref()) {
+            return;
+        }
     }
     // Bevy accepts only one screenshot per render target per frame. Drain any
     // ordinary scenario screenshot before submitting the already-stepped frame.
@@ -209,6 +235,63 @@ fn save_frame(
 mod tests {
     use super::*;
     use crate::presentation::{Presentation, SimulationClock};
+
+    #[test]
+    fn pending_environment_holds_recording_clocks_and_png_submission() {
+        use crate::{environment::Environment, scene::Appearance};
+        let mut app = crate::presentation::tests::clock_app();
+        app.add_plugins(CapturePlugin)
+            .add_message::<AppExit>()
+            .insert_resource(Appearance {
+                environment: Environment::Underwater,
+                applied_environment: Some(Environment::Off),
+                ..default()
+            });
+        let directory =
+            std::env::temp_dir().join(format!("ac3d-bake-recording-{}", std::process::id()));
+        app.world_mut()
+            .resource_mut::<Capture>()
+            .start(directory.clone(), 1, 30)
+            .unwrap();
+        for _ in 0..3 {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_secs(1));
+            app.update();
+            assert_eq!(
+                app.world().resource::<SimulationClock>().0.elapsed(),
+                Duration::ZERO
+            );
+            assert_eq!(
+                app.world().resource::<Presentation>().camera_delta,
+                Some(0.0)
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<Screenshot>>()
+                    .iter(app.world())
+                    .count(),
+                0
+            );
+        }
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .applied_environment = Some(Environment::Underwater);
+        app.update();
+        assert_eq!(
+            app.world().resource::<SimulationClock>().0.elapsed(),
+            Duration::from_secs_f64(1.0 / 30.0)
+        );
+        assert!(app
+            .world()
+            .resource::<Capture>()
+            .session
+            .as_ref()
+            .unwrap()
+            .pending
+            .is_some());
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn manual_camera_inertia_uses_capture_delta_and_holds_during_readback() {

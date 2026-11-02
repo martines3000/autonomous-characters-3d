@@ -3,21 +3,26 @@
 use std::{
     f32::consts::{PI, TAU},
     str::FromStr,
+    sync::Arc,
 };
 
 use bevy::{
     asset::{LoadState, RenderAssetUsages},
     camera::{Exposure, Hdr},
-    image::ImageSampler,
+    image::{HdrTextureLoaderSettings, ImageSampler},
     light::{EnvironmentMapLight, Skybox},
     prelude::*,
     render::{
+        render_asset::RenderAssets,
         render_resource::{
-            Extent3d, TextureDataOrder, TextureDimension, TextureFormat, TextureViewDescriptor,
-            TextureViewDimension,
+            Extent3d, PipelineCache, TextureDataOrder, TextureDimension, TextureFormat,
+            TextureViewDescriptor, TextureViewDimension,
         },
+        texture::GpuImage,
         view::Tonemapping,
+        ExtractSchedule, MainWorld, RenderApp,
     },
+    tasks::{futures::check_ready, AsyncComputeTaskPool, Task},
     transform::TransformSystems,
 };
 
@@ -93,6 +98,7 @@ const ENV_EXPOSURE: Exposure = Exposure { ev100: 10.0 };
 struct CachedEnvironment {
     kind: Environment,
     source: Option<Handle<Image>>,
+    input: Option<Arc<Image>>,
     ready: Option<PreparedEnvironment>,
     failed: bool,
 }
@@ -103,8 +109,230 @@ struct PreparedEnvironment {
     sun_color: Color,
     horizon: Color,
 }
+/// Worker output owns CPU images; only the main world registers asset handles.
+struct BakedEnvironment {
+    sky: Image,
+    diffuse: Image,
+    specular: Image,
+    sun: Vec3,
+    sun_color: Color,
+    horizon: Color,
+}
+impl BakedEnvironment {
+    fn register(self, kind: Environment, images: &mut Assets<Image>) -> PreparedEnvironment {
+        PreparedEnvironment {
+            sky: images.add(self.sky),
+            light: EnvironmentMapLight {
+                diffuse_map: images.add(self.diffuse),
+                specular_map: images.add(self.specular),
+                intensity: kind.ibl_intensity(),
+                ..default()
+            },
+            sun: self.sun,
+            sun_color: self.sun_color,
+            horizon: self.horizon,
+        }
+    }
+}
+struct EnvironmentBake {
+    kind: Environment,
+    generation: u64,
+    task: Task<Result<BakedEnvironment, &'static str>>,
+}
 #[derive(Resource, Default)]
-struct EnvironmentCache(Vec<CachedEnvironment>);
+pub(crate) struct EnvironmentCache {
+    entries: Vec<CachedEnvironment>,
+    requested: Environment,
+    generation: u64,
+    pending: Option<EnvironmentBake>,
+    render_tracking: bool,
+    render_ready: Option<Environment>,
+}
+impl EnvironmentCache {
+    pub(crate) fn failed(&self, kind: Environment) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.kind == kind && entry.failed && entry.ready.is_none())
+    }
+}
+
+pub(crate) fn capture_ready(appearance: &Appearance, cache: Option<&EnvironmentCache>) -> bool {
+    appearance.environment_ready()
+        && cache.is_none_or(|cache| {
+            !cache.render_tracking || cache.render_ready == Some(appearance.active_environment())
+        })
+}
+
+/// Report completed render work back to the main world, as in Bevy's loading-screen pattern.
+/// Two settled renders let view/material specialization follow the new sky and sand assets.
+fn sync_environment_render_ready(
+    mut main: ResMut<MainWorld>,
+    images: Res<RenderAssets<GpuImage>>,
+    pipelines: Res<PipelineCache>,
+    mut previous: Local<Option<Environment>>,
+    mut settled: Local<u8>,
+) {
+    let kind = main.resource::<Appearance>().active_environment();
+    let maps_ready = kind == Environment::Off
+        || main
+            .resource::<EnvironmentCache>()
+            .entries
+            .iter()
+            .find(|entry| entry.kind == kind)
+            .and_then(|entry| entry.ready.as_ref())
+            .is_some_and(|prepared| {
+                images.get(&prepared.sky).is_some()
+                    && images.get(&prepared.light.diffuse_map).is_some()
+                    && images.get(&prepared.light.specular_map).is_some()
+            });
+    if *previous != Some(kind) || !maps_ready || pipelines.waiting_pipelines().next().is_some() {
+        *settled = 0;
+    } else {
+        *settled = settled.saturating_add(1).min(2);
+    }
+    *previous = Some(kind);
+    main.resource_mut::<EnvironmentCache>().render_ready = (*settled == 2).then_some(kind);
+}
+
+/// Runs before scene/instance consumers so every part of the look switches together.
+fn prepare_environment(
+    mut appearance: ResMut<Appearance>,
+    server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<EnvironmentCache>,
+) {
+    let kind = appearance.environment;
+    if appearance.applied_environment.is_none() {
+        appearance.applied_environment = Some(Environment::Off);
+    }
+    if cache.requested != kind {
+        cache.requested = kind;
+        cache.generation = cache.generation.wrapping_add(1);
+        // Dropping the handle cancels queued work and discards any obsolete output.
+        // Already-running CPU work may finish, but cannot install its result.
+        cache.pending = None;
+    }
+    if kind == Environment::Off {
+        if appearance.active_environment() != kind {
+            appearance.applied_environment = Some(kind);
+        }
+        return;
+    }
+    if !cache.entries.iter().any(|entry| entry.kind == kind) {
+        cache.entries.push(CachedEnvironment {
+            kind,
+            source: kind.source().map(|path| {
+                server
+                    .load_builder()
+                    .with_settings(|settings: &mut HdrTextureLoaderSettings| {
+                        settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                    })
+                    .load(path)
+            }),
+            input: None,
+            ready: None,
+            failed: false,
+        });
+    }
+    if cache.pending.is_none() {
+        let generation = cache.generation;
+        let entry = cache
+            .entries
+            .iter_mut()
+            .find(|entry| entry.kind == kind)
+            .unwrap();
+        if entry.ready.is_none() && !entry.failed {
+            if let Some(source) = &entry.source {
+                if entry.input.is_none() {
+                    // Move the HDR buffer; cloning a 4K image here would itself hitch.
+                    if let Some(image) = images.remove(source.id()) {
+                        entry.input = Some(Arc::new(image));
+                    } else if matches!(
+                        server.get_load_state(source.id()),
+                        Some(LoadState::Failed(_))
+                    ) {
+                        error!("Cannot load environment {:?}", kind.source());
+                        entry.failed = true;
+                    }
+                }
+            }
+            if kind == Environment::Underwater || entry.input.is_some() {
+                let input = entry.input.clone();
+                cache.pending = Some(EnvironmentBake {
+                    kind,
+                    generation,
+                    task: AsyncComputeTaskPool::get().spawn(async move {
+                        if kind == Environment::Underwater {
+                            Ok(prepare_underwater())
+                        } else {
+                            prepare_panorama(kind, input.as_ref().unwrap())
+                        }
+                    }),
+                });
+            }
+        }
+    }
+    if let Some(result) = cache
+        .pending
+        .as_mut()
+        .and_then(|job| check_ready(&mut job.task))
+    {
+        let job = cache.pending.take().unwrap();
+        if job.kind == kind && job.generation == cache.generation {
+            let entry = cache
+                .entries
+                .iter_mut()
+                .find(|entry| entry.kind == kind)
+                .unwrap();
+            match result {
+                Ok(baked) => {
+                    entry.ready = Some(baked.register(kind, &mut images));
+                    info!(
+                        "Prepared {} environment: sky, diffuse irradiance and GGX mip chain",
+                        kind.name()
+                    );
+                }
+                Err(error) => {
+                    error!("Cannot prepare {}: {error}", kind.name());
+                    entry.failed = true;
+                }
+            }
+            entry.input = None;
+            entry.source = None;
+        }
+    }
+    if cache
+        .entries
+        .iter()
+        .any(|entry| entry.kind == kind && entry.ready.is_some())
+        && appearance.active_environment() != kind
+    {
+        appearance.applied_environment = Some(kind);
+    }
+}
+
+fn prepare_panorama(kind: Environment, image: &Image) -> Result<BakedEnvironment, &'static str> {
+    let panorama = Panorama::from_image(image)?;
+    let (sun, sun_color) = panorama.sun();
+    let horizon = panorama.horizon() * kind.sky_brightness() * ENV_EXPOSURE.exposure();
+    let sky = cubemap(FACE_SIZE, 1, |n, _| panorama.sample(n));
+    let diffuse = cubemap(32, 1, |n, _| convolve(&panorama, n, 1.0, true));
+    let specular = cubemap(FACE_SIZE, FACE_SIZE.ilog2() + 1, |n, roughness| {
+        if roughness == 0.0 {
+            panorama.sample(n)
+        } else {
+            convolve(&panorama, n, roughness, false)
+        }
+    });
+    Ok(BakedEnvironment {
+        sky,
+        diffuse,
+        specular,
+        sun,
+        sun_color,
+        horizon: Color::linear_rgb(horizon.x, horizon.y, horizon.z),
+    })
+}
 
 /// Save only the camera values this feature owns, including explicit custom exposure.
 #[derive(Component)]
@@ -117,11 +345,21 @@ struct PreviousCamera {
 pub struct EnvironmentPlugin;
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<Appearance>();
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .applied_environment = Some(Environment::Off);
         app.add_plugins((
             crate::underwater::UnderwaterPlugin,
             crate::volumetric::VolumetricPlugin,
         ))
         .init_resource::<EnvironmentCache>()
+        .add_systems(
+            PreUpdate,
+            prepare_environment
+                .after(crate::scenario::run_scenario)
+                .before(crate::camera_input),
+        )
         .add_systems(
             PostUpdate,
             update_environment
@@ -131,6 +369,12 @@ impl Plugin for EnvironmentPlugin {
                 .before(bevy::camera::CameraUpdateSystems)
                 .before(TransformSystems::Propagate),
         );
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(ExtractSchedule, sync_environment_render_ready);
+            app.world_mut()
+                .resource_mut::<EnvironmentCache>()
+                .render_tracking = true;
+        }
     }
 }
 
@@ -139,9 +383,7 @@ fn update_environment(
     mut commands: Commands,
     appearance: Res<Appearance>,
     state: Res<GlobalState>,
-    server: Res<AssetServer>,
-    mut images: ResMut<Assets<Image>>,
-    mut cache: ResMut<EnvironmentCache>,
+    cache: Res<EnvironmentCache>,
     mut cameras: Query<
         (
             Entity,
@@ -163,7 +405,7 @@ fn update_environment(
         Without<Camera3d>,
     >,
 ) {
-    let kind = appearance.environment;
+    let kind = appearance.active_environment();
     if kind == Environment::Off {
         for (entity, _, _, _, _, previous) in &mut cameras {
             if let Some(previous) = previous {
@@ -190,69 +432,17 @@ fn update_environment(
         }
         return;
     }
-    if !cache.0.iter().any(|entry| entry.kind == kind) {
-        cache.0.push(CachedEnvironment {
-            kind,
-            source: kind.source().map(|path| server.load(path)),
-            ready: (kind == Environment::Underwater).then(|| prepare_underwater(&mut images)),
-            failed: false,
-        });
-    }
-    let entry = cache.0.iter_mut().find(|entry| entry.kind == kind).unwrap();
-    if entry.ready.is_none() && !entry.failed {
-        let source = entry.source.as_ref().unwrap();
-        if let Some(image) = images.get(source) {
-            match Panorama::from_image(image) {
-                Ok(panorama) => {
-                    let (sun, sun_color) = panorama.sun();
-                    let horizon =
-                        panorama.horizon() * kind.sky_brightness() * ENV_EXPOSURE.exposure();
-                    let sky = images.add(cubemap(FACE_SIZE, 1, |n, _| panorama.sample(n)));
-                    let diffuse =
-                        images.add(cubemap(32, 1, |n, _| convolve(&panorama, n, 1.0, true)));
-                    let specular =
-                        images.add(cubemap(FACE_SIZE, FACE_SIZE.ilog2() + 1, |n, roughness| {
-                            if roughness == 0.0 {
-                                panorama.sample(n)
-                            } else {
-                                convolve(&panorama, n, roughness, false)
-                            }
-                        }));
-                    entry.ready = Some(PreparedEnvironment {
-                        sky,
-                        sun,
-                        sun_color,
-                        horizon: Color::linear_rgb(horizon.x, horizon.y, horizon.z),
-                        light: EnvironmentMapLight {
-                            diffuse_map: diffuse,
-                            specular_map: specular,
-                            intensity: kind.ibl_intensity(),
-                            ..default()
-                        },
-                    });
-                    entry.source = None;
-                    info!("Prepared {} HDRI: 512px sky, diffuse irradiance and GGX mip chain; sun {sun:?}", kind.name());
-                }
-                Err(error) => {
-                    error!("Cannot prepare {}: {error}", kind.name());
-                    entry.failed = true;
-                }
-            }
-        } else if matches!(
-            server.get_load_state(source.id()),
-            Some(LoadState::Failed(_))
-        ) {
-            error!("Cannot load environment {:?}", kind.source());
-            entry.failed = true;
-        }
-    }
-    // Hide the old rig even while loading. A failed asset logs once; Off remains recoverable.
+    let Some(prepared) = cache
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.ready.as_ref())
+    else {
+        return;
+    };
     for (mut light, _, _, _) in &mut lights {
         light.illuminance = 0.0;
     }
-    let Some(prepared) = &entry.ready else {
-        return;
-    };
     for (entity, transform, mut fog, tonemapping, exposure, previous) in &mut cameras {
         if previous.is_none_or(|saved| saved.active != kind) {
             commands.entity(entity).insert(PreviousCamera {
@@ -320,9 +510,9 @@ fn water_radiance(n: Vec3) -> Vec3 {
     gradient + Vec3::new(0.65, 2.1, 1.5) * light * (0.85 + 0.15 * ripple)
 }
 
-fn prepare_underwater(images: &mut Assets<Image>) -> PreparedEnvironment {
+fn prepare_underwater() -> BakedEnvironment {
     // A low-frequency analytic sky needs only 128px; broad IBL lobes need even less.
-    let sky = images.add(cubemap(128, 1, |n, _| water_radiance(n)));
+    let sky = cubemap(128, 1, |n, _| water_radiance(n));
     let panorama = Panorama {
         width: 64,
         height: 32,
@@ -337,21 +527,17 @@ fn prepare_underwater(images: &mut Assets<Image>) -> PreparedEnvironment {
             })
             .collect(),
     };
-    let diffuse = images.add(cubemap(16, 1, |n, _| convolve(&panorama, n, 1.0, true)));
-    let specular = images.add(cubemap(64, 7, |n, roughness| {
+    let diffuse = cubemap(16, 1, |n, _| convolve(&panorama, n, 1.0, true));
+    let specular = cubemap(64, 7, |n, roughness| {
         convolve(&panorama, n, roughness.max(0.04), false)
-    }));
+    });
     let horizon = water_radiance(Vec3::X)
         * Environment::Underwater.sky_brightness()
         * ENV_EXPOSURE.exposure();
-    PreparedEnvironment {
+    BakedEnvironment {
         sky,
-        light: EnvironmentMapLight {
-            diffuse_map: diffuse,
-            specular_map: specular,
-            intensity: Environment::Underwater.ibl_intensity(),
-            ..default()
-        },
+        diffuse,
+        specular,
         sun: Vec3::new(-0.18, 0.97, -0.16).normalize(),
         sun_color: Color::srgb(0.72, 1.0, 0.86),
         horizon: Color::linear_rgb(horizon.x, horizon.y, horizon.z),
@@ -580,6 +766,201 @@ fn convolve(panorama: &Panorama, n: Vec3, roughness: f32, diffuse: bool) -> Vec3
 mod tests {
     use super::*;
 
+    fn bake_test_app() -> (App, Entity, Entity) {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .insert_resource(Appearance {
+                environment: Environment::Sunset,
+                applied_environment: Some(Environment::Off),
+                ..default()
+            })
+            .init_resource::<GlobalState>()
+            .init_resource::<EnvironmentCache>()
+            .add_systems(Update, (prepare_environment, update_environment).chain());
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::default(),
+                DistanceFog::default(),
+                Tonemapping::TonyMcMapface,
+                Exposure { ev100: 9.7 },
+            ))
+            .id();
+        let sun = app
+            .world_mut()
+            .spawn((KeyLight, DirectionalLight::default(), Transform::default()))
+            .id();
+        app.world_mut()
+            .resource_mut::<EnvironmentCache>()
+            .entries
+            .push(CachedEnvironment {
+                kind: Environment::Sunset,
+                source: None,
+                input: None,
+                failed: false,
+                ready: Some(PreparedEnvironment {
+                    sky: default(),
+                    light: default(),
+                    sun: Vec3::X,
+                    sun_color: Color::WHITE,
+                    horizon: Color::BLACK,
+                }),
+            });
+        app.update();
+        (app, camera, sun)
+    }
+
+    fn controlled_bake(
+        app: &mut App,
+    ) -> std::sync::mpsc::Sender<Result<BakedEnvironment, &'static str>> {
+        let (send, receive) = std::sync::mpsc::channel();
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Midday;
+        let mut cache = app.world_mut().resource_mut::<EnvironmentCache>();
+        cache.requested = Environment::Midday;
+        cache.generation += 1;
+        cache.entries.push(CachedEnvironment {
+            kind: Environment::Midday,
+            source: None,
+            input: None,
+            failed: false,
+            ready: None,
+        });
+        cache.pending = Some(EnvironmentBake {
+            kind: Environment::Midday,
+            generation: cache.generation,
+            task: AsyncComputeTaskPool::get()
+                .spawn(async move { receive.recv().unwrap_or(Err("test sender dropped")) }),
+        });
+        send
+    }
+
+    fn small_bake() -> BakedEnvironment {
+        BakedEnvironment {
+            sky: Image::default(),
+            diffuse: Image::default(),
+            specular: Image::default(),
+            sun: Vec3::Y,
+            sun_color: Color::srgb(1.0, 0.8, 0.6),
+            horizon: Color::WHITE,
+        }
+    }
+
+    #[test]
+    fn captures_wait_for_render_readiness_of_the_current_environment() {
+        let appearance = Appearance {
+            environment: Environment::Midday,
+            applied_environment: Some(Environment::Midday),
+            ..default()
+        };
+        let mut cache = EnvironmentCache {
+            render_tracking: true,
+            ..default()
+        };
+        assert!(!capture_ready(&appearance, Some(&cache)));
+        cache.render_ready = Some(Environment::Sunset);
+        assert!(!capture_ready(&appearance, Some(&cache)));
+        cache.render_ready = Some(Environment::Midday);
+        assert!(capture_ready(&appearance, Some(&cache)));
+    }
+
+    #[test]
+    fn pending_bake_preserves_camera_and_sun_until_completion() {
+        let (mut app, camera, sun) = bake_test_app();
+        let send = controlled_bake(&mut app);
+        let sky = app.world().get::<Skybox>(camera).unwrap().image.clone();
+        let transform = *app.world().get::<Transform>(sun).unwrap();
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(app.world().get::<Skybox>(camera).unwrap().image, sky);
+            assert_eq!(
+                app.world().get::<PreviousCamera>(camera).unwrap().active,
+                Environment::Sunset
+            );
+            assert_eq!(
+                app.world().get::<DistanceFog>(camera).unwrap().color,
+                Color::BLACK
+            );
+            assert_eq!(
+                app.world().get::<Exposure>(camera).unwrap().ev100,
+                ENV_EXPOSURE.ev100
+            );
+            assert_eq!(
+                app.world().get::<Tonemapping>(camera),
+                Some(&Tonemapping::AgX)
+            );
+            assert_eq!(*app.world().get::<Transform>(sun).unwrap(), transform);
+            assert_eq!(
+                app.world()
+                    .get::<DirectionalLight>(sun)
+                    .unwrap()
+                    .illuminance,
+                Environment::Sunset.sun_lux()
+            );
+            assert!(!app.world().resource::<Appearance>().environment_ready());
+        }
+        send.send(Ok(small_bake()))
+            .unwrap_or_else(|_| panic!("test bake cancelled"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app.world().resource::<Appearance>().environment_ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "controlled bake timed out"
+            );
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            app.world().get::<PreviousCamera>(camera).unwrap().active,
+            Environment::Midday
+        );
+        assert_ne!(app.world().get::<Skybox>(camera).unwrap().image, sky);
+        assert_eq!(
+            app.world().get::<DistanceFog>(camera).unwrap().color,
+            Color::WHITE
+        );
+        assert_eq!(
+            app.world()
+                .get::<DirectionalLight>(sun)
+                .unwrap()
+                .illuminance,
+            Environment::Midday.sun_lux()
+        );
+        assert_eq!(
+            app.world()
+                .get::<PreviousCamera>(camera)
+                .unwrap()
+                .exposure
+                .unwrap()
+                .ev100,
+            9.7
+        );
+    }
+
+    #[test]
+    fn obsolete_bake_cannot_replace_a_new_selection() {
+        let (mut app, camera, _) = bake_test_app();
+        let send = controlled_bake(&mut app);
+        // Complete the obsolete output before polling it, then change the request.
+        let _ = send.send(Ok(small_bake()));
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Off;
+        app.update();
+        assert!(app.world().resource::<EnvironmentCache>().pending.is_none());
+        assert!(app.world().resource::<EnvironmentCache>().entries[1]
+            .ready
+            .is_none());
+        assert!(!app.world().entity(camera).contains::<Skybox>());
+        assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 9.7);
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Sunset;
+        app.update();
+        assert_eq!(
+            app.world().get::<PreviousCamera>(camera).unwrap().active,
+            Environment::Sunset
+        );
+    }
+
     #[test]
     fn underwater_is_procedural_cached_and_restores_the_camera() {
         use bevy::asset::AssetPlugin;
@@ -593,7 +974,7 @@ mod tests {
             })
             .init_resource::<GlobalState>()
             .init_resource::<EnvironmentCache>()
-            .add_systems(Update, update_environment);
+            .add_systems(Update, (prepare_environment, update_environment).chain());
         let camera = app
             .world_mut()
             .spawn((
@@ -603,7 +984,15 @@ mod tests {
                 Tonemapping::TonyMcMapface,
             ))
             .id();
-        app.update();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app.world().entity(camera).contains::<EnvironmentMapLight>() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "underwater bake timed out"
+            );
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         let entity = app.world().entity(camera);
         assert!(entity.contains::<EnvironmentMapLight>());
         assert!(
@@ -612,7 +1001,7 @@ mod tests {
         let sky = entity.get::<Skybox>().unwrap().image.clone();
         let image_count = app.world().resource::<Assets<Image>>().len();
         assert_eq!(image_count, 3);
-        assert!(app.world().resource::<EnvironmentCache>().0[0]
+        assert!(app.world().resource::<EnvironmentCache>().entries[0]
             .source
             .is_none());
         app.world_mut().resource_mut::<Appearance>().environment = Environment::Off;
@@ -712,7 +1101,12 @@ mod tests {
             .init_resource::<EnvironmentCache>()
             .add_systems(
                 Update,
-                (crate::scene::sync_glow_camera, update_environment).chain(),
+                (
+                    prepare_environment,
+                    crate::scene::sync_glow_camera,
+                    update_environment,
+                )
+                    .chain(),
             );
         let camera = app
             .world_mut()
@@ -743,15 +1137,20 @@ mod tests {
             );
             assert_eq!(entity.get::<Exposure>().unwrap().ev100, 9.7);
             assert_eq!(entity.get::<Msaa>(), Some(&Msaa::Sample4));
-            assert!(app.world().resource::<EnvironmentCache>().0.is_empty());
+            assert!(app
+                .world()
+                .resource::<EnvironmentCache>()
+                .entries
+                .is_empty());
         }
         // Inject a prepared map to test lifecycle without loading files or starting a renderer.
         app.world_mut()
             .resource_mut::<EnvironmentCache>()
-            .0
+            .entries
             .push(CachedEnvironment {
                 kind: Environment::Sunset,
                 source: None,
+                input: None,
                 failed: false,
                 ready: Some(PreparedEnvironment {
                     sky: default(),
@@ -791,10 +1190,11 @@ mod tests {
         app.update();
         app.world_mut()
             .resource_mut::<EnvironmentCache>()
-            .0
+            .entries
             .push(CachedEnvironment {
                 kind: Environment::Midday,
                 source: None,
+                input: None,
                 ready: None,
                 failed: true,
             });
@@ -809,13 +1209,14 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<Image>>()
             .add(Image::default());
-        app.world_mut().resource_mut::<EnvironmentCache>().0[1].ready = Some(PreparedEnvironment {
-            sky: sky.clone(),
-            light: EnvironmentMapLight::default(),
-            sun: Vec3::Y,
-            sun_color: Color::WHITE,
-            horizon: Color::WHITE,
-        });
+        app.world_mut().resource_mut::<EnvironmentCache>().entries[1].ready =
+            Some(PreparedEnvironment {
+                sky: sky.clone(),
+                light: EnvironmentMapLight::default(),
+                sun: Vec3::Y,
+                sun_color: Color::WHITE,
+                horizon: Color::WHITE,
+            });
         app.update();
         assert_eq!(
             app.world().get::<PreviousCamera>(camera).unwrap().active,

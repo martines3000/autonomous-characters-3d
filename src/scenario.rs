@@ -552,9 +552,18 @@ struct Measurement {
     samples: Vec<f64>,
 }
 
-fn run_scenario(world: &mut World) {
+pub(crate) fn run_scenario(world: &mut World) {
     // A recording is a barrier: later commands (especially exit) wait for every saved PNG.
     if world.resource::<crate::capture::Capture>().active() {
+        return;
+    }
+    // Drain a still before changing the scene or submitting another capture.
+    if world
+        .query_filtered::<Entity, With<Screenshot>>()
+        .iter(world)
+        .next()
+        .is_some()
+    {
         return;
     }
     // This system exists only when AC3D_SCRIPT was supplied; no normal-frame harness overhead.
@@ -569,6 +578,29 @@ fn run_scenario(world: &mut World) {
             .front()
             .is_some_and(|entry| entry.seconds <= now)
         {
+            if matches!(
+                scenario.commands.front().unwrap().command,
+                Command::Screenshot(_) | Command::Record(..)
+            ) {
+                let appearance = world.resource::<Appearance>();
+                if world
+                    .get_resource::<crate::environment::EnvironmentCache>()
+                    .is_some_and(|cache| cache.failed(appearance.environment))
+                {
+                    error!(
+                        "Cannot capture failed {} environment",
+                        appearance.environment.name()
+                    );
+                    world.write_message(AppExit::error());
+                    return;
+                }
+                if !crate::environment::capture_ready(
+                    appearance,
+                    world.get_resource::<crate::environment::EnvironmentCache>(),
+                ) {
+                    break;
+                }
+            }
             let entry = scenario.commands.pop_front().unwrap();
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
@@ -691,6 +723,8 @@ fn run_scenario(world: &mut World) {
                     world
                         .spawn(Screenshot::primary_window())
                         .observe(save_to_disk(path));
+                    // Later environment changes must not overtake this render/readback.
+                    break;
                 }
                 Command::MeasureBegin(label) => {
                     for diagnostic in world
@@ -962,14 +996,60 @@ fn report(world: &mut World, mut measurement: Measurement) {
             .copied()
             .unwrap_or(0.0)
     };
-    info!("AC3D_MEASURE label={} frames={} mean_ms={:.3} p50_ms={:.3} p95_ms={:.3} fps={:.2} resolution={}x{} count={} mode={:?} style={} palette={} shape={} color_mode={} visual_size={} length={} width={}",
-        measurement.label, frames, mean, percentile(0.5), percentile(0.95), if mean > 0.0 { 1000.0 / mean } else { 0.0 },
+    info!("AC3D_MEASURE label={} frames={} mean_ms={:.3} p50_ms={:.3} p95_ms={:.3} max_ms={:.3} fps={:.2} resolution={}x{} count={} mode={:?} style={} palette={} shape={} color_mode={} visual_size={} length={} width={}",
+        measurement.label, frames, mean, percentile(0.5), percentile(0.95), percentile(1.0), if mean > 0.0 { 1000.0 / mean } else { 0.0 },
         resolution.0, resolution.1, state.vehicle_count, state.mode, appearance.style.name(), appearance.palette.name(), appearance.vehicles.shape.name(), appearance.vehicles.color_mode.name(), appearance.vehicles.visual_size, appearance.vehicles.length, appearance.vehicles.width);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_time_captures_wait_for_environment_and_previous_readback() {
+        use crate::environment::Environment;
+        let mut world = World::new();
+        world.init_resource::<crate::capture::Capture>();
+        world.init_resource::<Time<Real>>();
+        world.insert_resource(Appearance {
+            applied_environment: Some(Environment::Off),
+            ..default()
+        });
+        world.insert_resource(Scenario {
+            commands: parse("0 set environment sunset\n0 screenshot /tmp/ac3d-bake-barrier.png\n0 set environment underwater\n0 record /tmp/ac3d-bake-barrier-video 1 30").unwrap().into(),
+            measurement: None,
+        });
+        run_scenario(&mut world);
+        assert_eq!(world.resource::<Scenario>().commands.len(), 3);
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<Screenshot>>()
+                .iter(&world)
+                .count(),
+            0
+        );
+        world.resource_mut::<Appearance>().applied_environment = Some(Environment::Sunset);
+        run_scenario(&mut world);
+        let still = world
+            .query_filtered::<Entity, With<Screenshot>>()
+            .single(&world)
+            .unwrap();
+        assert_eq!(world.resource::<Scenario>().commands.len(), 2);
+        run_scenario(&mut world);
+        assert_eq!(
+            world.resource::<Appearance>().environment,
+            Environment::Sunset
+        );
+        world.despawn(still); // Simulate the first image having been saved.
+        run_scenario(&mut world);
+        assert_eq!(world.resource::<Scenario>().commands.len(), 1);
+        assert!(!world.resource::<crate::capture::Capture>().active());
+        // A record command follows the same readiness barrier without creating files yet.
+        assert_eq!(
+            world.resource::<Appearance>().environment,
+            Environment::Underwater
+        );
+    }
 
     #[test]
     fn motion_blur_and_shutter_parse_validate_and_apply() {

@@ -118,10 +118,9 @@ pub(crate) fn sync_volumetric(
     volumes: Query<Entity, With<EnvironmentFog>>,
     fills: Query<(Entity, &Visibility, Option<&PreviousFillVisibility>), With<FillLight>>,
 ) {
-    // Do not scatter into a missing/failed environment while its HDRI loads.
-    // During environment switches the old Skybox can survive until the new HDRI is ready.
-    // update_environment sets sun illuminance to zero during that wait. Do not cache
-    // columns using the previous environment's sun direction.
+    // Do not scatter before the first environment has a sky and a lit sun.
+    // Pending switches retain the applied environment and its sun, so existing
+    // columns remain valid until update_environment installs the complete new look.
     let active = appearance.volumetric_active()
         && cameras.iter().any(|(_, sky, _)| sky)
         && suns.iter().any(|(_, _, sun, _)| sun.illuminance > 0.0);
@@ -171,8 +170,8 @@ pub(crate) fn sync_volumetric(
     } else if volumes.is_empty() || appearance.is_changed() || state.is_changed() {
         // A FogVolume is a unit cube; bound the central flock rather than the entire world.
         let transform = Transform::from_scale(vehicle::walls(state.vehicle_count) * 1.2);
-        let mut fog = medium(appearance.environment, state.vehicle_count);
-        let texture = match appearance.environment {
+        let mut fog = medium(appearance.active_environment(), state.vehicle_count);
+        let texture = match appearance.active_environment() {
             Environment::Underwater => Some(&mut particles.water),
             Environment::Sunset => Some(&mut particles.sunset),
             _ => None,
@@ -197,6 +196,52 @@ pub(crate) fn sync_volumetric(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_switch_keeps_applied_medium_and_particle_columns() {
+        let mut app = App::new();
+        app.insert_resource(Appearance {
+            environment: Environment::Sunset,
+            applied_environment: Some(Environment::Underwater),
+            volumetric: true,
+            ..default()
+        })
+        .init_resource::<GlobalState>()
+        .init_resource::<Assets<Image>>()
+        .init_resource::<EnvironmentParticles>()
+        .add_systems(Update, sync_volumetric);
+        app.world_mut()
+            .spawn((Camera3d::default(), Skybox::default()));
+        app.world_mut().spawn((
+            KeyLight,
+            DirectionalLight {
+                illuminance: 9000.0,
+                ..default()
+            },
+            Transform::from_translation(Vec3::Y).looking_at(Vec3::ZERO, Vec3::Z),
+        ));
+        app.update();
+        let particles = app.world().resource::<EnvironmentParticles>();
+        let water = particles.water.clone().unwrap();
+        assert!(particles.sunset.is_none());
+        let mut volumes = app.world_mut().query::<&FogVolume>();
+        let fog = volumes.single(app.world()).unwrap();
+        assert_eq!(fog.density_texture.as_ref(), Some(&water));
+        assert_eq!(
+            fog.fog_color,
+            medium(Environment::Underwater, 20_000).fog_color
+        );
+
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .applied_environment = Some(Environment::Sunset);
+        app.update();
+        let particles = app.world().resource::<EnvironmentParticles>();
+        let sunset = particles.sunset.as_ref().unwrap();
+        let fog = volumes.single(app.world()).unwrap();
+        assert_eq!(fog.density_texture.as_ref(), Some(sunset));
+        assert_eq!(fog.fog_color, medium(Environment::Sunset, 20_000).fog_color);
+    }
 
     #[test]
     fn default_has_no_volumetric_components_and_environment_off_stays_inert() {

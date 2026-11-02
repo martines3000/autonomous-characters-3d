@@ -205,7 +205,8 @@ struct AppearanceUniform {
 impl AppearanceUniform {
     fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
         let look = appearance.style.settings();
-        let underwater = appearance.environment == crate::environment::Environment::Underwater;
+        let underwater =
+            appearance.active_environment() == crate::environment::Environment::Underwater;
         Self {
             history: UVec4::ZERO,
             colors: appearance.palette.colors(),

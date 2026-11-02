@@ -1,0 +1,20 @@
+# Paused same-time pairs must match, including first-selection shader/asset readiness.
+# Use a fresh /tmp/ac3d-env-captures directory: record refuses existing frames.
+0 present immediate
+0 ui off
+0 pause
+0 set auto_frame off
+1 screenshot /tmp/ac3d-env-captures/off-before.png
+1 set environment sunset
+1 screenshot /tmp/ac3d-env-captures/sunset.png
+1 screenshot /tmp/ac3d-env-captures/sunset-settled.png
+1 set environment midday
+1 screenshot /tmp/ac3d-env-captures/midday.png
+1 screenshot /tmp/ac3d-env-captures/midday-settled.png
+1 set environment underwater
+1 screenshot /tmp/ac3d-env-captures/underwater.png
+1 screenshot /tmp/ac3d-env-captures/underwater-settled.png
+1 record /tmp/ac3d-env-captures/video 3 30
+1 set environment off
+1 screenshot /tmp/ac3d-env-captures/off-after.png
+1 exit

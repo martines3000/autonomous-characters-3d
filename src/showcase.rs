@@ -190,6 +190,10 @@ impl Showcase {
 /// the existing count/backend systems; selecting a showcase does not reset retained boids.
 pub(crate) fn apply(world: &mut World, showcase: Showcase) {
     let mut settings = showcase.settings();
+    // The applied look belongs to the environment runtime, not the preset.
+    settings.appearance.applied_environment = world
+        .get_resource::<Appearance>()
+        .and_then(|appearance| appearance.applied_environment);
     // Invalidate old asynchronous camera samples even when switching between Director scenes.
     settings
         .presentation
@@ -260,6 +264,17 @@ mod tests {
         world.insert_resource(Presentation::default());
         world.insert_resource(SwarmScene::default());
         world
+    }
+
+    #[test]
+    fn presets_preserve_applied_environment_while_requesting_a_new_one() {
+        let mut world = world();
+        world.resource_mut::<Appearance>().applied_environment = Some(Environment::Sunset);
+        apply(&mut world, Showcase::Swallow);
+        let appearance = world.resource::<Appearance>();
+        assert_eq!(appearance.environment, Environment::Midday);
+        assert_eq!(appearance.active_environment(), Environment::Sunset);
+        assert!(!appearance.environment_ready());
     }
 
     fn assert_settings(world: &World, expected: &ShowcaseSettings) {
