@@ -1139,6 +1139,122 @@ mod tests {
 
     #[test]
     #[ignore = "requires a real GPU device"]
+    fn gpu_previous_transforms_toggle_history_without_changing_flock_or_arena_prefix() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let state = GlobalState {
+            vehicle_count: 600,
+            groups: crate::swarm::Groups {
+                count: 3,
+                ..default()
+            },
+            ..default()
+        };
+        let mut scene = SwarmScene::default();
+        scene.add_obstacle(Vec3::X * 10.0, 8.0);
+        scene.predators.add(Vec3::Y * 20.0, 20.0);
+        scene
+            .formation
+            .set_mode(crate::formation::FormationMode::Sphere);
+        let predators = PredatorFrame::default().advance(
+            &scene.predators,
+            state.vehicle_count,
+            Vec3::ZERO,
+            &default(),
+        );
+        let formation = FormationFrame {
+            settings: scene.formation,
+            ..default()
+        };
+        for cap in [0, 16] {
+            let mut flock = GpuFlock::new(&device);
+            flock.set_scene(&scene);
+            flock.set_predators(&predators);
+            let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0)
+                .with_scene(&scene)
+                .with_formation(&formation, cap)
+                .with_predators(&predators);
+            params.track = UVec4::new(2, 7, 123, 0);
+            gpu_step(&mut flock, &device, &queue, &params);
+            let before = flock.read_boids(&device, &queue);
+            let instances = flock.read_instances(&device, &queue);
+            let (without_history, prefix) = flock.read_arena_prefix(&device, &queue);
+            let capacity = state.vehicle_count.next_power_of_two() as u64;
+            assert_eq!(without_history, capacity * 40 + (24 + 32 + 5) * 16);
+            assert_ne!(flock.read_track(&device, &queue)[4].z, 0);
+            assert!(flock
+                .read_formation_ranges(&device, &queue)
+                .iter()
+                .any(|r| r.y > 0));
+            params.dt = 0.0;
+            params.track.x = 0;
+            for history in [true, false, true, false] {
+                params.motion.w = if history { 0.0 } else { -1.0 };
+                gpu_step(&mut flock, &device, &queue, &params);
+                let (size, after_prefix) = flock.read_arena_prefix(&device, &queue);
+                assert_eq!(after_prefix, prefix);
+                assert_eq!(
+                    size,
+                    without_history + if history { capacity * 64 } else { 0 }
+                );
+                let after = flock.read_boids(&device, &queue);
+                assert_eq!(after, before);
+                for (a, b) in after.iter().zip(&before) {
+                    assert_eq!(
+                        a.state.map(|v| v.to_array().map(f32::to_bits)),
+                        b.state.map(|v| v.to_array().map(f32::to_bits)),
+                    );
+                }
+                assert_eq!(flock.read_instances(&device, &queue), instances);
+                if history {
+                    for (boid, pose) in after.iter().zip(flock.read_previous(&device, &queue)) {
+                        assert_eq!(pose[0], boid[0].truncate().extend(0.0));
+                        assert_eq!(pose[1], boid[2]);
+                    }
+                    println!("cap={cap}: arena without history={without_history} bytes, with history={size} bytes");
+                }
+            }
+            // Scene edits on the same submission must follow the copied old prefix.
+            scene.obstacles[0].center += Vec3::Z;
+            flock.set_scene(&scene);
+            let mut changed_predators = predators;
+            changed_predators.samples[0][0].position += Vec3::Z;
+            flock.set_predators(&changed_predators);
+            params.motion.w = 0.0;
+            gpu_step(&mut flock, &device, &queue, &params);
+            assert_eq!(
+                flock.read_obstacle_records(&device, &queue).0,
+                scene.obstacle_records()
+            );
+            assert_eq!(
+                flock.read_predators(&device, &queue).0,
+                changed_predators.records()
+            );
+            // Match the render path: enable during four live substeps, then reset once
+            // at the end of that rendered frame, using the final sorted order map.
+            params.motion.w = -1.0;
+            gpu_step(&mut flock, &device, &queue, &params);
+            params.dt = 1.0 / 60.0;
+            let mut encoder = device.create_command_encoder(&default());
+            for substep in 0..4 {
+                params.motion.w = substep as f32;
+                flock.encode(&device, &queue, &mut encoder, &params);
+            }
+            flock.reset_history(&mut encoder);
+            queue.submit([encoder.finish()]);
+            for (boid, pose) in flock
+                .read_boids(&device, &queue)
+                .iter()
+                .zip(flock.read_previous(&device, &queue))
+            {
+                assert_eq!(pose[0], boid[0].truncate().extend(0.0));
+                assert_eq!(pose[1], boid[2]);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real GPU device"]
     fn gpu_previous_transforms_follow_identity_across_sorts_and_multiple_substeps() {
         use crate::gpu_flock::{gpu_params, GpuFlock};
         let (device, queue) = gpu_device();

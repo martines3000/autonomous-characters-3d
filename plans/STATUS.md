@@ -44,6 +44,7 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Lazy motion-blur history](completed/2026-11-03-lazy-blur-history.md) (2026-11-02): allocate only for motion-vector views, shrink on disable, preserve the arena prefix and initialize zero-motion poses; saves 64 MiB at 1M boids; 185 release and 17 GPU tests pass.
 - [Species behaviors and Hide UI](completed/2026-11-02-species-and-hide-ui.md) (2026-11-02): H/Hide UI toggle; six named fish/bird behaviors with their models; detailed slider sections start collapsed; all species hold 60 FPS at 4K.
 - [Low-poly hero models](completed/2026-11-02-hero-models.md) (2026-11-02): owner-approved low-poly swallow, plus matching fish and starling, each under 300 triangles with a rigid loop; Swallow/Fish/Starling presets load them asynchronously. 182 release tests pass; seven baseline Clippy warnings.
 - [Volumetric environment lighting](completed/2026-11-02-volumetric-light.md) (2026-11-02): optional environment-tuned shafts, capped flock occlusion, 16–128 ray steps and subtle sun glare; Glow/defaults preserved. 175 release and 15 GPU tests pass; seven baseline Clippy warnings; eight paired captures and exact Off round trip.

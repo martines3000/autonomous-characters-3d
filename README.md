@@ -471,8 +471,12 @@ even during live camera orbit. Off restores the previous camera prepasses and fl
 CPU poses are saved before the frame's first substep. GPU history follows metadata identity through
 sorting and retains the frame-start pose across speed substeps; GPU boids remain 64 bytes and
 instances 48 bytes. A parallel 32-byte transform stream supplies previous poses. GPU history and
-output share the metadata arena (64 extra bytes per capacity slot); the output is bound directly
-as a vertex stream, without a copy. History writes skip views without motion vectors.
+output share the metadata arena (64 extra bytes per capacity slot, or 64 MiB at one million
+boids after capacity rounding); the output is bound directly as a vertex stream, without a copy.
+The tail is allocated only for motion-vector views and freed immediately when blur turns off.
+Toggling copies the existing arena prefix without respawning boids; the first enabled frame
+initializes previous poses to current poses, including while paused. History writes skip views
+without motion vectors. Unchanged frames add no dispatch or copy.
 Both poses use the current animation/procedural deformation, so wing/tail deformation itself adds
 no velocity. Fixed-step `record` uses displacement over each output frame; Bevy multiplies this by
 the shutter fraction, without a wall-time delta. Readback waits hold both poses and camera still.

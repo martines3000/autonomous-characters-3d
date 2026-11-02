@@ -714,6 +714,23 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
 }
 
+// Only dispatched when a new history tail needs current poses (zero initial flock motion).
+@compute @workgroup_size(256)
+fn initialize_history(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let i = invocation.x;
+    if i >= params.count { return; }
+    let boid = boids[i];
+    var base = params.groups.z;
+    if params.dt > 0.0 { base = stepped_order_base(); }
+    let record = read_order(base, i);
+    let history = params.obstacles.z + record * 2u;
+    let output = params.obstacles.w + i * 2u;
+    arena[history] = bitcast<vec4<u32>>(vec4<f32>(boid.position, 0.0));
+    arena[history + 1u] = bitcast<vec4<u32>>(boid.rotation);
+    arena[output] = arena[history];
+    arena[output + 1u] = arena[history + 1u];
+}
+
 // Optional camera sample. No invocation or arena write when camera following is off.
 @compute @workgroup_size(256)
 fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
