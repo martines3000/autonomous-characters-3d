@@ -1114,6 +1114,8 @@ CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::wall_containmen
 # Optional GPU_BENCH_CLASSIC_HEADING=1: use the exact legacy rotation branch.
 # Optional GPU_BENCH_TRACK=1: include the boid-camera track kernel (no CPU readback).
 # Optional GPU_BENCH_PREDATORS=0 (default) or 1..4: orbiting fields, including 512-byte/frame uploads.
+# Optional GPU_BENCH_HUNTERS=0 (default) or 1..16: one hunter group, default size/speed.
+# Hunters occupy group 1 and activate at least two groups; zero preserves the existing setup.
 # GPU_BENCH_COMBINED=1 enables groups 2, four spheres, sphere formation, attractor and four predators.
 # Optional GPU_BENCH_WARMUP=1..6000 (default 600); 3540 plus 60 timed steps gives 60 simulated seconds.
 # The benchmark prints device limits and formation slot convergence after its simulated steps.
@@ -1126,6 +1128,10 @@ CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::flocking_benchm
 The GPU benchmark warms up 600 steps at 1/60 s, then times 60 steps (encode, submit and wait). It
 prints median/p95 times, spacing and speed. Steps over 250 ms end a case early. Benchmark on an idle
 machine: check `uptime` and repeat runs.
+
+With 16 hunters, 1M wander costs about 31–35 ms per step instead of about 5.4 ms with two groups and
+no hunters; follow mode and the 30–40k presets are barely affected. The nearest-prey search is not the
+cause. See the [hunter scaling plan](plans/completed/2026-11-03-hunter-scaling.md).
 
 Optional tools:
 - `cargo-deny` (`cargo install --locked --version 0.20.2 cargo-deny`):
