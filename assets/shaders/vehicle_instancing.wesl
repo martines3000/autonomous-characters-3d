@@ -1,9 +1,18 @@
 // One instance per vehicle; lit with Bevy's PBR functions so scene lights and fog apply.
 import bevy_pbr::render::{
     view_transformations::position_world_to_clip,
+    mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
     pbr_types::{pbr_input_new, STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT},
     pbr_functions::{apply_pbr_lighting, calculate_view, main_pass_post_lighting_processing},
 };
+
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION)
+import bevy_pbr::render::mesh_view_bindings::{screen_space_ambient_occlusion_texture, view};
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION)
+import bevy_pbr::ssao::utils::ssao_multibounce;
+@if(FLOCK_MOTION) import bevy_pbr::prepass::bindings::previous_view_uniforms;
+@if(FLOCK_MOTION) import bevy_pbr::render::mesh_view_bindings::view as motion_view;
+@if(UNDERWATER) import super::underwater_caustics::caustics;
 
 struct Appearance {
     colors: array<vec4<f32>, 7>,
@@ -13,6 +22,8 @@ struct Appearance {
     proportions: vec4<f32>,
     solid_color: vec4<f32>,
     group_colors: array<vec4<f32>, 8>,
+    motion: vec4<f32>,
+    history: vec4<u32>,
 };
 @group(3) @binding(0) var<uniform> appearance: Appearance;
 
@@ -22,11 +33,13 @@ struct Animation { playback: vec4<f32>, geometry: vec4<u32> };
 @group(3) @binding(2) var<uniform> animation: Animation;
 
 struct Vertex {
+    @if(FLOCK_MOTION) @location(11) previous_position: vec4<f32>,
+    @if(FLOCK_MOTION) @location(12) previous_rotation: vec4<f32>,
     @if(ANIMATED)
     @builtin(vertex_index) index: u32,
     @if(MODEL_MATERIALS)
     @location(6) material: vec2<f32>,
-    @if(ANIMATED)
+    @if(ANIMATED || PROCEDURAL)
     @location(10) phase: vec4<f32>,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -39,10 +52,15 @@ struct Vertex {
 };
 
 struct VertexOutput {
+    @if(FLOCK_MOTION) @location(6) previous_world: vec4<f32>,
     @builtin(position) clip_position: vec4<f32>,
+    @if(FLOCK_SHADOW)
+    @location(5) unclipped_depth: f32,
     @location(0) world_position: vec4<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @if(GLOW)
+    @location(4) glow_emission: f32,
     @if(MODEL_MATERIALS)
     @location(3) material: vec2<f32>,
 };
@@ -100,12 +118,58 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         let mixed_normal = mix(a.normal.xyz, b.normal.xyz, fraction);
         normal = select(mixed_normal, a.normal.xyz, dot(mixed_normal, mixed_normal) < 1e-12);
     }
+    @if(PROCEDURAL) {
+        let proc_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        let proc_phase = vertex.phase.x * 6.2831853;
+        let proc_time = appearance.motion.x;
+        let proc_amplitude = appearance.motion.y;
+        let proc_gain = appearance.motion.z;
+        if appearance.modes.w == 2u {
+            // Lateral swim wave: no displacement at the nose, maximum at the tail.
+            let swim_tail = clamp((1.25 - position.y) / 2.5, 0.0, 1.0);
+            // Half a wavelength over the body reads as a fish; more looks like a zigzag.
+            let swim_k = 3.1415927;
+            let swim_amplitude = proc_amplitude * 0.5;
+            let swim_angle = swim_k * swim_tail - 6.2831853 * (1.2 + 2.0 * proc_gain * proc_speed) * proc_time + proc_phase;
+            let swim_sin = sin(swim_angle);
+            let swim_derivative = -0.4 * swim_amplitude * (2.0 * swim_tail * swim_sin + swim_tail * swim_tail * swim_k * cos(swim_angle));
+            position.x += swim_amplitude * swim_tail * swim_tail * swim_sin;
+            normal.y -= swim_derivative * normal.x;
+        } else {
+            // Body stays fixed inside |x| <= 0.15. Chevron uses one quarter amplitude.
+            let flap_amount = proc_amplitude * select(1.0, 0.25, appearance.modes.w == 3u);
+            let flap_wave = sin(6.2831853 * (1.6 + 2.4 * proc_gain * proc_speed) * proc_time + proc_phase);
+            let flap_weight = max(abs(position.x) - 0.15, 0.0);
+            let flap_slope = select(0.0, sign(position.x) * flap_amount * flap_wave, abs(position.x) > 0.15);
+            position.z += flap_amount * flap_weight * flap_wave;
+            normal.x -= flap_slope * normal.z;
+        }
+    }
+    @if(GLOW) {
+        let streak_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        let stretch = 1.0 + appearance.shading.w * streak_speed;
+        position.y *= stretch;
+        normal.y /= stretch;
+    }
     let q = vertex.i_rotation;
     let world = rotate(q, position * appearance.proportions.xyz * appearance.material.w) + vertex.i_position_speed_group.xyz;
     var out: VertexOutput;
+    @if(GLOW) {
+        let glow_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
+        out.glow_emission = appearance.shading.y + appearance.shading.z * glow_speed * glow_speed;
+    }
     @if(MODEL_MATERIALS) { out.material = vertex.material; }
+    @if(FLOCK_MOTION) {
+        // Reuse current deformation for both poses: no animation-only velocity.
+        let previous = rotate(vertex.previous_rotation, position * appearance.proportions.xyz * appearance.material.w) + vertex.previous_position.xyz;
+        out.previous_world = vec4<f32>(previous, 1.0);
+    }
     out.world_position = vec4<f32>(world, 1.0);
     out.clip_position = position_world_to_clip(world);
+    @if(FLOCK_SHADOW) {
+        out.unclipped_depth = out.clip_position.z;
+        out.clip_position.z = min(out.clip_position.z, 1.0);
+    }
     // Inverse-transpose of the non-uniform local scale, then rotation; fragment normalizes it.
     out.world_normal = rotate(q, normal / appearance.proportions.xyz);
     // The cone's apex points along local +Y, so that is the heading.
@@ -146,9 +210,50 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     pbr_input.world_position = in.world_position;
     pbr_input.world_normal = normalize(in.world_normal);
     pbr_input.N = pbr_input.world_normal;
+    @if(FLOCK_SHADOW_RECEIVER) { pbr_input.flags |= MESH_FLAGS_SHADOW_RECEIVER_BIT; }
     pbr_input.V = calculate_view(in.world_position, false);
+    @if(SCREEN_SPACE_AMBIENT_OCCLUSION) {
+        let texel = vec2<i32>(in.clip_position.xy - view.viewport.xy);
+        let ao = textureLoad(screen_space_ambient_occlusion_texture, texel, 0i).r;
+        pbr_input.diffuse_occlusion = ssao_multibounce(ao, in.color);
+        let roughness = pbr_input.material.perceptual_roughness * pbr_input.material.perceptual_roughness;
+        let ndotv = max(dot(pbr_input.N, pbr_input.V), 0.0001);
+        pbr_input.specular_occlusion = clamp(pow(ndotv + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    }
+    // ENVIRONMENT_MAP comes from MeshPipelineKey; Bevy applies diffuse/specular IBL and the sun here.
     var lit = apply_pbr_lighting(pbr_input);
     let edge = 1.0 - clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     lit = vec4<f32>(lit.rgb + in.color * (edge * edge * appearance.material.z + appearance.shading.x), lit.a);
+    @if(GLOW) { lit = vec4<f32>(lit.rgb + in.color * in.glow_emission, lit.a); }
+    @if(UNDERWATER) {
+        let caustic = caustics(in.world_position.xyz, pbr_input.N, appearance.motion.x, appearance.proportions.w);
+        lit = vec4<f32>(lit.rgb * (1.0 + caustic * 3.5) + caustic * 0.18, lit.a);
+    }
     return main_pass_post_lighting_processing(pbr_input, lit);
+}
+
+// Both depth passes run the same vertex entry point, including every deformation.
+@if(FLOCK_NORMAL || FLOCK_MOTION || FLOCK_SHADOW)
+struct DepthOutput {
+    @if(FLOCK_MOTION) @location(1) motion: vec2<f32>,
+    @if(FLOCK_NORMAL)
+    @location(0) normal: vec4<f32>,
+    @if(FLOCK_SHADOW)
+    @builtin(frag_depth) depth: f32,
+};
+@if(FLOCK_NORMAL || FLOCK_MOTION || FLOCK_SHADOW)
+@fragment
+fn depth_fragment(in: VertexOutput) -> DepthOutput {
+    var out: DepthOutput;
+    @if(FLOCK_MOTION) {
+        let current = motion_view.unjittered_clip_from_world * in.world_position;
+        let previous = previous_view_uniforms.unjittered_clip_from_world * in.previous_world;
+        out.motion = vec2<f32>(0.0);
+        if appearance.history.x == 0u && abs(current.w) > 1e-6 && abs(previous.w) > 1e-6 {
+            out.motion = (current.xy / current.w - previous.xy / previous.w) * vec2<f32>(0.5, -0.5);
+        }
+    }
+    @if(FLOCK_NORMAL) { out.normal = vec4<f32>(normalize(in.world_normal) * 0.5 + vec3<f32>(0.5), 1.0); }
+    @if(FLOCK_SHADOW) { out.depth = in.unclipped_depth; }
+    return out;
 }

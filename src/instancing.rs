@@ -7,15 +7,26 @@
 use std::sync::Arc;
 
 use bevy::{
-    core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d},
+    core_pipeline::{
+        core_3d::{
+            Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d, TransparentSortingInfo3d,
+            CORE_3D_DEPTH_FORMAT,
+        },
+        prepass::{
+            prepass_target_descriptors, DepthPrepass, MotionVectorPrepass, NormalPrepass,
+            Opaque3dPrepass, OpaqueNoLightmap3dBatchSetKey, OpaqueNoLightmap3dBinKey,
+        },
+    },
     ecs::{
         query::QueryItem,
         system::{lifetimeless::SRes, SystemParamItem},
     },
     mesh::{MeshVertexBufferLayoutRef, VertexBufferLayout},
     pbr::{
-        MeshPipeline, MeshPipelineKey, MeshPipelineSystems, RenderMeshInstances, SetMeshBindGroup,
-        SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup, ViewKeyCache,
+        MeshPipeline, MeshPipelineKey, MeshPipelineSystems, PrepassPipeline, RenderMeshInstances,
+        SetMeshBindGroup, SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup,
+        SetPrepassViewBindGroup, SetPrepassViewEmptyBindGroup, Shadow, ShadowBatchSetKey,
+        ShadowBinKey, ShadowView, ViewKeyCache,
     },
     prelude::*,
     render::{
@@ -24,8 +35,9 @@ use bevy::{
         mesh::{allocator::MeshAllocator, RenderMesh, RenderMeshBufferInfo},
         render_asset::RenderAssets,
         render_phase::{
-            AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-            RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
+            AddRenderCommand, BinnedRenderPhaseType, DrawFunctions, PhaseItem, PhaseItemExtraIndex,
+            RenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass,
+            ViewBinnedRenderPhases, ViewSortedRenderPhases,
         },
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -53,7 +65,7 @@ pub type InstanceData = [Vec4; 3];
 
 /// Instance data for every vehicle, drawn with this entity's `Mesh3d`.
 #[derive(Component, Default, Clone)]
-pub struct VehicleInstances(pub Vec<InstanceData>);
+pub struct VehicleInstances(pub Vec<InstanceData>, pub Vec<[Vec4; 2]>);
 
 impl SyncComponent<RenderApp> for VehicleInstances {
     type Target = Self;
@@ -80,31 +92,88 @@ impl Default for FlockDraw {
     }
 }
 
+/// Extract only render policy; simulation and instance layouts remain untouched.
+#[derive(Resource, ExtractResource, Clone, Default)]
+#[extract_app(RenderApp)]
+struct FlockRenderSettings {
+    shadows: bool,
+    opaque: bool,
+    count: usize,
+    cap: usize,
+}
+impl FlockRenderSettings {
+    fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
+        Self {
+            shadows: appearance.effective_shadows(),
+            opaque: appearance.effective_shadows() || appearance.ambient_occlusion,
+            count: state.vehicle_count,
+            cap: appearance.shadow_cap,
+        }
+    }
+    fn casts_shadows(&self) -> bool {
+        self.shadows && self.count > 0 && self.count <= self.cap
+    }
+}
+fn update_render_settings(
+    appearance: Res<Appearance>,
+    state: Res<GlobalState>,
+    mut settings: ResMut<FlockRenderSettings>,
+    presentation: Res<crate::presentation::Presentation>,
+) {
+    *settings = FlockRenderSettings::from_settings(&appearance, &state);
+    settings.opaque |= presentation.motion_blur;
+}
+
 pub struct InstancingPlugin;
 
 impl Plugin for InstancingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AppearanceUniform>()
             .init_resource::<FlockDraw>()
+            .init_resource::<FlockRenderSettings>()
             .init_resource::<AnimationRender>()
             .add_plugins((
                 ExtractComponentPlugin::<VehicleInstances>::default(),
                 ExtractResourcePlugin::<AppearanceUniform>::default(),
                 ExtractResourcePlugin::<FlockDraw>::default(),
+                ExtractResourcePlugin::<FlockRenderSettings>::default(),
                 ExtractResourcePlugin::<AnimationRender>::default(),
             ))
-            .add_systems(PostUpdate, (update_appearance, update_animation));
+            .add_systems(
+                PostUpdate,
+                (update_appearance, update_animation, update_render_settings),
+            );
 
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawInstanced>()
+            .add_render_command::<Opaque3d, DrawInstancedOpaque>()
+            .add_render_command::<Opaque3dPrepass, DrawInstancedDepth>()
+            .add_render_command::<Shadow, DrawInstancedDepth>()
+            .init_resource::<SpecializedMeshPipelines<InstancingDepthPipeline>>()
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
-            .insert_resource(InstanceBuffer(RawBufferVec::new(BufferUsages::VERTEX)))
+            .insert_resource(InstanceBuffer(
+                RawBufferVec::new(BufferUsages::VERTEX),
+                RawBufferVec::new(BufferUsages::VERTEX),
+            ))
             .init_resource::<FlockInstances>()
-            .add_systems(RenderStartup, init_pipeline.after(MeshPipelineSystems))
+            .add_systems(
+                RenderStartup,
+                init_pipeline
+                    .after(MeshPipelineSystems)
+                    .after(bevy::pbr::init_prepass_pipeline),
+            )
             .add_systems(
                 Render,
                 (
-                    queue_instanced.in_set(RenderSystems::QueueMeshes),
+                    // Stock queues remove dirty Mesh3d entries before checking materials.
+                    // Run afterwards so they cannot erase our material-free flock bins.
+                    queue_instanced
+                        .in_set(RenderSystems::QueueMeshes)
+                        .after(bevy::pbr::queue_material_meshes),
+                    queue_instanced_depth
+                        .in_set(RenderSystems::QueueMeshes)
+                        .after(bevy::pbr::queue_prepass_material_meshes)
+                        .after(bevy::pbr::queue_shadows),
                     prepare_instance_buffer.in_set(RenderSystems::PrepareResources),
                     prepare_appearance.in_set(RenderSystems::PrepareBindGroups),
                 ),
@@ -119,20 +188,26 @@ struct AppearanceUniform {
     colors: [Vec4; 7],
     // roughness, metallic, rim strength, render-only scale.
     material: Vec4,
-    // emission strength, reserved for later shading parameters.
+    // Base emission, Glow minimum/additional emission, Glow forward stretch coefficient.
     shading: Vec4,
-    // palette (0 = original HSV), color mode (0 = heading), reserved, reserved.
+    // palette (0 = original HSV), color mode (0 = heading), Glow specialization flag, reserved.
     modes: UVec4,
     // width, length, width, altitude half-height.
     proportions: Vec4,
     solid_color: Vec4,
     group_colors: [Vec4; crate::swarm::MAX_GROUPS],
+    // simulated seconds, procedural amplitude, speed-frequency gain, underwater specialization.
+    motion: Vec4,
+    // x: pause; camera motion must also produce zero flock vectors while paused.
+    history: UVec4,
 }
 
 impl AppearanceUniform {
     fn from_settings(appearance: &Appearance, state: &GlobalState) -> Self {
         let look = appearance.style.settings();
+        let underwater = appearance.environment == crate::environment::Environment::Underwater;
         Self {
+            history: UVec4::ZERO,
             colors: appearance.palette.colors(),
             material: Vec4::new(
                 look.roughness,
@@ -140,13 +215,33 @@ impl AppearanceUniform {
                 look.rim,
                 state.vehicle_size * appearance.vehicles.visual_size,
             ),
-            shading: Vec4::new(look.emission, 0.0, 0.0, 0.0),
+            shading: if appearance.style == crate::scene::SceneStyle::Glow {
+                let floor = crate::vehicle_appearance::emissive_curve(0.0, appearance.glow);
+                Vec4::new(
+                    look.emission,
+                    floor,
+                    crate::vehicle_appearance::emissive_curve(1.0, appearance.glow) - floor,
+                    crate::vehicle_appearance::streak_scale(1.0, appearance.streak) - 1.0,
+                )
+            } else {
+                Vec4::new(look.emission, 0.0, 0.0, 0.0)
+            },
             modes: UVec4::new(
                 u32::from(appearance.palette != HeadingPalette::Classic),
                 appearance.vehicles.color_mode as u32,
-                0,
-                0,
+                u32::from(appearance.style == crate::scene::SceneStyle::Glow),
+                state.motion.procedural_kind(appearance.vehicles.shape),
             ),
+            motion: if state.motion.procedural_kind(appearance.vehicles.shape) != 0 {
+                Vec4::new(
+                    0.0,
+                    state.motion.flap,
+                    state.motion.frequency,
+                    f32::from(underwater),
+                )
+            } else {
+                Vec4::new(0.0, 0.0, 0.0, f32::from(underwater))
+            },
             proportions: Vec4::new(
                 appearance.vehicles.width,
                 appearance.vehicles.length,
@@ -173,9 +268,21 @@ fn update_appearance(
     appearance: Res<Appearance>,
     state: Res<GlobalState>,
     mut uniform: ResMut<AppearanceUniform>,
+    clock: Option<Res<crate::presentation::SimulationClock>>,
+    presentation: Option<Res<crate::presentation::Presentation>>,
 ) {
-    if appearance.is_changed() || state.is_changed() {
-        uniform.set_if_neq(AppearanceUniform::from_settings(&appearance, &state));
+    if appearance.is_changed()
+        || state.is_changed()
+        || uniform.modes.w != 0
+        || uniform.motion.w != 0.0
+        || presentation.as_ref().is_some_and(|p| p.is_changed())
+    {
+        let mut next = AppearanceUniform::from_settings(&appearance, &state);
+        next.history.x = u32::from(presentation.as_ref().is_some_and(|p| p.paused));
+        if next.modes.w != 0 || next.motion.w != 0.0 {
+            next.motion.x = clock.as_ref().map_or(0.0, |c| c.elapsed_secs());
+        }
+        uniform.set_if_neq(next);
     }
 }
 
@@ -308,11 +415,12 @@ fn prepare_appearance(
 pub(crate) struct FlockInstances {
     pub buffer: Option<Buffer>,
     pub count: u32,
+    pub previous: Option<(Buffer, u64)>,
 }
 
 // Reused across frames; it grows only when the flock outgrows it.
 #[derive(Resource)]
-struct InstanceBuffer(RawBufferVec<InstanceData>);
+struct InstanceBuffer(RawBufferVec<InstanceData>, RawBufferVec<[Vec4; 2]>);
 
 fn prepare_instance_buffer(
     flocks: Query<&VehicleInstances>,
@@ -326,19 +434,30 @@ fn prepare_instance_buffer(
         return;
     }
     buffer.0.clear();
+    buffer.1.clear();
     for flock in &flocks {
         buffer.0.extend(flock.0.iter().copied());
+        buffer.1.extend(flock.1.iter().copied());
     }
     buffer.0.write_buffer(&device, &queue);
+    buffer.1.write_buffer(&device, &queue);
     *draw = FlockInstances {
         buffer: buffer.0.buffer().cloned(),
+        previous: buffer.1.buffer().cloned().map(|buffer| (buffer, 0)),
         count: buffer.0.len() as u32,
     };
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn queue_instanced(
     draw: Res<FlockDraw>,
+    settings: Res<FlockRenderSettings>,
+    (opaque_functions, mut opaque_phases, allocator): (
+        Res<DrawFunctions<Opaque3d>>,
+        ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+        Res<MeshAllocator>,
+    ),
+    mut previous: Local<Vec<MainEntity>>,
     animation: Res<AnimationRender>,
     draw_functions: Res<DrawFunctions<Transparent3d>>,
     pipeline: Res<InstancingPipeline>,
@@ -350,7 +469,16 @@ fn queue_instanced(
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<&ExtractedView>,
     view_key_cache: Res<ViewKeyCache>,
+    appearance: Res<AppearanceUniform>,
 ) {
+    // Binned entries persist. Remove our previous entries even when disabled or despawned.
+    for phase in opaque_phases.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    previous.clear();
+    previous.extend(flocks.iter().map(|(_, main)| *main));
     if !draw.0 {
         return;
     }
@@ -378,11 +506,44 @@ fn queue_instanced(
             let Ok(pipeline) = pipelines.specialize(
                 &pipeline_cache,
                 &pipeline,
-                (key, animation.mesh == Some(mesh_instance.mesh_asset_id())),
+                (
+                    flock_pipeline_key(
+                        key,
+                        animation.mesh == Some(mesh_instance.mesh_asset_id()),
+                        appearance.modes.z != 0,
+                        appearance.modes.w != 0,
+                        appearance.motion.w != 0.0,
+                    ),
+                    settings.shadows,
+                    settings.opaque,
+                ),
                 &mesh.layout,
             ) else {
                 continue;
             };
+            if settings.opaque {
+                if let (Some(opaque), Some(slabs)) = (
+                    opaque_phases.get_mut(&view.retained_view_entity),
+                    allocator.mesh_slabs(&mesh_instance.mesh_asset_id()),
+                ) {
+                    opaque.add(
+                        Opaque3dBatchSetKey {
+                            pipeline,
+                            draw_function: opaque_functions.read().id::<DrawInstancedOpaque>(),
+                            material_bind_group_index: None,
+                            slabs,
+                            lightmap_slab: None,
+                        },
+                        Opaque3dBinKey {
+                            asset_id: mesh_instance.mesh_asset_id().into(),
+                        },
+                        (entity, *main_entity),
+                        mesh_instance.current_uniform_index,
+                        BinnedRenderPhaseType::NonMesh,
+                    );
+                }
+                continue;
+            }
             // Queued every frame, so the item goes away with the flock entity.
             phase.add_transient(Transparent3d {
                 // The flock is opaque and writes depth; sorting it first means
@@ -408,31 +569,45 @@ struct InstancingPipeline {
     shader: Handle<Shader>,
     mesh_pipeline: MeshPipeline,
     appearance_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
 }
 
 fn init_pipeline(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mesh_pipeline: Res<MeshPipeline>,
+    prepass: Res<PrepassPipeline>,
 ) {
+    commands.insert_resource(InstancingDepthPipeline {
+        shader: asset_server.load(SHADER_ASSET_PATH),
+        mesh_pipeline: mesh_pipeline.clone(),
+        view_layout: prepass.view_layout_no_motion_vectors.clone(),
+        motion_view_layout: prepass.view_layout_motion_vectors.clone(),
+        empty_layout: prepass.empty_layout.clone(),
+    });
     commands.insert_resource(InstancingPipeline {
         shader: asset_server.load(SHADER_ASSET_PATH),
         mesh_pipeline: mesh_pipeline.clone(),
-        appearance_layout: BindGroupLayoutDescriptor::new(
-            "vehicle_appearance",
-            &BindGroupLayoutEntries::with_indices(
-                ShaderStages::VERTEX_FRAGMENT,
+        appearance_layout: appearance_layout(),
+        empty_layout: prepass.empty_layout.clone(),
+    });
+}
+
+fn appearance_layout() -> BindGroupLayoutDescriptor {
+    BindGroupLayoutDescriptor::new(
+        "vehicle_appearance",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::VERTEX_FRAGMENT,
+            (
+                (0, binding_types::uniform_buffer::<AppearanceUniform>(false)),
                 (
-                    (0, binding_types::uniform_buffer::<AppearanceUniform>(false)),
-                    (
-                        1,
-                        binding_types::storage_buffer_read_only_sized(false, None),
-                    ),
-                    (2, binding_types::uniform_buffer::<AnimationUniform>(false)),
+                    1,
+                    binding_types::storage_buffer_read_only_sized(false, None),
                 ),
+                (2, binding_types::uniform_buffer::<AnimationUniform>(false)),
             ),
         ),
-    });
+    )
 }
 
 fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'static str> {
@@ -441,14 +616,37 @@ fn model_shader_defs(animated: bool, material: bool) -> impl Iterator<Item = &'s
         .filter_map(|(enabled, name)| enabled.then_some(name))
 }
 
+fn shadow_shader_defs(receives_shadows: bool) -> impl Iterator<Item = &'static str> {
+    receives_shadows
+        .then_some("FLOCK_SHADOW_RECEIVER")
+        .into_iter()
+}
+
+fn underwater_shader_def(enabled: bool) -> Option<&'static str> {
+    enabled.then_some("UNDERWATER")
+}
+
+fn flock_pipeline_key(
+    view: MeshPipelineKey,
+    animated: bool,
+    glow: bool,
+    procedural: bool,
+    underwater: bool,
+) -> (MeshPipelineKey, bool, bool, bool, bool) {
+    (view, animated, glow, procedural, underwater)
+}
+
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = (MeshPipelineKey, bool);
+    type Key = ((MeshPipelineKey, bool, bool, bool, bool), bool, bool);
 
     fn specialize(
         &self,
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let (key, receives_shadows, opaque) = key;
+        // Preserve ENVIRONMENT_MAP, directional-light and fog definitions from the view key.
+        // Both Bevy view bind groups below provide the corresponding PBR textures/uniforms.
         let mut descriptor = self.mesh_pipeline.specialize(key.0, layout)?;
         let material = layout.0.contains(ATTRIBUTE_MATERIAL);
         let mut attributes = vec![
@@ -470,6 +668,35 @@ impl SpecializedMeshPipeline for InstancingPipeline {
                 .unwrap()
                 .shader_defs
                 .push(name.into());
+        }
+        if key.2 {
+            descriptor.vertex.shader_defs.push("GLOW".into());
+            descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .shader_defs
+                .push("GLOW".into());
+        }
+        if key.3 {
+            descriptor.vertex.shader_defs.push("PROCEDURAL".into());
+        }
+        descriptor
+            .fragment
+            .as_mut()
+            .unwrap()
+            .shader_defs
+            .extend(shadow_shader_defs(receives_shadows).map(Into::into));
+        if let Some(name) = underwater_shader_def(key.4) {
+            descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .shader_defs
+                .push(name.into());
+        }
+        if opaque {
+            descriptor.layout[2] = self.empty_layout.clone();
         }
         descriptor.layout.push(self.appearance_layout.clone());
         descriptor.vertex.shader = self.shader.clone();
@@ -499,6 +726,237 @@ impl SpecializedMeshPipeline for InstancingPipeline {
         Ok(descriptor)
     }
 }
+
+/// Depth-only and normal-prepass pipelines reuse the exact color vertex specialization.
+#[derive(Resource)]
+struct InstancingDepthPipeline {
+    shader: Handle<Shader>,
+    mesh_pipeline: MeshPipeline,
+    view_layout: BindGroupLayoutDescriptor,
+    motion_view_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
+}
+impl SpecializedMeshPipeline for InstancingDepthPipeline {
+    // base vertex key, normal attachment, motion-view layout, shadow depth clamp.
+    type Key = ((MeshPipelineKey, bool, bool, bool, bool), bool, bool, bool);
+    fn specialize(
+        &self,
+        key: Self::Key,
+        layout: &MeshVertexBufferLayoutRef,
+    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let color = InstancingPipeline {
+            shader: self.shader.clone(),
+            mesh_pipeline: self.mesh_pipeline.clone(),
+            appearance_layout: appearance_layout(),
+            empty_layout: self.empty_layout.clone(),
+        };
+        let mut descriptor = color.specialize((key.0, false, false), layout)?;
+        descriptor.label = Some("flock_depth_prepass".into());
+        descriptor.layout[0] = if key.2 {
+            self.motion_view_layout.clone()
+        } else {
+            self.view_layout.clone()
+        };
+        descriptor.layout[1] = self.empty_layout.clone();
+        descriptor.layout[2] = self.empty_layout.clone();
+        let mut defs = descriptor.vertex.shader_defs.clone();
+        if key.2 {
+            descriptor.vertex.shader_defs.push("FLOCK_MOTION".into());
+            defs.push("FLOCK_MOTION".into());
+            descriptor.vertex.buffers.push(VertexBufferLayout {
+                array_stride: 32,
+                step_mode: VertexStepMode::Instance,
+                attributes: vec![
+                    VertexAttribute {
+                        format: VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 11,
+                    },
+                    VertexAttribute {
+                        format: VertexFormat::Float32x4,
+                        offset: 16,
+                        shader_location: 12,
+                    },
+                ],
+            });
+        }
+        if key.1 {
+            defs.push("FLOCK_NORMAL".into());
+        }
+        // Directional cascades need unclipped depth for casters between sun and view.
+        // Clamp in the fragment shader, matching Bevy's depth-clip-control fallback.
+        if key.3 {
+            defs.push("FLOCK_SHADOW".into());
+        }
+        descriptor.fragment = (key.1 || key.2 || key.3).then(|| FragmentState {
+            shader: self.shader.clone(),
+            shader_defs: defs,
+            entry_point: Some("depth_fragment".into()),
+            targets: if key.1 || key.2 {
+                prepass_target_descriptors(key.1, key.2, false)
+            } else {
+                vec![]
+            },
+            ..default()
+        });
+        if key.3 {
+            descriptor.vertex.shader_defs.push("FLOCK_SHADOW".into());
+        }
+        descriptor.depth_stencil = Some(DepthStencilState {
+            format: CORE_3D_DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(CompareFunction::GreaterEqual),
+            stencil: default(),
+            bias: default(),
+        });
+        Ok(descriptor)
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn queue_instanced_depth(
+    draw: Res<FlockDraw>,
+    settings: Res<FlockRenderSettings>,
+    animation: Res<AnimationRender>,
+    appearance: Res<AppearanceUniform>,
+    pipeline: Res<InstancingDepthPipeline>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<InstancingDepthPipeline>>,
+    cache: Res<PipelineCache>,
+    meshes: Res<RenderAssets<RenderMesh>>,
+    instances: Res<RenderMeshInstances>,
+    allocator: Res<MeshAllocator>,
+    flocks: Query<(Entity, &MainEntity), With<VehicleInstances>>,
+    views: Query<(
+        &ExtractedView,
+        Has<DepthPrepass>,
+        Has<NormalPrepass>,
+        Has<MotionVectorPrepass>,
+        Has<ShadowView>,
+        Option<&Msaa>,
+    )>,
+    mut prepasses: ResMut<ViewBinnedRenderPhases<Opaque3dPrepass>>,
+    mut shadows: ResMut<ViewBinnedRenderPhases<Shadow>>,
+    (prepass_functions, shadow_functions): (
+        Res<DrawFunctions<Opaque3dPrepass>>,
+        Res<DrawFunctions<Shadow>>,
+    ),
+    mut previous: Local<Vec<MainEntity>>,
+) {
+    for phase in prepasses.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    for phase in shadows.values_mut() {
+        for entity in previous.iter() {
+            phase.remove(*entity);
+        }
+    }
+    previous.clear();
+    previous.extend(flocks.iter().map(|(_, main)| *main));
+    if !draw.0 {
+        return;
+    }
+    for (view, depth, normal, motion, shadow, msaa) in &views {
+        if shadow {
+            if !settings.casts_shadows() {
+                continue;
+            }
+        } else if !depth && !normal && !motion {
+            continue;
+        }
+        for (entity, main) in &flocks {
+            let Some(instance) = instances.render_mesh_queue_data(*main) else {
+                continue;
+            };
+            let mesh_id = instance.mesh_asset_id();
+            let (Some(mesh), Some(slabs)) = (meshes.get(mesh_id), allocator.mesh_slabs(&mesh_id))
+            else {
+                continue;
+            };
+            let key = MeshPipelineKey::from_msaa_samples(if shadow {
+                1
+            } else {
+                msaa.map_or(1, Msaa::samples)
+            }) | MeshPipelineKey::from_primitive_topology_and_strip_index(
+                mesh.primitive_topology(),
+                mesh.index_format(),
+            );
+            let Ok(id) = pipelines.specialize(
+                &cache,
+                &pipeline,
+                (
+                    flock_pipeline_key(
+                        key,
+                        animation.mesh == Some(mesh_id),
+                        appearance.modes.z != 0,
+                        appearance.modes.w != 0,
+                        // Caustics only shade the color pass.
+                        false,
+                    ),
+                    normal,
+                    motion,
+                    shadow,
+                ),
+                &mesh.layout,
+            ) else {
+                continue;
+            };
+            if shadow {
+                if let Some(phase) = shadows.get_mut(&view.retained_view_entity) {
+                    phase.add(
+                        ShadowBatchSetKey {
+                            pipeline: id,
+                            draw_function: shadow_functions.read().id::<DrawInstancedDepth>(),
+                            material_bind_group_index: None,
+                            slabs,
+                        },
+                        ShadowBinKey {
+                            asset_id: mesh_id.into(),
+                        },
+                        (entity, *main),
+                        instance.current_uniform_index,
+                        BinnedRenderPhaseType::NonMesh,
+                    );
+                }
+            } else if let Some(phase) = prepasses.get_mut(&view.retained_view_entity) {
+                phase.add(
+                    OpaqueNoLightmap3dBatchSetKey {
+                        pipeline: id,
+                        draw_function: prepass_functions.read().id::<DrawInstancedDepth>(),
+                        material_bind_group_index: None,
+                        slabs,
+                    },
+                    OpaqueNoLightmap3dBinKey {
+                        asset_id: mesh_id.into(),
+                    },
+                    (entity, *main),
+                    instance.current_uniform_index,
+                    BinnedRenderPhaseType::NonMesh,
+                );
+            }
+        }
+    }
+}
+
+type DrawInstancedDepth = (
+    SetItemPipeline,
+    SetPrepassViewBindGroup<0>,
+    SetPrepassViewEmptyBindGroup<1>,
+    SetPrepassViewEmptyBindGroup<2>,
+    SetAppearanceBindGroup,
+    DrawMeshInstanced,
+);
+
+// Opaque NonMesh bins own their instance buffer; they have no Bevy mesh-uniform batch.
+type DrawInstancedOpaque = (
+    SetItemPipeline,
+    SetMeshViewBindGroup<0>,
+    SetMeshViewBindingArrayBindGroup<1>,
+    SetPrepassViewEmptyBindGroup<2>,
+    SetAppearanceBindGroup,
+    DrawMeshInstanced,
+);
 
 type DrawInstanced = (
     SetItemPipeline,
@@ -572,6 +1030,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 
         pass.set_vertex_buffer(0, vertex_slice.buffer.slice(..));
         pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        if let Some((previous, offset)) = &instances.previous {
+            pass.set_vertex_buffer(2, previous.slice(*offset..));
+        }
 
         match &gpu_mesh.buffer_info {
             RenderMeshBufferInfo::Indexed {
@@ -602,6 +1063,294 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
 mod tests {
     use super::*;
     use crate::{scene::SceneStyle, GlobalState};
+
+    #[test]
+    fn blur_only_forces_opaque_without_shadow_keys_and_off_restores_policy() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .init_resource::<FlockRenderSettings>()
+            .add_systems(Update, update_render_settings);
+        app.update();
+        assert!(!app.world().resource::<FlockRenderSettings>().opaque);
+        let key = flock_pipeline_key(
+            MeshPipelineKey::from_msaa_samples(4),
+            false,
+            false,
+            false,
+            false,
+        );
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .motion_blur = true;
+        app.update();
+        let settings = app.world().resource::<FlockRenderSettings>();
+        assert!(settings.opaque && !settings.casts_shadows());
+        assert!(shadow_shader_defs(settings.shadows).next().is_none());
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .motion_blur = false;
+        app.update();
+        assert!(!app.world().resource::<FlockRenderSettings>().opaque);
+        assert_eq!(
+            key,
+            flock_pipeline_key(
+                MeshPipelineKey::from_msaa_samples(4),
+                false,
+                false,
+                false,
+                false
+            )
+        );
+        assert_eq!(size_of::<InstanceData>(), 48);
+    }
+
+    #[test]
+    fn shadow_gating_keeps_default_uniforms_keys_and_skips_over_cap() {
+        let mut appearance = Appearance::default();
+        let mut state = GlobalState::default();
+        let old_uniform = AppearanceUniform::from_settings(&appearance, &state);
+        let off = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(!off.opaque && !off.casts_shadows());
+        assert!(shadow_shader_defs(off.shadows).next().is_none());
+        let key = flock_pipeline_key(
+            MeshPipelineKey::from_msaa_samples(4),
+            false,
+            false,
+            false,
+            false,
+        );
+        appearance.shadow_cap = 10;
+        assert!(!FlockRenderSettings::from_settings(&appearance, &state).casts_shadows());
+        assert_eq!(
+            old_uniform,
+            AppearanceUniform::from_settings(&appearance, &state)
+        );
+        appearance.shadows = true;
+        for (count, expected) in [
+            (0, false),
+            (1, true),
+            (10, true),
+            (11, false),
+            (1_000_000, false),
+        ] {
+            state.vehicle_count = count;
+            let settings = FlockRenderSettings::from_settings(&appearance, &state);
+            assert!(settings.opaque);
+            assert_eq!(settings.casts_shadows(), expected);
+        }
+        assert_eq!(
+            shadow_shader_defs(true).collect::<Vec<_>>(),
+            ["FLOCK_SHADOW_RECEIVER"]
+        );
+        appearance.shadows = false;
+        appearance.ambient_occlusion = true;
+        let settings = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(settings.opaque && !settings.casts_shadows());
+        appearance.ambient_occlusion = false;
+        appearance.volumetric = true;
+        appearance.environment = crate::environment::Environment::Underwater;
+        for (count, expected) in [(0, false), (10, true), (11, false)] {
+            state.vehicle_count = count;
+            let settings = FlockRenderSettings::from_settings(&appearance, &state);
+            assert!(settings.opaque);
+            assert_eq!(settings.casts_shadows(), expected);
+        }
+        appearance.volumetric = false;
+        let settings = FlockRenderSettings::from_settings(&appearance, &state);
+        assert!(!settings.opaque && !settings.casts_shadows());
+        assert!(!appearance.shadows);
+        assert_eq!(
+            key,
+            flock_pipeline_key(
+                MeshPipelineKey::from_msaa_samples(4),
+                false,
+                false,
+                false,
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn underwater_key_gates_caustics_independently_of_shape_glow_and_ibl() {
+        use crate::environment::Environment;
+        let view = MeshPipelineKey::ENVIRONMENT_MAP;
+        for environment in Environment::ALL {
+            for style in SceneStyle::ALL {
+                let appearance = Appearance {
+                    environment,
+                    style,
+                    ..default()
+                };
+                let u = AppearanceUniform::from_settings(&appearance, &GlobalState::default());
+                let active = environment == Environment::Underwater;
+                let key = flock_pipeline_key(
+                    view,
+                    true,
+                    u.modes.z != 0,
+                    u.modes.w != 0,
+                    u.motion.w != 0.0,
+                );
+                assert_eq!(key.0, view);
+                assert_eq!(key.4, active);
+                assert_eq!(underwater_shader_def(key.4), active.then_some("UNDERWATER"));
+            }
+        }
+        // No deformation: caustics still advance, and pause freezes their simulation clock.
+        let mut app = crate::presentation::tests::clock_app();
+        app.init_resource::<GlobalState>()
+            .insert_resource(Appearance {
+                environment: Environment::Underwater,
+                ..default()
+            })
+            .init_resource::<AppearanceUniform>()
+            .add_systems(
+                Update,
+                update_appearance.after(crate::presentation::prepare_simulation),
+            );
+        let step = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(20));
+            app.update();
+        };
+        step(&mut app);
+        step(&mut app);
+        let before = app.world().resource::<AppearanceUniform>().motion.x;
+        assert!(before > 0.0);
+        assert_eq!(app.world().resource::<AppearanceUniform>().modes.w, 0);
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(app.world().resource::<AppearanceUniform>().motion.x, before);
+        app.world_mut().resource_mut::<Appearance>().environment = Environment::Midday;
+        step(&mut app);
+        assert_eq!(
+            app.world().resource::<AppearanceUniform>().motion,
+            Vec4::ZERO
+        );
+    }
+
+    #[test]
+    fn environment_off_keeps_pipeline_keys_and_ibl_keeps_view_specialization() {
+        use crate::environment::Environment;
+        let view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba8UnormSrgb);
+        for style in SceneStyle::ALL {
+            let appearance = Appearance {
+                style,
+                environment: Environment::Off,
+                ..default()
+            };
+            let uniform = AppearanceUniform::from_settings(&appearance, &GlobalState::default());
+            let key = flock_pipeline_key(view, false, uniform.modes.z != 0, false, false);
+            assert_eq!(key, (view, false, style == SceneStyle::Glow, false, false));
+            assert!(!key.0.contains(MeshPipelineKey::ENVIRONMENT_MAP));
+            let lit_view = view | MeshPipelineKey::ENVIRONMENT_MAP;
+            assert!(flock_pipeline_key(lit_view, true, true, true, false)
+                .0
+                .contains(MeshPipelineKey::ENVIRONMENT_MAP));
+        }
+    }
+
+    #[test]
+    fn glow_keeps_old_uniforms_and_view_keys_and_uses_hdr_msaa_specialization() {
+        let state = GlobalState::default();
+        let view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba8UnormSrgb);
+        for style in [SceneStyle::Studio, SceneStyle::Classic] {
+            let appearance = Appearance { style, ..default() };
+            let uniform = AppearanceUniform::from_settings(&appearance, &state);
+            assert_eq!(
+                uniform.shading,
+                Vec4::new(style.settings().emission, 0.0, 0.0, 0.0)
+            );
+            assert_eq!(uniform.modes.zw(), UVec2::ZERO);
+            assert_eq!(
+                flock_pipeline_key(view, false, false, false, false),
+                (view, false, false, false, false)
+            );
+            let adjusted = Appearance {
+                glow: 20.0,
+                streak: 3.0,
+                ..appearance
+            };
+            assert_eq!(uniform, AppearanceUniform::from_settings(&adjusted, &state));
+        }
+        let hdr_view = MeshPipelineKey::from_msaa_samples(4)
+            | MeshPipelineKey::from_target_format(TextureFormat::Rgba16Float);
+        assert_eq!(hdr_view.target_format(), TextureFormat::Rgba16Float);
+        assert_ne!(hdr_view, view);
+        let appearance = Appearance {
+            style: SceneStyle::Glow,
+            ..default()
+        };
+        let uniform = AppearanceUniform::from_settings(&appearance, &state);
+        assert_eq!(uniform.modes.z, 1);
+        assert_eq!(
+            flock_pipeline_key(hdr_view, true, true, false, false),
+            (hdr_view, true, true, false, false)
+        );
+        assert_eq!(hdr_view.msaa_samples(), 4);
+        assert_eq!(uniform.shading.y + uniform.shading.z, appearance.glow);
+        assert!((uniform.shading.w - appearance.streak).abs() < 1e-6);
+    }
+
+    #[test]
+    fn procedural_pipeline_gating_and_clock_pause() {
+        use crate::vehicle_appearance::VehicleShape;
+        let mut state = GlobalState::default();
+        let mut appearance = Appearance::default();
+        for (shape, kind) in [
+            (VehicleShape::Dart, 0),
+            (VehicleShape::Bird, 1),
+            (VehicleShape::Fish, 2),
+            (VehicleShape::Chevron, 3),
+            (VehicleShape::Custom, 0),
+        ] {
+            appearance.vehicles.shape = shape;
+            let u = AppearanceUniform::from_settings(&appearance, &state);
+            assert_eq!(u.modes.w, kind);
+            assert_eq!(
+                flock_pipeline_key(MeshPipelineKey::empty(), false, true, kind != 0, false).3,
+                kind != 0
+            );
+        }
+        state.motion.flap = 0.0;
+        appearance.vehicles.shape = VehicleShape::Bird;
+        assert_eq!(
+            AppearanceUniform::from_settings(&appearance, &state).motion,
+            Vec4::ZERO
+        );
+        let mut app = crate::presentation::tests::clock_app();
+        app.init_resource::<GlobalState>()
+            .insert_resource(appearance)
+            .init_resource::<AppearanceUniform>()
+            .add_systems(
+                Update,
+                update_appearance.after(crate::presentation::prepare_simulation),
+            );
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(20));
+        app.update();
+        let time = app.world().resource::<AppearanceUniform>().motion.x;
+        assert!(time > 0.0);
+        app.world_mut()
+            .resource_mut::<crate::presentation::Presentation>()
+            .paused = true;
+        for _ in 0..4 {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_secs(1));
+            app.update();
+            assert_eq!(app.world().resource::<AppearanceUniform>().motion.x, time);
+        }
+    }
 
     #[test]
     fn vehicle_appearance_changes_preserve_every_simulation_field_and_gpu_parameter() {
@@ -689,7 +1438,7 @@ mod tests {
                 .x,
             0
         );
-        assert_eq!(AppearanceUniform::min_size().get(), 320);
+        assert_eq!(AppearanceUniform::min_size().get(), 352);
     }
 
     #[test]
@@ -709,7 +1458,7 @@ mod tests {
         let mut buffer =
             bevy::render::render_resource::encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&after).unwrap();
-        assert_eq!(buffer.as_ref().len(), 320);
+        assert_eq!(buffer.as_ref().len(), 352);
         for (axis, value) in expected.to_array().into_iter().enumerate() {
             let offset = 192 + 16 + axis * 4;
             assert_eq!(&buffer.as_ref()[offset..offset + 4], &value.to_le_bytes());

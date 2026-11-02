@@ -1816,7 +1816,10 @@ mod tests {
         let instances = vec![[Vec4::ONE, Vec4::W, Vec4::ZERO]; 200];
         let flock = app
             .world_mut()
-            .spawn((VehicleInstances(instances.clone()), Transform::default()))
+            .spawn((
+                VehicleInstances(instances.clone(), Vec::new()),
+                Transform::default(),
+            ))
             .id();
         let state = app.world().resource::<GlobalState>().clone();
         let encode = |state: &GlobalState| {
@@ -2123,5 +2126,17 @@ mod tests {
         };
         assert_eq!(&values[..3], &[[0.0, 1.0]; 3]);
         assert_eq!(&values[3..], &[[1.0, 0.1]; 3]);
+    }
+
+    #[test]
+    fn showcase_hero_models_load_low_poly_and_animated() {
+        for path in crate::showcase::Showcase::ALL
+            .into_iter()
+            .filter_map(|showcase| showcase.model())
+        {
+            let model = load(&root().join(path), default()).unwrap();
+            assert!(model.triangles <= 400, "{path}: {}", model.triangles);
+            assert!(model.animation.is_some(), "{path}");
+        }
     }
 }

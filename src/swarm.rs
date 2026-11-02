@@ -180,7 +180,7 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
         return;
     }
     ui.small("All groups separate; alignment/cohesion stay within each group.");
-    ui.small("Increasing groups keeps survivors; new groups fill on vehicle growth.");
+    ui.small("Group-count edits reassign existing members from their spawn IDs.");
     for (index, group) in groups.table[..groups.count as usize].iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.label(format!("Group {index}"));
@@ -364,6 +364,7 @@ pub fn obstacles_ui(ui: &mut egui::Ui, scene: &mut SwarmScene) {
 
 #[derive(SystemParam)]
 pub(crate) struct SwarmUi<'w, 's> {
+    pub commands: Commands<'w, 's>,
     pub scene: ResMut<'w, SwarmScene>,
     pub formation: Res<'w, crate::formation::FormationFrame>,
     cameras: Query<'w, 's, (&'static Transform, &'static PanOrbitCamera), With<Camera3d>>,

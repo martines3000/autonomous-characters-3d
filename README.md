@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 122 regression tests, GPU parity tests, seeded benchmarks |
+| Tests | None | 177 tests, including GPU parity tests and seeded benchmarks |
 | Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
 
 Bugs found and fixed include:
@@ -70,15 +70,70 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
 | W A S D, Space, left Shift | Move the selected target (relative to the camera, real time) |
+| Species → Fish / Birds | One-click flocking behavior and model (see Species behaviors) |
 | Swarm → Predators | Add/remove up to four flee fields; static or simulated Orbit paths, prey-group masks |
 | Swarm → Sphere obstacles | Add/remove/edit up to eight spheres; Show toggles wireframes |
 | Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
 | P | Pause / resume vehicle simulation |
 | O | Toggle real-time auto-orbit |
+| H, Presentation → Hide UI | Hide the menu, FPS and controls text for an immersive view; H shows them again |
+| B | Boid camera: Off → Chase → First person → Off |
+| N | Pick a random boid for the camera |
+| C | Toggle cinematic Director |
+| Vehicles → Motion | Banking, Classic heading, Flap/Swim and speed-frequency controls |
+| Presentation → Depth of field | Toggle boid-camera blur; aperture controls strength |
+| Scroll while riding | Change chase distance |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
 
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
+
+### Species behaviors
+
+**Species**, under Showcase, swaps how the flock moves with one click and loads that species' low-poly
+model. It sets count, mass, speeds, separation/alignment/cohesion, wander, wall avoidance, motion and
+hidden orbiting predators; every other steering setting returns to its default. Environment, camera,
+Director, groups, obstacles and the simulation mode stay as they are; CPU modes cap the count.
+Scenario command: `species <name>`.
+
+| Species (`species` name) | Count | Look |
+| --- | --- | --- |
+| Sardine bait ball (`sardine`) | 30,000 | Dense, fast balls; three hidden hunters punch holes |
+| Tuna stream (`tuna`) | 8,000 | Heavy, fast fish in long aligned ribbons |
+| Reef drift (`reef`) | 3,000 | Slow, scattered, wandering fish |
+| Starling murmuration (`murmuration`) | 40,000 | Huge flowing cloud around two hidden falcons |
+| Swallow hunt (`swallow`) | 1,500 | Very fast, loose, darting birds |
+| Rook roost (`rook`) | 5,000 | Large, heavy birds circling slowly in loose groups |
+
+At 3816×2110 on the RX 7900 XT every species holds the 60 FPS vsync cap. The detailed
+**Simulation**, **Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
+
+### Showcase presets
+
+Open **Showcase** at the top of the menu for live, one-click scenes. Scenario command
+`showcase <name>` accepts `starling`, `fish`, `swallow`, `neon` or `calm` (also the full
+hyphenated names, such as `starling-murmuration`). Camera `preset` commands remain separate.
+
+- **Starling murmuration**: 40,000 banked, flapping starlings and two orbiting flee
+  controls standing in for falcons, against the **Sunset** sky. Director opens with a ten-second orbit shot.
+  The preset loads the low-poly hero `assets/models/starling.glb` in model colors; built-in Dusk Birds
+  show until the load finishes. At 3816×2110 on the RX 7900 XT both stay at the 60 FPS vsync cap.
+- **Fish school**: 20,000 swimming fish in two groups, tighter cohesion and one
+  orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
+  The preset loads the low-poly hero `assets/models/fish.glb` in model colors (the groups keep their
+  separate behavior); built-in ocean-colored Fish show until the load finishes.
+- **Swallow formation**: 8,000 swallows morph from Sphere toward Helix over 12.5 simulated seconds,
+  with a slowly orbiting camera under the **Midday** sky. The preset loads the low-poly hero
+  `assets/models/swallow.glb` in model colors; built-in Birds show until the load finishes.
+- **Neon swarm**: 200,000 Darts, Aurora colors, Glow and speed streaks; cursor attraction is off.
+- **Calm**: exact current simulation, appearance and presentation defaults. Startup remains unchanged.
+
+Each choice replaces the settings bundle, clears global target selection, cancels pending model
+loads and resets camera composition. Retained vehicles keep their positions; count/backend changes
+use the usual lifecycle. All settings remain editable. Showcase composition disables automatic
+count framing except in Calm. For clean captures, put `ui off` **after** `showcase <name>`.
+Neon swarm and Calm use Environment **Off**.
+Predator debug rings are hidden in Starling and Fish; enable **Swarm → Predators → Show** to inspect them.
 
 ### Modes and settings
 
@@ -88,13 +143,21 @@ menu when it has focus.
 - **Octree** and **Naive** run on the CPU (up to 50,000) and are the tested reference behavior.
 - Switching between CPU and GPU respawns the flock. Switching Naive/Octree keeps it. Lowering the GPU
   count truncates the flock; zero clears it.
-- The Menu groups controls under **Presentation**, **Simulation**, **Swarm**, **Steering**, **Scene**, and **Vehicles**.
+- The Menu starts with **Showcase**, then **Presentation**, **Simulation**, **Swarm**, **Steering**, **Scene**, and **Vehicles**.
 - **Studio** (default) has a vertical navy/indigo sky, a lighter blue horizon, warm key/cool fill
   lighting and a dark blue, rough ground plane. A faint ground grid shares the floor's lighting and
   fog; short corner brackets replace the full wall box. The sky follows the camera, encloses the
-  walls, stays inside the far plane and ignores fog/picking. No bloom or per-vehicle lights are used.
+  walls, stays inside the far plane and ignores fog/picking. Studio and Classic use no bloom or per-vehicle lights.
 - **Classic** retains the original flat background, box/grid colors and layout, lighting, material
   roughness and HSV heading palette. It hides the Studio sky and floor.
+- **Glow** is optional: a darker Studio environment with speed-based vehicle emission, additive
+  HDR bloom and a forward speed streak. With Environment Off, it keeps TonyMcMapface tonemapping and 4× MSAA. Vehicle
+  color modes, built-in shapes, imported materials and baked animation all share the same effect.
+  **Vehicles → glow** (0–20, default 4) controls emission; **streak** (0–3, default 0.8) controls
+  maximum forward stretch. For normalized speed s, emission is `glow * (0.25 + 0.75*s*s)` and
+  stretch is `1 + streak*s`. Normals receive the inverse stretch before rotation. These settings
+  do not change physical size, separation or steering. Glow-only shader code compiles out of
+  Studio/Classic; leaving Glow removes Bloom; Hdr remains while an HDRI environment is active.
 - Heading palettes are independent of scene style. Six distinct stops plus a repeated first stop
   make the new palettes continuous around the heading wheel:
   **Ocean** (deep blue, cyan, seafoam, sand, coral, violet), **Dusk** (indigo, magenta, orange, gold,
@@ -103,7 +166,7 @@ menu when it has focus.
   **Classic** keeps the original HSV function unchanged.
   Changing style keeps the selected palette; choose Classic style **and** Classic palette for the
   original presentation. Studio adds 15% base-color emission alongside its restrained rim term to
-  keep distant darts visible. Both styles retain the opaque red/green target and a screen marker
+  keep distant darts visible. All styles retain the opaque red/green target and a screen marker
   that remains visible inside dense flocks; click the sphere itself to select it.
 - **Auto-frame on count change** defaults on. It waits until the count slider stops changing for
   0.35 seconds and is released, then changes orbit distance while preserving orientation and the
@@ -114,6 +177,80 @@ menu when it has focus.
   grid scale with the world.
 - Simulation defaults live in `GlobalState::default` in `src/main.rs`; appearance defaults live in
   `src/scene.rs`. Physical `vehicle_size` still scales neighbor radii and instance size as before.
+
+Wandering vehicles apply wall steering only after crossing a wall. An outside axis desires inward
+max speed; an in-bounds axis retains its current velocity component. The difference is capped at
+max speed × wall-avoid factor. Fully in-bounds vehicles receive no wall force, so walls no longer
+brake wandering vehicles. Global/group seek and formation wall gating remain unchanged. Walls
+steer softly rather than clamp positions, so a vehicle may briefly overshoot. Default speeds and
+force weights are unchanged; visual speed tuning remains an owner decision. See
+[containment measurements](plans/completed/2026-11-01-wall-containment.md).
+
+| Scene style | Lighting/environment | Vehicle effects | Camera effects |
+| --- | --- | --- | --- |
+| Studio (default) | Navy gradient, warm/cool lighting, rough floor | Restrained rim and 15% emission | No bloom; optional boid-camera DoF |
+| Classic | Original flat background, box/grid and material | Original shading | No bloom; optional boid-camera DoF |
+| Glow | Dark tinted Studio sky/floor/fog | Speed emission and forward streak | HDR, additive bloom; optional boid-camera DoF |
+
+### Sky environments
+
+**Scene → Environment** selects **Off** (default), **Sunset**, **Midday** or **Underwater**, independently of Style.
+Sunset and Midday use the bundled CC0 Poly Haven HDRIs; attribution is in
+[assets/environment/CREDITS.md](assets/environment/CREDITS.md).
+Each sky loads on first selection, then caches a 512px HDR cubemap, cosine-convolved diffuse lighting
+and a GGX-filtered specular mip chain. First selection can briefly pause while CPU conversion runs;
+subsequent switches reuse the maps. No environment assets load while Off.
+
+The HDRI's brightest upper-sky region sets the directional sun's direction and color. Horizon-tinted
+fog replaces the Studio haze; the box, grid and Studio floor disappear. Simulation walls stay active.
+AgX tonemapping and fixed EV100 10 retain bright clouds and sunset color without exposure pumping
+while riding a bird. Off restores the original camera tonemapping/exposure and scene rig.
+Glow bloom, bank/flap motion, boid chase and its depth of field remain available with either sky.
+The instanced PBR path inherits Bevy's environment-map view key and both view bind groups, so birds
+receive diffuse sky color, roughness-dependent reflections and directional sunlight in the same draw.
+
+### Volumetric light and sun glare
+
+**Scene → Volumetric light** (default Off; `set volumetric on|off`) enables shadowed sun shafts
+with an active Environment. Sunset uses warm low-angle scattering, Midday stays subtle, and
+Underwater uses stronger cyan scattering from the surface. Environment Off has no effect.
+Volumetrics imply sun shadow maps and flock casting, within the existing **Flock shadow cap**.
+The saved Shadows checkbox stays editable; disabling volumetrics restores its current preference.
+Depth/normal prepasses follow the same effective shadow policy. MSAA remains unchanged.
+
+**Ray steps** (`set volumetric_steps 16..128`, default 64) trades ray quality for frame time.
+Lower steps can show bands; no temporal jitter is used without TAA. Medium density scales with
+world size; a cached 32³ density texture shapes underwater particle columns along the sun.
+Any active environment also adds subtle high-threshold sun/bright-sky Bloom;
+Glow retains its original Bloom settings. Showcase presets keep volumetrics Off; enable them
+**after** `showcase fish`, `showcase starling` or another preset. Fish occlude the rays.
+
+### Flock shadows and ambient occlusion
+
+**Scene → Shadows** (default Off; scenario `set shadows on|off`) enables three cascades on the
+Studio key light or HDRI sun. Birds cast onto each other and the Studio floor. Environment skies
+still hide the floor. Cascade reach follows world size/camera distance, with a tighter first cascade
+while riding. Animation, procedural flap/swim and Glow streak share one vertex shader across passes.
+
+Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows, Ambient occlusion and Motion blur all Off,
+Shadows On uses `Opaque3d` plus depth/normal prepasses. With Shadows, Volumetric light and
+Ambient occlusion all Off,
+the original color pipeline, MSAA and scene defaults remain unchanged. **Flock shadow cap** defaults
+to 200,000 (`set shadow_cap 0..1000000`); counts above it skip flock casting automatically, while
+other scene shadows remain enabled. Zero disables flock casting. Lowering the count resumes it.
+The cap counts vehicles, not triangles; heavy imported models can need a much lower cap.
+
+**Ambient occlusion** (default Off; `set ambient_occlusion on|off`) enables SSAO and the flock's
+opaque depth/normal prepass. SSAO forces `Msaa::Off`; disabling it restores the prior MSAA setting.
+Shadows alone retain 4× MSAA. Motion blur adds flock motion vectors to the prepass.
+See [shadow validation](plans/completed/2026-11-01-flock-shadows.md) for captures and quick frame intervals.
+**Underwater** is fully procedural: a cached 128px turquoise-to-deep-blue cubemap, diffuse/GGX
+water IBL, green-tinted overhead sun and exponential distance fog. The existing floor becomes sand
+below the flock, with subtle ripples. Shared XZ-projected caustics move across vehicles and sand,
+fade with depth, and use simulation time: pause freezes them and slow motion slows them.
+The vehicle shader compiles caustics only for Underwater; other environments keep their existing path.
+Try Fish with Ocean colors, boid chase at 0.25×, Director, or Glow. Select with
+`set environment underwater`; Off restores the original floor and camera settings.
 
 ### Swarm mechanics
 
@@ -155,11 +292,12 @@ and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headle
 are within 5% of the original baseline in 100k/1M wander/follow. See the
 [swarm plan](plans/completed/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
 
-New vehicles use ID modulo the enabled count; while Off they retain dormant ID-modulo-eight
-membership. Enabling or changing the group count maps current membership modulo the new count.
-Off preserves membership while ignoring group targets/filtering and writing group zero to instances.
-Increasing the count preserves survivors and can leave new groups empty until vehicle growth;
-there is no automatic rebalancing or exact population quota. Shrinking retains surviving IDs/groups;
+New vehicles use spawn ID modulo the enabled count; Off spawns use dormant ID-modulo-eight
+membership. Enabling or changing the group count reassigns every existing member by spawn ID
+modulo the new count, once per edit. New groups can receive existing members without vehicle growth. Off preserves latent membership while ignoring group targets/filtering and
+writing group zero to instances; re-enabling recomputes assignment from IDs. Contiguous spawn IDs
+balance group populations within one vehicle; sparse surviving ID sets have no exact population
+quota. Shrinking vehicle count retains surviving IDs/groups;
 regrowth uses fresh IDs, rather than sorted indices or reused count values. Zero count and CPU/GPU
 backend transitions start a new ID lifetime. Naive/Octree switches preserve membership. Group edits,
 colors and membership maintenance remain live while paused; motion still follows the simulation clock.
@@ -197,7 +335,7 @@ Each enabled vehicle has a dense unique metadata slot. Count/group-count edits a
 slots by current record order within each group. Sorts, shape edits and Naive/Octree switches retain
 slots; backend switches respawn. Off preserves latent slots and assigns no new ones until enabled.
 Groups get separate shapes on an XY grid, spaced 2.25 extents apart. Raising group count keeps the
-existing membership policy; empty groups can have no shape until growth.
+spawn-ID rebalance policy; groups without members have no shape.
 
 Targets are analytic: a Fibonacci sphere or a three-turn helix, linearly blended. The sphere uses an
 integer golden-angle phase so million-slot longitudes retain precision; animation phase is independent.
@@ -241,8 +379,7 @@ mechanic enable bits; no per-frame pipeline creation occurs.
 All five Stage 7 mechanics are optional and implemented. Disabled mechanics preserve original
 steering arithmetic. Attraction
 retains the existing unlimited wander-neighbor query and follow sampling policy; sustained dense
-attraction can substantially increase neighbor cost. No separation, wall-drag or density defaults
-are retuned.
+attraction can substantially increase neighbor cost. No separation, speed or density defaults are retuned.
 
 ### Presentation
 
@@ -288,6 +425,130 @@ with the existing aspect/FOV math, centered at the origin. **Target close-up** c
 position when requested, at 30% of the overview fit distance; it intentionally crops the world and
 does not continuously track the target. Every preset scales with count, including the close-up.
 Manual pan/zoom remains available afterwards.
+
+### Ride a boid
+
+**Presentation → Boid camera** offers Off (default), Chase and First person. **B** cycles these modes;
+**N** / **Next boid** picks a random living vehicle. The UI displays its stable spawn ID. Scroll
+or the chase-distance slider adjusts the chase view. A right/middle drag or preset **1–5** exits
+follow; leaving First person restores the prior FOV and near plane. Automatic count framing and
+Frame world are skipped while follow is on. Chase distance and height scale with physical vehicle size
+and `world_scale(count)`; first-person placement scales with physical body size.
+
+Chase follows a smoothed velocity heading with a critically damped spring and looks a quarter
+simulated second ahead. First person sits two physical size units ahead of the vehicle center (Glow also accounts for rendered length and streak),
+uses a 75° vertical FOV. Both follow modes use a near plane of `0.05 * vehicle_size`. Render-only proportions and
+custom model extents can put unusually long/wide models into view. GPU samples arrive through
+an asynchronous 80-byte Bevy readback (typically a few frames late); prediction uses the simulation
+clock, so pause freezes prediction and **0.1×** produces slow motion. CPU modes sample the matching
+spawn ID directly. Lost IDs, truncation and CPU/GPU transitions automatically pick another boid.
+Zero count holds the view until vehicles return.
+
+Auto-orbit yaws the chase offset in real time, including while paused for bullet-time shots.
+First person ignores auto-orbit. The boid camera never changes vehicle steering. With it off,
+there is no tracking dispatch, buffer copy or readback entity; the simulation passes stay unchanged.
+
+The boid-camera **Depth of field** checkbox defaults on; the boid camera itself remains off.
+Gaussian blur focuses at the current camera-to-boid distance in Chase. First person focuses ten
+physical size units ahead of the eye (four normal body lengths). The aperture slider uses f-stops:
+lower values give stronger blur, default 2.8. The virtual sensor scales with body size so the effect
+is visible in this large-unit world; blur diameter is capped at 12 pixels. DoF works in all styles
+with 4× MSAA and is removed when disabled or when the boid camera exits. A small gold ring marks
+the predicted followed position in Chase; first person omits it.
+
+See the [Glow/DoF measurements](plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
+verification and screenshot evidence.
+
+### Motion blur
+
+**Presentation → Motion blur** (`set motion_blur on|off`, default Off) adds Bevy motion blur,
+motion vectors and a depth prepass without enabling shadows. **Shutter angle / 360°**
+(`set shutter 0..1`, default 0.5) controls exposure as a fraction of each rendered frame.
+MSAA stays unchanged. Camera motion enters the vectors, so chase and Director shots can keep
+the subject sharp while the background streams past. Pause suppresses flock vectors and all blur,
+even during live camera orbit. Off restores the previous camera prepasses and flock color path.
+
+CPU poses are saved before the frame's first substep. GPU history follows metadata identity through
+sorting and retains the frame-start pose across speed substeps; GPU boids remain 64 bytes and
+instances 48 bytes. A parallel 32-byte transform stream supplies previous poses. GPU history and
+output share the metadata arena (64 extra bytes per capacity slot); the output is bound directly
+as a vertex stream, without a copy. History writes skip views without motion vectors.
+Both poses use the current animation/procedural deformation, so wing/tail deformation itself adds
+no velocity. Fixed-step `record` uses displacement over each output frame; Bevy multiplies this by
+the shutter fraction, without a wall-time delta. Readback waits hold both poses and camera still.
+Temporal AA is deferred; no temporal accumulation or MSAA override is added.
+
+### Director and video capture
+
+**C**, **Presentation → Director**, or scenario `director on|off` enables automatic cinematography
+(off by default). Shots cycle through close chase with lateral drift, side tracking, fixed-ahead
+flyby, slow orbit and high establishing push-in. Each shot selects a new boid using the existing
+CPU/GPU tracker and eases from the current camera through the follow spring and 0.6-second blend.
+DoF follows the subject; Director omits the chase marker. Right/middle drag, scroll, preset **1–5**,
+or changing boid-camera mode exits Director. Auto-orbit stays stored but Director owns composition.
+
+Presentation controls and scenario settings: `set shot_length 8` (**6–10 seconds**), `set shake 0.2`
+(**0–1**, default 0), and `set speed_ramp on|off` (default on). Shake is subtle, smooth and deterministic.
+The flyby eases effective simulation speed toward **0.3× the user's speed** near the pass and back
+as the subject departs. It never overwrites the speed slider; disabling the ramp or leaving Director
+restores the latest user speed immediately. Pausing freezes vehicles while the camera stays live.
+
+Scenario `record <absolute-directory> <frames> <fps>` saves **00000.png** onward through Bevy's
+Screenshot API. FPS must be an integer **1–240**; frames **1–100000**. Existing frame names are refused.
+Each output advances presentation time by exactly **1/fps**, including camera smoothing and shots.
+Simulation uses that fixed base delta with the current pause, speed and Director ramp; unpaused 1×
+without ramp advances exactly N fixed deltas. Nanosecond rounding follows Rust `Duration`.
+Only one screenshot is in flight. Both clocks freeze on waiting updates; numbering advances only
+after PNG encoding and saving succeeds. Later script commands wait until recording finishes.
+Normal wall time resumes afterwards without catching up the capture's wait time.
+
+Example `AC3D_SCRIPT` (timestamps are wall seconds; recording blocks subsequent commands):
+
+```text
+0 set count 10000
+0 set shape bird
+0 ui off
+0 set speed_ramp off
+1 director on
+3 record /tmp/boids-frames 90 30
+4 exit
+```
+
+When ffmpeg is installed, encode from the frame directory (match `-framerate` to recording FPS):
+
+```sh
+ffmpeg -framerate 60 -i %05d.png -c:v libx264 -pix_fmt yuv420p out.mp4
+```
+
+### Natural vehicle motion
+
+**Vehicles → Motion** controls stable heading, turn banking and procedural animation. Defaults
+are Banking **0.7**, amplitude **0.45**, speed-frequency factor **1**, and Classic heading **off**.
+Local +Y stays forward and local +Z (the back) aims toward world up in level flight. Near vertical,
+the previous up direction is projected onto the new heading plane; smooth horizon recovery
+avoids a pole flip. The upright influence uses smoothstep on horizontal heading squared over 0.1.
+
+Turn acceleration is `(new_velocity - old_velocity) / dt` with its heading-parallel component
+removed. Signed lateral acceleration along the upright right axis commands
+`clamp(bank * atan2(a_right, 0.35 * max_speed), -60°, 60°)`. At the default strength a typical
+20-unit/s² turn at max speed 80 commands about 25°. Quaternion response is exponential,
+`1-exp(-8*dt)`, about a 0.125 simulated-second time constant. Bank 0 removes commanded lean
+while retaining the stable-up frame. **Classic heading** restores the exact old minimal-arc
+rotation; set amplitude 0 too for the original static appearance. Stationary vehicles retain
+rotation. CPU and GPU use matching rules; positions, velocities and steering remain unchanged.
+
+Built-in **Bird** wings move along local Z by `A * max(abs(x)-0.15,0) * sin(ω*t+phase)`;
+its body stays still. **Chevron** uses one quarter of that amplitude. Frequency is
+`1.6 + 2.4 * factor * speed01` Hz. **Fish** uses tail coordinate `u=clamp((1.25-y)/2.5,0,1)`
+and lateral displacement `0.5*A*u²*sin(π*u-ω*t+phase)` (half a wavelength over the body), at `1.2 + 2*factor*speed01` Hz.
+Analytic spatial derivatives correct normals. Time is simulation elapsed time; pause freezes
+motion and slow motion slows it. Existing stable per-instance phases prevent synchronized flaps.
+Frequency responds to current packed speed, so changing speed/frequency can rephase the wave.
+
+Dart, imported models and amplitude 0 compile out procedural deformation. Imported models retain
+their baked animation and receive stable/banked orientation only. Procedural motion runs before
+Glow's streak and works with every color mode. Neither deformation changes physical size or
+separation. GPU Boids remain 64 bytes and instances remain 48 bytes.
 
 ### Vehicle appearance
 
@@ -453,6 +714,15 @@ Additional generated original assets, under the repository's terms, authored +Z 
   **Flap**: 1 second, 31 frames, 69.75 KiB baked. **Glide**: 2 seconds, 61 frames, 137.25 KiB baked.
 - `assets/models/material-glider.glb` (2,956 bytes): polished gold hull (metallic 1 / roughness 0.12)
   and matte blue wings (0 / 0.95), two primitives and 24 triangles.
+- `assets/models/swallow.glb` (29,228 bytes): low-poly barn swallow hero, 294 triangles, 14
+  primitives, steel-blue/rust/cream factor materials, 0.8-second rigid flap loop. Regenerate with
+  Blender 4.5: `blender --background --factory-startup --python scripts/make_swallow_blender.py -- <out.glb> <preview_dir>`.
+- `assets/models/fish.glb` (26,388 bytes): low-poly schooling fish hero, 282 triangles, 11
+  primitives, teal/silver body with yellow fins, 0.8-second rigid swim loop (head, rear body and tail
+  fin). Regenerate with `scripts/make_fish_blender.py` (same arguments).
+- `assets/models/starling.glb` (27,528 bytes): low-poly starling hero, 270 triangles, 14 primitives,
+  glossy black body, green-sheen throat, yellow beak, triangular wings, square tail, 0.6-second rigid
+  flap loop. Regenerate with `scripts/make_starling_blender.py` (same arguments).
 
 ```sh
 python3 scripts/make_example_models.py --kind bird
@@ -474,6 +744,7 @@ src/
 ├── vehicle.rs       # CPU steering and integration, tests, benchmarks
 ├── octree.rs        # exact radius queries for the CPU octree mode
 ├── gpu_flock.rs     # GPU buffers, compute pipelines, parameters
+├── motion.rs        # stable banked orientation and render-only motion settings
 ├── instancing.rs    # one instanced draw and shared appearance uniform
 ├── vehicle_appearance.rs # shared shapes, render-only settings and instance packing
 ├── vehicle_model.rs # bounded glTF import, axes, material factors and model choices
@@ -483,6 +754,7 @@ src/
 ├── swarm.rs         # optional cursor field, groups, obstacles and Swarm UI
 ├── formation.rs     # analytic targets and simulated-substep morph snapshot
 ├── predator.rs      # flee fields, masks, simulated-substep paths and controls
+├── follow.rs        # optional boid chase/first-person camera and tiny GPU readback
 ├── scenario.rs      # optional timed developer scripts and frame logging
 └── target.rs        # selectable, movable target
 assets/shaders/
@@ -647,9 +919,24 @@ pgrep -a autonomous   # no process should remain after exit
 
 | Command | Arguments / behavior |
 | --- | --- |
+| `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
+| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`; replace flocking behavior and model only (see Species behaviors) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
-| `set style` | `studio`, `classic` |
+| `set style` | `studio` (default), `classic`, `glow` |
+| `set environment` | `off` (default), `sunset`, `midday`, `underwater`; independent of Style |
+| `set volumetric` | `on` / `off` (default); active environments imply sun/flock shadows, respecting the casting cap |
+| `set volumetric_steps` | Integer 16–128 (default 64); higher improves shafts and costs more |
+| `set glow` | Emission strength 0–20, default 4; Glow only |
+| `set streak` | Forward stretch coefficient 0–3, default 0.8; Glow only |
+| `set bank` | Banking strength 0–1, default 0.7; no effect in legacy heading |
+| `set flap` | Procedural amplitude 0–1.5, default 0.45; 0 disables it |
+| `set flap_frequency` | Speed-frequency factor 0–3, default 1 |
+| `set legacy_heading` | `on` / `off` (default); exact original minimal-arc orientation |
+| `set motion_blur` | `on` / `off` (default); opaque flock and motion/depth prepass, no shadow requirement |
+| `set shutter` | Exposure fraction 0–1, default 0.5; zero exposure while paused |
+| `set dof` | `on` (default) / `off`; applies only while the boid camera is active |
+| `ui` | `off` / `on`; hides/restores Menu, Controls and FPS text for capture |
 | `set palette` | `classic`, `ocean`, `dusk`, `aurora` |
 | `set shape` | `dart`, `chevron` (alias `arrow`), `fish`, `bird` (alias `glider`) |
 | `set model` | Local model path, repository-relative or absolute; asynchronous, preserves selection on failure |
@@ -661,6 +948,8 @@ pgrep -a autonomous   # no process should remain after exit
 | `set length`, `set width` | Render-only proportions, 0.25–3; default 1 |
 | `set color_mode` | `heading`, `altitude`, `speed`, `solid`, `group`, `model_colors` (alias `model`) |
 | `set solid_color` | `#RRGGBB`, `RRGGBB`, or three sRGB numbers `r g b` in 0–1; stored as 8-bit sRGB |
+| `set shadows`, `set ambient_occlusion` | `on` / `off` (both default Off); SSAO temporarily disables MSAA |
+| `set shadow_cap` | Integer 0–1,000,000 (default 200,000); skip flock casting above this count |
 | `set msaa` | Developer measurement control: `4` (default) or `off`; changes the camera only |
 | `set flock_draw` | Developer measurement control: `on` (default) / `off`; skips only flock drawing, retains GPU simulation and scene |
 | `set auto_frame` | `on` / `off` (also `true` / `false`) |
@@ -675,7 +964,10 @@ pgrep -a autonomous   # no process should remain after exit
 | `set orbit` | `on` / `off`; default off; uses real time |
 | `set orbit_speed` | Degrees per real second, −45–45; default 10 |
 | `preset` | `front`, `side`, `top`, `overview`, `closeup`; smooth transition, waits for manual input release |
-| `follow` | `on` / `off`; uses the existing target selection |
+| `follow on`, `follow off` | Select / clear the target sphere for target seeking |
+| `boidcam chase`, `boidcam first`, `boidcam off` | Boid chase camera, first-person camera, or exit |
+| `boidcam next` | Pick a random living boid; retains camera mode |
+| `boidcam id` | Stable spawn ID, integer 0–4,294,967,295; retains camera mode; missing IDs auto-repick |
 | `set groups` | `off` (default) or integer `2`–`8`; membership changes use modulo mapping |
 | `group_target` | `group x y z` sets a target, or `group off` clears it; group index 0–7, world coordinates within ±10,000,000 |
 | `group_color` | `group RRGGBB` or `group #RRGGBB`; group index 0–7; accepts inactive table entries |
@@ -747,9 +1039,15 @@ sandboxes.
 # GPU regression tests: CPU parity, complete separation, spawn/grow/truncate, bounds
 CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
 
+# Wall speed/containment probe: seeded initial world, CPU Octree + GPU at 200 and current default/20k.
+# 60 simulated seconds; mean speed over 50–60 s, maximum overshoot sampled every step.
+CARGO_BUILD_JOBS=4 cargo test --release --locked vehicle::tests::wall_containment_probe -- --exact --ignored --nocapture --test-threads=1
+
 # GPU benchmark; cases via GPU_BENCH_COUNTS, GPU_BENCH_CAPS, GPU_BENCH_MODES (comma-separated)
 # Optional GPU_BENCH_GROUPS=0 (default) or 2..8; GPU_BENCH_OBSTACLES=0 (default) or 1..8.
 # Optional GPU_BENCH_FORMATION=off (default), sphere or helix; active shapes use the chosen cap.
+# Optional GPU_BENCH_CLASSIC_HEADING=1: use the exact legacy rotation branch.
+# Optional GPU_BENCH_TRACK=1: include the boid-camera track kernel (no CPU readback).
 # Optional GPU_BENCH_PREDATORS=0 (default) or 1..4: orbiting fields, including 512-byte/frame uploads.
 # GPU_BENCH_COMBINED=1 enables groups 2, four spheres, sphere formation, attractor and four predators.
 # Optional GPU_BENCH_WARMUP=1..6000 (default 600); 3540 plus 60 timed steps gives 60 simulated seconds.
@@ -787,7 +1085,7 @@ Open issues are listed in
 
 - crowding in very large follow flocks;
 - rendering cost up close;
-- wall avoidance acting as drag.
+- optional speed retuning by the owner, by eye, after the wall-drag fix.
 
 ## Sources
 

@@ -41,6 +41,12 @@ pub(crate) fn step_cpu(world: &mut World) {
         return;
     }
     let frame = *world.resource::<crate::presentation::SimulationFrame>();
+    for (transform, mut previous) in world
+        .query_filtered::<(&Transform, &mut PreviousVehicleTransform), With<Vehicle>>()
+        .iter_mut(world)
+    {
+        previous.0 = *transform;
+    }
     let original = *world.resource::<Time>();
     for index in 0..frame.steps {
         let mut time = Time::default();
@@ -64,15 +70,19 @@ pub(crate) fn step_cpu(world: &mut World) {
 }
 
 #[derive(Component)]
-#[require(VehicleMetadata)]
+#[require(VehicleMetadata, PreviousVehicleTransform)]
 pub struct Vehicle;
+
+/// Pose at the start of the rendered frame, before any simulation substep.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct PreviousVehicleTransform(pub Transform);
 
 // x: spawn ID, y: group, z: formation slot, w: reserved. Travels with the vehicle.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct VehicleMetadata(UVec4);
+pub(crate) struct VehicleMetadata(pub(crate) UVec4);
 
 #[derive(Component, Default)]
-struct VehicleVelocity(pub Vector3<f32>);
+pub(crate) struct VehicleVelocity(pub Vector3<f32>);
 
 #[derive(Component, Default)]
 struct VehicleAcceleration(pub Vector3<f32>);
@@ -136,15 +146,33 @@ fn spawn_flock(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 fn sync_instances(
-    vehicles: Query<(Entity, &Transform, &VehicleVelocity, &VehicleMetadata), With<Vehicle>>,
+    vehicles: Query<
+        (
+            Entity,
+            &Transform,
+            &VehicleVelocity,
+            &VehicleMetadata,
+            &PreviousVehicleTransform,
+        ),
+        With<Vehicle>,
+    >,
     mut flock: Single<&mut VehicleInstances>,
     state: Res<GlobalState>,
 ) {
+    flock.1.clear();
+    flock
+        .1
+        .extend(vehicles.iter().map(|(_, _, _, _, previous)| {
+            [
+                previous.0.translation.extend(0.0),
+                Vec4::from(previous.0.rotation),
+            ]
+        }));
     flock.0.clear();
     flock.0.extend(
         vehicles
             .iter()
-            .map(|(entity, transform, velocity, metadata)| {
+            .map(|(entity, transform, velocity, metadata, _)| {
                 [
                     transform.translation.extend(pack_speed_group(
                         velocity.0.magnitude() / state.vehicle_max_speed.max(f32::EPSILON),
@@ -165,11 +193,17 @@ fn vehicle_spawner(
     while cpu_vehicle_count(&state) > vehicle_spawner.vehicle_count {
         let id = vehicle_spawner.next_id;
         vehicle_spawner.next_id = id.checked_add(1).expect("CPU spawn ID exhausted");
+        let position = (Vec3::new(rand::random(), rand::random(), rand::random())
+            - Vec3::splat(0.5))
+            * spawn_size(state.vehicle_count);
+        let velocity = random_direction().mul(state.vehicle_max_speed);
+        let rotation = if state.motion.classic_heading {
+            Quat::IDENTITY
+        } else {
+            crate::motion::initial(velocity.into())
+        };
         commands
-            .spawn(Transform::from_translation(
-                (Vec3::new(rand::random(), rand::random(), rand::random()) - Vec3::splat(0.5))
-                    * spawn_size(state.vehicle_count),
-            ))
+            .spawn(Transform::from_translation(position).with_rotation(rotation))
             .insert(Vehicle)
             .insert(VehicleMetadata(UVec4::new(
                 id,
@@ -177,9 +211,7 @@ fn vehicle_spawner(
                 0,
                 0,
             )))
-            .insert(VehicleVelocity(
-                random_direction().mul(state.vehicle_max_speed),
-            ))
+            .insert(VehicleVelocity(velocity))
             .insert(VehicleAcceleration(Vector3::zeros()))
             .insert(VehicleWanderRotation {
                 theta: 0.0,
@@ -324,47 +356,42 @@ fn movement(
                     acceleration.apply_force(force, state.vehicle_mass);
                 }
 
-                // Calculate force
-                let mut force = Vector3::new(
-                    if fx {
-                        if transform.translation.x < -walls.x {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                    if fy {
-                        if transform.translation.y < -walls.y {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                    if fz {
-                        if transform.translation.z < -walls.z {
-                            state.vehicle_max_speed
-                        } else {
-                            -state.vehicle_max_speed
-                        }
-                    } else {
-                        0.0
-                    },
-                );
-
-                force -= velocity.0;
-
-                // Limit force
-                limit(&mut force, limit_wall_avoid);
-
-                // Apply force
-                acceleration.apply_force(force, state.vehicle_mass);
+                if fx || fy || fz {
+                    let force = wall_force(
+                        transform.translation,
+                        velocity.0,
+                        walls,
+                        state.vehicle_max_speed,
+                        limit_wall_avoid,
+                    );
+                    // Apply force
+                    acceleration.apply_force(force, state.vehicle_mass);
+                }
             },
         );
     }
+}
+
+fn wall_force(
+    position: Vec3,
+    velocity: Vector3<f32>,
+    bounds: Vec3,
+    max_speed: f32,
+    max_force: f32,
+) -> Vector3<f32> {
+    // Calculate force
+    let mut desired = velocity;
+    for axis in 0..3 {
+        if position[axis] < -bounds[axis] {
+            desired[axis] = max_speed;
+        } else if position[axis] > bounds[axis] {
+            desired[axis] = -max_speed;
+        }
+    }
+    let mut force = desired - velocity;
+    // Limit force
+    limit(&mut force, max_force);
+    force
 }
 
 // Half-extents of the box that wandering vehicles steer back into.
@@ -431,7 +458,7 @@ fn update_membership(
         return;
     }
     for mut metadata in &mut vehicles {
-        let group = state.groups.mapped_group(metadata.0.y);
+        let group = state.groups.spawn_group(metadata.0.x);
         if metadata.0.y != group {
             metadata.0.y = group;
         }
@@ -487,6 +514,7 @@ fn update(
     vehicle_query
         .par_iter_mut()
         .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
+            let old_velocity = velocity.0;
             velocity.0 += acceleration.0 * (time.delta_secs() * REFERENCE_HZ);
             limit(&mut velocity.0, state.vehicle_max_speed);
 
@@ -496,7 +524,15 @@ fn update(
 
             let direction = normalize_or_zero(velocity.0);
             if direction != Vector3::zeros() {
-                transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction.into());
+                transform.rotation = crate::motion::orientation(
+                    transform.rotation,
+                    direction.into(),
+                    old_velocity.into(),
+                    velocity.0.into(),
+                    time.delta_secs(),
+                    state.motion,
+                    state.vehicle_max_speed,
+                );
             }
 
             acceleration.0 *= 0.0;
@@ -882,6 +918,154 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct WallProbeStats {
+        speed_windows: [f64; 6],
+        worst_overshoot: f32,
+    }
+
+    impl WallProbeStats {
+        fn sample(
+            &mut self,
+            step: usize,
+            bounds: Vec3,
+            vehicles: impl Iterator<Item = (Vec3, Vec3)>,
+        ) {
+            let mut speed = 0.0_f64;
+            let mut count = 0;
+            for (position, velocity) in vehicles {
+                assert!(position.is_finite() && velocity.is_finite());
+                speed += velocity.length() as f64;
+                count += 1;
+                self.worst_overshoot = self
+                    .worst_overshoot
+                    .max((position.abs() - bounds).max_element());
+            }
+            self.speed_windows[step / 600] += speed / count as f64 / 600.0;
+        }
+
+        fn report(&self, count: usize, backend: &str) {
+            println!("wall_containment count={count} backend={backend} mean_speed_30_40={:.6} mean_speed_40_50={:.6} settled_mean_speed_50_60={:.6} worst_overshoot={:.6}",
+                self.speed_windows[3], self.speed_windows[4], self.speed_windows[5], self.worst_overshoot);
+        }
+    }
+
+    #[test]
+    #[ignore = "headless wall measurement; run in release with --nocapture --test-threads=1"]
+    fn wall_containment_probe() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        const SEED: u64 = 0xB01D5;
+        const STEPS: usize = 3600;
+        let dt = Duration::from_secs_f64(1.0 / 60.0);
+        bevy::tasks::ComputeTaskPool::get_or_init(|| {
+            bevy::tasks::TaskPoolBuilder::new().num_threads(9).build()
+        });
+        let default_count = GlobalState::default().vehicle_count;
+        let mut counts = vec![200, 20_000, default_count];
+        counts.sort_unstable();
+        counts.dedup();
+        println!("wall_containment_probe seed={SEED:#x} default_count={default_count} steps={STEPS} dt={:.9} mean_window=50..60s peak_window=0..60s CPU_initial_world_seeded_GPU_frame_index_PCG threads=9", dt.as_secs_f64());
+        let mut worlds = Vec::new();
+        for count in counts {
+            let state = GlobalState {
+                vehicle_count: count,
+                mode: SimulationMode::Octree,
+                ..default()
+            };
+            let mut rng = StdRng::seed_from_u64(SEED);
+            let boids: Vec<BoidData> = (0..count)
+                .map(|id| {
+                    let position = (Vec3::new(rng.random(), rng.random(), rng.random())
+                        - Vec3::splat(0.5))
+                        * spawn_size(count);
+                    let z: f32 = rng.random_range(-1.0..=1.0);
+                    let angle: f32 = rng.random_range(0.0..2.0 * PI);
+                    let radius = (1.0 - z * z).sqrt();
+                    let velocity = Vec3::new(radius * angle.cos(), radius * angle.sin(), z)
+                        * state.vehicle_max_speed;
+                    let mut boid: BoidData = [
+                        position.extend(0.0),
+                        velocity.extend(0.0),
+                        Vec4::from(Quat::IDENTITY),
+                        Vec4::ZERO,
+                    ]
+                    .into();
+                    boid.metadata =
+                        UVec4::new(id as u32, state.groups.spawn_group(id as u32), 0, 0);
+                    boid
+                })
+                .collect();
+            let mut app = App::new();
+            app.insert_resource(state)
+                .init_resource::<Time>()
+                .init_resource::<SwarmScene>()
+                .init_resource::<FormationFrame>()
+                .init_resource::<PredatorFrame>()
+                .add_systems(Update, (movement, update).chain());
+            app.world_mut()
+                .spawn((Target, TargetSelection(false), Transform::default()));
+            for boid in &boids {
+                app.world_mut().spawn((
+                    Vehicle,
+                    VehicleMetadata(boid.metadata),
+                    VehicleVelocity(boid[1].truncate().into()),
+                    VehicleAcceleration::default(),
+                    VehicleWanderRotation::default(),
+                    Transform::from_translation(boid[0].truncate()),
+                ));
+            }
+            let mut stats = WallProbeStats::default();
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(&Transform, &VehicleVelocity), With<Vehicle>>();
+            for step in 0..STEPS {
+                app.world_mut().resource_mut::<Time>().advance_by(dt);
+                app.update();
+                stats.sample(
+                    step,
+                    walls(count),
+                    query
+                        .iter(app.world())
+                        .map(|(p, v)| (p.translation, Vec3::from(v.0))),
+                );
+                if (step + 1) % 600 == 0 {
+                    println!("wall_containment_progress count={count} backend=octree simulated_seconds={}",(step+1)/60);
+                }
+            }
+            stats.report(count, "octree");
+            worlds.push((count, boids));
+        }
+        let (device, queue) = gpu_device();
+        for (count, boids) in worlds {
+            let state = GlobalState {
+                vehicle_count: count,
+                ..default()
+            };
+            let mut flock = GpuFlock::new(&device);
+            flock.upload(&device, &queue, &boids);
+            let params = gpu_params(&state, Vec3::ZERO, false, dt.as_secs_f32());
+            let mut stats = WallProbeStats::default();
+            for step in 0..STEPS {
+                gpu_step(&mut flock, &device, &queue, &params);
+                stats.sample(
+                    step,
+                    walls(count),
+                    flock
+                        .read_boids(&device, &queue)
+                        .iter()
+                        .map(|b| (b[0].truncate(), b[1].truncate())),
+                );
+                if (step + 1) % 600 == 0 {
+                    println!(
+                        "wall_containment_progress count={count} backend=gpu simulated_seconds={}",
+                        (step + 1) / 60
+                    );
+                }
+            }
+            stats.report(count, "gpu");
+        }
+    }
+
     fn presentation_app(mode: SimulationMode) -> (App, Entity) {
         let mut app = crate::presentation::tests::clock_app();
         app.insert_resource(GlobalState {
@@ -913,6 +1097,86 @@ mod tests {
             ))
             .id();
         (app, entity)
+    }
+
+    #[test]
+    fn previous_cpu_transform_is_frame_start_not_last_substep_and_refreshes_when_paused() {
+        for mode in [SimulationMode::Naive, SimulationMode::Octree] {
+            let (mut app, entity) = presentation_app(mode);
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .speed = 4.0;
+            for frame in 1..=3 {
+                let before = *app.world().get::<Transform>(entity).unwrap();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_to(Duration::from_millis(frame * 20));
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .get::<PreviousVehicleTransform>(entity)
+                        .unwrap()
+                        .0,
+                    before
+                );
+                assert_ne!(*app.world().get::<Transform>(entity).unwrap(), before);
+            }
+            app.world_mut()
+                .resource_mut::<crate::presentation::Presentation>()
+                .paused = true;
+            let before = *app.world().get::<Transform>(entity).unwrap();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<PreviousVehicleTransform>(entity)
+                    .unwrap()
+                    .0,
+                before
+            );
+            assert_eq!(*app.world().get::<Transform>(entity).unwrap(), before);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real GPU device"]
+    fn gpu_previous_transforms_follow_identity_across_sorts_and_multiple_substeps() {
+        use crate::gpu_flock::{gpu_params, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 600,
+            ..default()
+        };
+        let mut spawn = gpu_params(&state, Vec3::ZERO, false, 0.0);
+        spawn.motion.w = 0.0;
+        gpu_step(&mut flock, &device, &queue, &spawn);
+        for (boid, pose) in flock
+            .read_boids(&device, &queue)
+            .iter()
+            .zip(flock.read_previous(&device, &queue))
+        {
+            assert_eq!(pose[0].truncate(), boid[0].truncate());
+            assert_eq!(pose[1], boid[2]);
+        }
+        for cap in [0, 16] {
+            state.gpu_max_neighbors = cap;
+            let initial = flock.read_boids(&device, &queue);
+            let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            for substep in 0..4 {
+                params.motion.w = substep as f32;
+                gpu_step(&mut flock, &device, &queue, &params);
+                let current = flock.read_boids(&device, &queue);
+                let previous = flock.read_previous(&device, &queue);
+                for (boid, pose) in current.iter().zip(previous) {
+                    let original = initial
+                        .iter()
+                        .find(|b| b.metadata.x == boid.metadata.x)
+                        .unwrap();
+                    assert_eq!(pose[0].truncate(), original[0].truncate());
+                    assert_eq!(pose[1], original[2]);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1647,6 +1911,7 @@ mod tests {
         );
         assert!(initial.values().all(|v| v.0.y == v.0.x % 8));
         for count in [2, 8, 0, 3] {
+            let previous = snapshot(app.world_mut());
             app.world_mut().resource_mut::<GlobalState>().groups.count = count;
             app.update();
             let current = snapshot(app.world_mut());
@@ -1655,7 +1920,14 @@ mod tests {
                 assert_eq!((meta.x, meta.z, meta.w), (before.0.x, 0, 0));
                 assert_eq!(*transform, before.1);
                 assert_eq!(*phase, before.2);
-                assert_eq!(meta.y, before.0.y % 2);
+                assert_eq!(
+                    meta.y,
+                    if count == 0 {
+                        previous[entity].0.y
+                    } else {
+                        meta.x % count
+                    }
+                );
             }
         }
         let retained = snapshot(app.world_mut());
@@ -2203,6 +2475,203 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_banked_rotation_parity_and_position_velocity_bit_preservation() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        let (device, queue) = gpu_device();
+        let inputs: Vec<BoidData> = (0..64)
+            .map(|i| {
+                let mut boid: BoidData = [
+                    Vec4::new(
+                        (i % 8) as f32 * 40.0 - 140.0,
+                        (i / 8) as f32 * 40.0 - 140.0,
+                        0.0,
+                        0.0,
+                    ),
+                    Vec4::new(3.0 + (i % 3) as f32, 4.0, 7.0 - (i % 5) as f32, 0.0),
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+                .into();
+                boid.metadata.x = i;
+                boid
+            })
+            .collect();
+        let mut natural = GpuFlock::new(&device);
+        let mut classic = GpuFlock::new(&device);
+        natural.upload(&device, &queue, &inputs);
+        classic.upload(&device, &queue, &inputs);
+        let mut state = GlobalState {
+            vehicle_count: inputs.len(),
+            vehicle_wander_radius: 0.0,
+            ..default()
+        };
+        let mut previous: std::collections::HashMap<_, _> =
+            inputs.into_iter().map(|b| (b.metadata.x, b)).collect();
+        let mut different = false;
+        for _ in 0..16 {
+            let params = gpu_params(&state, Vec3::new(120.0, 200.0, 80.0), true, 1.0 / 60.0);
+            gpu_step(&mut natural, &device, &queue, &params);
+            state.motion.classic_heading = true;
+            gpu_step(
+                &mut classic,
+                &device,
+                &queue,
+                &gpu_params(&state, Vec3::new(120.0, 200.0, 80.0), true, 1.0 / 60.0),
+            );
+            state.motion.classic_heading = false;
+            let a = natural.read_boids(&device, &queue);
+            let b: std::collections::HashMap<_, _> = classic
+                .read_boids(&device, &queue)
+                .into_iter()
+                .map(|b| (b.metadata.x, b))
+                .collect();
+            for boid in &a {
+                let old = previous[&boid.metadata.x];
+                for record in [0, 1, 3] {
+                    assert_eq!(
+                        boid[record].to_array().map(f32::to_bits),
+                        b[&boid.metadata.x][record].to_array().map(f32::to_bits)
+                    );
+                }
+                let velocity: Vector3<f32> = boid[1].truncate().into();
+                let expected = crate::motion::orientation(
+                    Quat::from_vec4(old[2]),
+                    normalize_or_zero(velocity).into(),
+                    old[1].truncate(),
+                    boid[1].truncate(),
+                    1.0 / 60.0,
+                    state.motion,
+                    state.vehicle_max_speed,
+                );
+                assert!(
+                    expected.dot(Quat::from_vec4(boid[2])).abs() > 1.0 - 1e-5,
+                    "id={}",
+                    boid.metadata.x
+                );
+                different |= boid[2] != b[&boid.metadata.x][2];
+            }
+            previous = a.into_iter().map(|b| (b.metadata.x, b)).collect();
+        }
+        assert!(different);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_camera_tracks_spawn_id_across_sorts_count_edits_and_pause() {
+        use crate::gpu_flock::{gpu_params, BoidData, GpuFlock};
+        let (device, queue) = gpu_device();
+        let mut flock = GpuFlock::new(&device);
+        let mut state = GlobalState {
+            vehicle_count: 257,
+            ..default()
+        };
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.0),
+        );
+        let id = flock.read_boids(&device, &queue)[13].metadata.x;
+        for frame in 0..12 {
+            if frame == 3 {
+                state.vehicle_count = 777;
+            }
+            // Both one-sort and two-sort paths must resolve the same spawn ID.
+            let mut params = gpu_params(&state, Vec3::ZERO, frame >= 6, 1.0 / 60.0);
+            if frame == 10 {
+                params.dt = 0.0;
+            }
+            params.track = UVec4::new(1, id, (frame as f32 / 60.0).to_bits(), 0);
+            gpu_step(&mut flock, &device, &queue, &params);
+            let actual = flock
+                .read_boids(&device, &queue)
+                .into_iter()
+                .find(|b| b.metadata.x == id)
+                .unwrap();
+            let tracked = flock.read_track(&device, &queue);
+            assert_eq!(tracked[4], UVec4::new(id, params.track.z, 1, 0));
+            for (record, expected) in tracked[..4].iter().zip(actual.state) {
+                assert_eq!(record.to_array(), expected.to_array().map(f32::to_bits));
+            }
+        }
+        // Truncation retains the first records before this step, then may sort them again.
+        let surviving_id = flock.read_boids(&device, &queue)[0].metadata.x;
+        state.vehicle_count = 31;
+        let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+        params.track = UVec4::new(1, surviving_id, 99.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        let actual = flock
+            .read_boids(&device, &queue)
+            .into_iter()
+            .find(|b| b.metadata.x == surviving_id)
+            .unwrap();
+        assert_eq!(
+            flock.read_track(&device, &queue)[0].to_array(),
+            actual[0].to_array().map(f32::to_bits)
+        );
+        params.track = UVec4::new(1, u32::MAX, 100.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        assert_eq!(flock.read_track(&device, &queue)[4], UVec4::ZERO);
+        // Index selection returns an ID whose state is exactly the sampled state.
+        params.track = UVec4::new(2, 7, 101.0_f32.to_bits(), 0);
+        gpu_step(&mut flock, &device, &queue, &params);
+        let actual = flock.read_boids(&device, &queue)[7];
+        let tracked = flock.read_track(&device, &queue);
+        assert_eq!(tracked[4].x, actual.metadata.x);
+        assert_eq!(
+            tracked[0].to_array(),
+            actual[0].to_array().map(f32::to_bits)
+        );
+        // Tracking is read-only with respect to boids. Sparse fixed inputs avoid
+        // neighbor-sum ordering differences between independent GPU atomic sorts.
+        let inputs: Vec<BoidData> = (0..64)
+            .map(|i| {
+                let mut boid: BoidData = [
+                    Vec4::new(i as f32 * 37.0, 0.0, 0.0, 0.0),
+                    Vec4::new(3.0, -4.0, 5.0, 0.0),
+                    Vec4::W,
+                    Vec4::ZERO,
+                ]
+                .into();
+                boid.metadata.x = i * 2;
+                boid
+            })
+            .collect();
+        let mut off = GpuFlock::new(&device);
+        let mut on = GpuFlock::new(&device);
+        off.upload(&device, &queue, &inputs);
+        on.upload(&device, &queue, &inputs);
+        state.vehicle_count = inputs.len();
+        for _ in 0..8 {
+            let params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            gpu_step(&mut off, &device, &queue, &params);
+            gpu_step(
+                &mut on,
+                &device,
+                &queue,
+                &crate::gpu_flock::GpuParams {
+                    track: UVec4::new(1, 26, 0, 0),
+                    ..params
+                },
+            );
+        }
+        let mut a = off.read_boids(&device, &queue);
+        let mut b = on.read_boids(&device, &queue);
+        a.sort_by_key(|boid| boid.metadata.x);
+        b.sort_by_key(|boid| boid.metadata.x);
+        for (off, on) in a.iter().zip(&b) {
+            assert_eq!(off.metadata, on.metadata);
+            for (a, b) in off.state.iter().zip(on.state) {
+                assert_eq!(
+                    a.to_array().map(f32::to_bits),
+                    b.to_array().map(f32::to_bits)
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "headless GPU measurement; run in release with --nocapture --test-threads=1"]
     fn gpu_flocking_benchmark() {
         use crate::gpu_flock::{gpu_params, GpuFlock};
@@ -2210,6 +2679,8 @@ mod tests {
         const WARMUP: usize = 600;
         const STEPS: usize = 60;
         const DT: f32 = 1.0 / 60.0;
+        let classic = std::env::var("GPU_BENCH_CLASSIC_HEADING").is_ok_and(|v| v == "1");
+        let track = std::env::var("GPU_BENCH_TRACK").is_ok_and(|v| v == "1");
         let counts = gpu_bench_values(
             "GPU_BENCH_COUNTS",
             &std::env::var("GPU_BENCH_COUNTS")
@@ -2287,6 +2758,7 @@ mod tests {
                         gpu_max_neighbors: cap,
                         ..default()
                     };
+                    state.motion.classic_heading = classic;
                     state.groups.count = groups;
                     let mut scene = SwarmScene::default();
                     for index in 0..obstacle_count {
@@ -2309,9 +2781,12 @@ mod tests {
                     scene.formation.set_mode(formation_mode);
                     let formation = FormationFrame::fixed(scene.formation);
                     flock.set_scene(&scene);
-                    let params = gpu_params(&state, Vec3::ZERO, following, DT)
+                    let mut params = gpu_params(&state, Vec3::ZERO, following, DT)
                         .with_scene(&scene)
                         .with_formation(&formation, cap);
+                    if track {
+                        params.track = UVec4::new(1, 13, 0, 0);
+                    }
                     let mut timings = Vec::with_capacity(STEPS);
                     let mut warmup_steps = 0;
                     let mut status = String::from("complete");
@@ -2381,7 +2856,7 @@ mod tests {
                         "NA".into()
                     };
                     println!(
-                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
+                        "gpu_flocking_benchmark count={count} cap={cap} effective_cap={} mode={mode} track={track} classic_heading={classic} spawn_frame=0 dt={DT:.9} warmup_steps={warmup_steps}/{warmup} timed_steps={}/{STEPS} median_ms={:.3} p95_ms={:.3} nn_sample={} nn_p1={:.3} nn_p10={:.3} nn_median={:.3} nn_lt1_4_pct={:.2} mean_speed={:.3} mean_target_distance={target_distance} status={status}",
                         params.max_neighbors, timings.len(), gpu_bench_percentile(&timings, 50), gpu_bench_percentile(&timings, 95),
                         stats.sample_count, stats.nn_p1, stats.nn_p10, stats.nn_median, stats.close_percent, stats.mean_speed,
                     );
@@ -2437,7 +2912,13 @@ mod tests {
                         Vec4::W,
                         Vec4::ZERO,
                     ],
-                    metadata: UVec4::new(id, group, 0, 0),
+                    // Sparse IDs keep this adversarial fixture's intended spawn-rule groups.
+                    metadata: UVec4::new(
+                        if id < 2 { id * 2 } else { (id - 2) * 2 + 1 },
+                        group,
+                        0,
+                        0,
+                    ),
                 }
             })
             .collect();
@@ -2539,9 +3020,27 @@ mod tests {
         assert!(grown[128..]
             .iter()
             .all(|b| b.metadata == UVec4::new(b.metadata.x, b.metadata.x % 8, 0, 0)));
-        for count in [3, 0, 2, 8] {
+        let mut cpu = App::new();
+        cpu.insert_resource(GlobalState {
+            mode: SimulationMode::Naive,
+            ..state
+        })
+        .add_systems(Update, update_membership);
+        for boid in &grown {
+            cpu.world_mut()
+                .spawn((Vehicle, VehicleMetadata(boid.metadata)));
+        }
+        for count in [2, 5, 3, 0, 2, 8] {
             let before = flock.read_boids(&device, &queue);
             state.groups.count = count;
+            cpu.world_mut().resource_mut::<GlobalState>().groups.count = count;
+            cpu.update();
+            let cpu_metadata: std::collections::HashMap<_, _> = cpu
+                .world_mut()
+                .query::<&VehicleMetadata>()
+                .iter(cpu.world())
+                .map(|m| (m.0.x, m.0))
+                .collect();
             gpu_step(
                 &mut flock,
                 &device,
@@ -2551,6 +3050,7 @@ mod tests {
             let after = flock.read_boids(&device, &queue);
             let instances = flock.read_instances(&device, &queue);
             for ((a, b), instance) in before.iter().zip(&after).zip(&instances) {
+                assert_eq!(b.metadata, cpu_metadata[&b.metadata.x]);
                 assert_eq!(a.state, b.state);
                 assert_eq!(
                     (a.metadata.x, a.metadata.z, a.metadata.w),
@@ -2561,7 +3061,7 @@ mod tests {
                     if count == 0 {
                         a.metadata.y
                     } else {
-                        a.metadata.y % count
+                        state.groups.spawn_group(b.metadata.x)
                     }
                 );
                 assert_eq!(
@@ -3181,7 +3681,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(id, &(mut position, velocity))| {
-                    // Exercise both signs of every wall, as well as the inside-wall drag.
+                    // Exercise both signs of every wall, as well as drag-free in-bounds axes.
                     if id < 6 {
                         let axis = id / 2;
                         position[axis] = walls(count)[axis] * if id % 2 == 0 { -1.1 } else { 1.1 };
@@ -3314,6 +3814,10 @@ mod tests {
             &[[Vec4::ZERO, Vec4::ZERO, rotation, Vec4::ZERO].into()],
         );
         let state = GlobalState {
+            motion: crate::motion::MotionSettings {
+                classic_heading: true,
+                ..default()
+            },
             mode: SimulationMode::Gpu,
             vehicle_count: 1,
             ..default()
@@ -3601,10 +4105,159 @@ mod tests {
     }
 
     #[test]
+    fn wall_force_is_zero_inside_and_only_changes_outside_axes() {
+        let bounds = Vec3::new(200.0, 200.0, 100.0);
+        let velocity = Vector3::new(60.0, -30.0, 20.0);
+        for position in [Vec3::ZERO, bounds, -bounds] {
+            assert_eq!(
+                wall_force(position, velocity, bounds, 80.0, 120.0).map(f32::to_bits),
+                Vector3::<f32>::zeros().map(f32::to_bits)
+            );
+        }
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                let mut position = Vec3::ZERO;
+                position[axis] = sign * (bounds[axis] + 1.0);
+                let force = wall_force(position, velocity, bounds, 80.0, 120.0);
+                let mut expected = Vector3::zeros();
+                expected[axis] = (-sign * 80.0 - velocity[axis]).clamp(-120.0, 120.0);
+                assert_eq!(force, expected);
+            }
+        }
+        let force = wall_force(bounds * 2.0, velocity, bounds, 80.0, 120.0);
+        assert!((force.magnitude() - 120.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn group_count_edits_rebalance_from_spawn_ids_once() {
+        let mut app = App::new();
+        let mut state = cpu_state();
+        state.groups.count = 2;
+        app.insert_resource(state)
+            .add_systems(Update, update_membership);
+        for id in 0..61 {
+            app.world_mut()
+                .spawn((Vehicle, VehicleMetadata(UVec4::new(id, 99, id + 100, 71))));
+        }
+        let snapshot = |world: &mut World| {
+            let mut records: Vec<_> = world
+                .query::<&VehicleMetadata>()
+                .iter(world)
+                .map(|m| m.0)
+                .collect();
+            records.sort_by_key(|m| m.x);
+            records
+        };
+        let mut previous = snapshot(app.world_mut());
+        for count in [2, 5, 3, 0, 5] {
+            app.world_mut().resource_mut::<GlobalState>().groups.count = count;
+            app.update();
+            let current = snapshot(app.world_mut());
+            let mut populations = [0_usize; 8];
+            for (metadata, before) in current.iter().zip(&previous) {
+                assert_eq!(
+                    (metadata.x, metadata.z, metadata.w),
+                    (before.x, before.z, before.w)
+                );
+                assert_eq!(
+                    metadata.y,
+                    if count == 0 {
+                        before.y
+                    } else {
+                        metadata.x % count
+                    }
+                );
+                if count > 0 {
+                    populations[metadata.y as usize] += 1;
+                }
+            }
+            if count > 0 {
+                let populations = &populations[..count as usize];
+                assert!(populations.iter().max().unwrap() - populations.iter().min().unwrap() <= 1);
+            }
+            previous = current;
+            app.world_mut().clear_trackers();
+            app.update();
+            assert_eq!(snapshot(app.world_mut()), previous);
+            assert!(app
+                .world_mut()
+                .query::<Ref<VehicleMetadata>>()
+                .iter(app.world())
+                .all(|m| !m.is_changed()));
+        }
+    }
+
+    #[test]
     fn diagonal_velocity_is_limited_by_magnitude() {
         let mut velocity = Vector3::repeat(80.0);
         limit(&mut velocity, 80.0);
         assert!((velocity.magnitude() - 80.0).abs() <= 1e-3);
+    }
+
+    #[test]
+    fn banking_keeps_cpu_position_and_velocity_bits_identical_to_classic() {
+        let make = |classic_heading| {
+            let mut app = App::new();
+            let state = GlobalState {
+                motion: crate::motion::MotionSettings {
+                    classic_heading,
+                    ..default()
+                },
+                ..default()
+            };
+            app.insert_resource(state)
+                .init_resource::<Time>()
+                .add_systems(Update, update);
+            let entity = app
+                .world_mut()
+                .spawn((
+                    Vehicle,
+                    Transform::from_xyz(1.0, 2.0, 3.0),
+                    VehicleVelocity(Vector3::new(-3.0, 8.0, 12.0)),
+                    VehicleAcceleration::default(),
+                ))
+                .id();
+            (app, entity)
+        };
+        let (mut classic, a) = make(true);
+        let (mut natural, b) = make(false);
+        for i in 0..90 {
+            let acceleration = Vector3::new((i as f32 * 0.1).sin() * 20.0, -3.0, 2.0);
+            for (app, entity) in [(&mut classic, a), (&mut natural, b)] {
+                app.world_mut()
+                    .get_mut::<VehicleAcceleration>(entity)
+                    .unwrap()
+                    .0 = acceleration;
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_by(Duration::from_secs_f64(1.0 / 60.0));
+                app.update();
+            }
+            assert_eq!(
+                classic
+                    .world()
+                    .get::<Transform>(a)
+                    .unwrap()
+                    .translation
+                    .to_array()
+                    .map(f32::to_bits),
+                natural
+                    .world()
+                    .get::<Transform>(b)
+                    .unwrap()
+                    .translation
+                    .to_array()
+                    .map(f32::to_bits)
+            );
+            assert_eq!(
+                Vec3::from(classic.world().get::<VehicleVelocity>(a).unwrap().0)
+                    .to_array()
+                    .map(f32::to_bits),
+                Vec3::from(natural.world().get::<VehicleVelocity>(b).unwrap().0)
+                    .to_array()
+                    .map(f32::to_bits)
+            );
+        }
     }
 
     #[test]

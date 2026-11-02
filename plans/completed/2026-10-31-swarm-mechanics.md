@@ -1177,3 +1177,26 @@ Revision notes:
 - 2026-10-31: Stage 7d complete and uncommitted; final 116-test / 11-device-test gate, Clippy baseline, desktop exit/pixel proof and all performance evidence recorded. Stage 7e remains separate owner-authorized work.
 
 - 2026-10-31: Stage 7d committed by orchestrator as 77406a4; 7e only authorized. Finalized flee law, mask semantics, anchored paths, shared substep snapshots and 512-byte arena reservation before code.
+
+
+### 2026-11-01 follow-up: rebalance existing vehicles on group-count edits
+
+The owner authorized replacing the known non-rebalancing limitation after Stage 7 was committed.
+This note supersedes the earlier policy that mapped current membership modulo the new count and
+left newly enabled groups empty until vehicle growth. CPU `update_membership` now calls the spawn
+rule on the carried spawn ID, and GPU `update_groups` resolves the carried record through its order
+map and assigns `metadata.y = metadata.x % enabled_count`. Both run once per group-count edit,
+including re-enabling after Off, and work while paused. No matching or per-frame remapping is added.
+Contiguous IDs balance group populations within one vehicle; arbitrary sparse survivor ID sets have
+no exact population quota. Disabling groups preserves latent membership and still renders group
+zero; Off spawn remains ID modulo eight. ID/animation phase/slot/reserved lanes, instance/Boid
+strides, eight bindings and steady-state disabled-group work are unchanged. Existing formation slot
+maintenance still runs separately when group count changes, preserving dense per-group ranges.
+Naive/Octree switches retain membership; backend switches retain their existing respawn policy.
+
+A CPU regression exercises 2→5→3→Off→5, checks populations and unchanged component ticks on steady
+frames. The GPU metadata lifecycle fixture now compares actual CPU-maintained metadata with GPU
+records after 2→5→3→Off→2→8, following both sorts and paused capacity growth. It also checks unchanged
+motion, phase, unrelated metadata and rendered group bits. Final gate/results are recorded in
+[wall containment and rebalance](2026-11-01-wall-containment.md); no default speed/force settings or
+rendering paths were changed. The companion wall change removes in-bounds braking on both backends.

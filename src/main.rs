@@ -1,16 +1,25 @@
+mod capture;
+mod director;
+mod environment;
+mod follow;
 mod formation;
 mod gpu_flock;
 mod instancing;
+mod motion;
 mod octree;
 mod predator;
 mod presentation;
 mod scenario;
 mod scene;
+mod showcase;
+mod species;
 mod swarm;
 mod target;
+mod underwater;
 mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;
+mod volumetric;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
@@ -72,6 +81,8 @@ fn main() {
             vehicle_model::VehicleModelPlugin,
             scenario::ScenarioPlugin,
             presentation::PresentationPlugin,
+            follow::FollowPlugin,
+            capture::CapturePlugin,
             swarm::SwarmPlugin,
         ))
         .add_systems(
@@ -80,9 +91,24 @@ fn main() {
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
-        .add_systems(Update, fps_update_system)
+        .add_systems(Update, (fps_update_system, sync_ui_visibility))
         .add_systems(EguiPrimaryContextPass, ui)
         .run();
+}
+
+fn sync_ui_visibility(
+    presentation: Res<presentation::Presentation>,
+    mut roots: Query<&mut Visibility, With<Text>>,
+) {
+    if presentation.is_changed() {
+        for mut visibility in &mut roots {
+            *visibility = if presentation.ui_visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
 }
 
 // The built-in controller deliberately leaves input mapping to the application.
@@ -93,17 +119,19 @@ fn camera_input(
     mut contexts: EguiContexts,
     mut cameras: Query<&mut PanOrbitCamera>,
     mut previous_mode: Local<u8>,
+    presentation: Option<Res<presentation::Presentation>>,
 ) {
     let blocked = contexts
         .ctx_mut()
         .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
+    let following = presentation.is_some_and(|p| p.follow.enabled() && !p.director.enabled);
     let mode = if blocked {
         0
     } else if buttons.pressed(MouseButton::Right) {
         1
     } else if buttons.pressed(MouseButton::Middle) {
         2
-    } else if scroll.delta.y != 0.0 {
+    } else if !following && scroll.delta.y != 0.0 {
         3
     } else {
         0
@@ -122,7 +150,7 @@ fn camera_input(
         if mode == 1 || mode == 2 {
             camera.send_screenspace_input(motion.delta);
         }
-        if !blocked && scroll.delta.y != 0.0 {
+        if !blocked && !following && scroll.delta.y != 0.0 {
             let scale = if scroll.unit == MouseScrollUnit::Line {
                 150.0
             } else {
@@ -158,6 +186,7 @@ impl SimulationMode {
 struct GlobalState {
     attractor: swarm::Attractor,
     groups: swarm::Groups,
+    motion: motion::MotionSettings,
 
     // Basic info
     vehicle_count: usize,
@@ -194,6 +223,7 @@ impl Default for GlobalState {
         Self {
             attractor: default(),
             groups: default(),
+            motion: default(),
             vehicle_count: 20_000,
             vehicle_size: 1.0,
             vehicle_mass: 60.0,
@@ -226,20 +256,44 @@ fn ui(
     mut presentation: ResMut<presentation::Presentation>,
     mut swarm_ui: swarm::SwarmUi,
 ) -> Result {
-    let ctx = egui_context.ctx_mut()?;
     appearance.count_editing = false;
+    if !presentation.ui_visible {
+        return Ok(());
+    }
+    let ctx = egui_context.ctx_mut()?;
     egui::Window::new("Menu")
         .default_size([340.0, 640.0])
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
+            egui::CollapsingHeader::new("Showcase").default_open(true).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for showcase in showcase::Showcase::ALL {
+                        if ui.button(showcase.name()).clicked() {
+                            swarm_ui.commands.queue(move |world: &mut World| showcase::apply(world, showcase));
+                        }
+                    }
+                });
+            });
+            egui::CollapsingHeader::new("Species").default_open(true).show(ui, |ui| {
+                for (label, group) in [("Fish", species::Species::FISH), ("Birds", species::Species::BIRDS)] {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(label);
+                        for species in group {
+                            if ui.button(species.name()).on_hover_text(species.description()).clicked() {
+                                swarm_ui.commands.queue(move |world: &mut World| species::apply(world, species));
+                            }
+                        }
+                    });
+                }
+            });
             if models.status.starts_with("Error:") {
                 ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
             }
             egui::CollapsingHeader::new("Presentation").default_open(true).show(ui, |ui| {
                 presentation::ui(ui, &mut presentation);
             });
-            egui::CollapsingHeader::new("Simulation").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Simulation").default_open(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (mode, label) in [
                     (SimulationMode::Gpu, "GPU"),
@@ -282,7 +336,7 @@ fn ui(
                 );
             }
             });
-            egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Swarm").default_open(false).show(ui, |ui| {
                 swarm::ui(ui, &mut state.attractor);
                 ui.separator();
                 let mut scene = swarm_ui.scene.clone();
@@ -374,14 +428,43 @@ fn ui(
                         ui.selectable_value(&mut appearance.palette, palette, palette.name());
                     }
                 });
+                egui::ComboBox::from_label("Environment")
+                    .selected_text(appearance.environment.name())
+                    .show_ui(ui, |ui| {
+                        for environment in environment::Environment::ALL {
+                            ui.selectable_value(&mut appearance.environment, environment, environment.name());
+                        }
+                    });
+                ui.checkbox(&mut appearance.volumetric, "Volumetric light");
+                if appearance.volumetric {
+                    ui.add(egui::Slider::new(&mut appearance.volumetric_steps, 16..=128).text("Ray steps"));
+                    ui.label("Active environments imply shadows (casting cap still applies)");
+                }
+                ui.checkbox(&mut appearance.shadows, "Shadows");
+                ui.add(egui::Slider::new(&mut appearance.shadow_cap, 0..=1_000_000).text("Flock shadow cap"));
+                if appearance.effective_shadows() && state.vehicle_count > appearance.shadow_cap {
+                    ui.label("Flock shadows paused: vehicle count exceeds cap");
+                }
+                ui.checkbox(&mut appearance.ambient_occlusion, "Ambient occlusion");
+                if appearance.ambient_occlusion { ui.label("Ambient occlusion uses MSAA Off"); }
                 ui.checkbox(&mut appearance.auto_frame, "Auto-frame on count change");
                 if ui.button("Frame world").clicked() {
                     appearance.frame_requested = true;
                 }
             });
-            egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Vehicles").default_open(false).show(ui, |ui| {
                 vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
                 vehicle_appearance::ui(ui, &mut appearance.vehicles);
+                egui::CollapsingHeader::new("Motion").default_open(true).show(ui, |ui| {
+                    ui.checkbox(&mut state.motion.classic_heading, "Classic heading");
+                    ui.add(egui::Slider::new(&mut state.motion.bank, 0.0..=1.0).text("Banking"));
+                    ui.add(egui::Slider::new(&mut state.motion.flap, 0.0..=1.5).text("Flap / Swim amplitude"));
+                    ui.add(egui::Slider::new(&mut state.motion.frequency, 0.0..=3.0).text("speed → frequency"));
+                });
+                if appearance.style == scene::SceneStyle::Glow {
+                    ui.add(egui::Slider::new(&mut appearance.glow, 0.0..=20.0).text("glow"));
+                    ui.add(egui::Slider::new(&mut appearance.streak, 0.0..=3.0).text("streak"));
+                }
             });
         });
     let following = targets.iter().any(|selection| selection.0);
@@ -415,11 +498,15 @@ fn ui(
                     "Vehicles wander freely."
                 });
             }
+            ui.label(format!("Boid camera: {}", presentation.follow.mode.name()));
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
                 for (input, action) in [
                     ("Hold F", "Apply cursor field (Swarm)"),
                     ("P / O", "Pause / auto-orbit"),
+                    ("H", "Hide / show UI"),
+                    ("B / N", "Boid camera / next boid"),
+                    ("C", "Toggle Director"),
                     (
                         "1 / 2 / 3 / 4 / 5",
                         "Front / side / top / overview / target",
@@ -428,7 +515,7 @@ fn ui(
                     ("Left-click background", "Stop following"),
                     ("Right-drag", "Orbit camera"),
                     ("Middle-drag", "Pan camera"),
-                    ("Scroll", "Zoom camera"),
+                    ("Scroll", "Zoom / chase distance"),
                     ("W / A / S / D", "Move selected target"),
                     ("Space / Left Shift", "Move target up / down"),
                 ] {

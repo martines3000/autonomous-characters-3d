@@ -3,10 +3,13 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::NoFrustumCulling,
+    camera::{visibility::NoFrustumCulling, Hdr},
     camera_controller::pan_orbit_camera::prelude::*,
-    light::{NotShadowCaster, NotShadowReceiver},
+    core_pipeline::prepass::{DepthPrepass, NormalPrepass},
+    light::{CascadeShadowConfig, CascadeShadowConfigBuilder, NotShadowCaster, NotShadowReceiver},
     mesh::VertexAttributeValues,
+    pbr::ScreenSpaceAmbientOcclusion,
+    post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
     prelude::*,
     render::{
         render_resource::{Face, PrimitiveTopology},
@@ -31,14 +34,16 @@ pub enum SceneStyle {
     #[default]
     Studio,
     Classic,
+    Glow,
 }
 
 impl SceneStyle {
-    pub const ALL: [Self; 2] = [Self::Studio, Self::Classic];
+    pub const ALL: [Self; 3] = [Self::Studio, Self::Classic, Self::Glow];
     pub fn name(self) -> &'static str {
         match self {
             Self::Studio => "Studio",
             Self::Classic => "Classic",
+            Self::Glow => "Glow",
         }
     }
     pub fn settings(self) -> SceneSettings {
@@ -54,6 +59,19 @@ impl SceneStyle {
                 roughness: 0.6,
                 metallic: 0.0,
                 rim: 0.0,
+                emission: 0.0,
+            },
+            Self::Glow => SceneSettings {
+                background: Color::srgb(0.008, 0.012, 0.024),
+                wall: Color::srgba(0.15, 0.24, 0.38, 0.08),
+                grid: Color::srgba(0.08, 0.12, 0.20, 0.1),
+                ambient: 180.0,
+                key: 2500.0,
+                key_color: Color::srgb(0.75, 0.85, 1.0),
+                fill: 800.0,
+                roughness: 0.42,
+                metallic: 0.12,
+                rim: 0.1,
                 emission: 0.0,
             },
             Self::Studio => SceneSettings {
@@ -147,31 +165,70 @@ impl HeadingPalette {
 #[derive(Resource)]
 pub struct Appearance {
     pub style: SceneStyle,
+    pub environment: crate::environment::Environment,
     pub palette: HeadingPalette,
     pub vehicles: crate::vehicle_appearance::VehicleAppearance,
     pub auto_frame: bool,
     pub frame_requested: bool,
     pub count_editing: bool,
+    pub glow: f32,
+    pub streak: f32,
+    pub shadows: bool,
+    pub volumetric: bool,
+    pub volumetric_steps: u32,
+    pub shadow_cap: usize,
+    pub ambient_occlusion: bool,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
         Self {
             style: SceneStyle::default(),
+            environment: default(),
             palette: HeadingPalette::default(),
             vehicles: default(),
             auto_frame: true,
             frame_requested: false,
             count_editing: false,
+            glow: 4.0,
+            streak: 0.8,
+            shadows: false,
+            volumetric: false,
+            volumetric_steps: 64,
+            shadow_cap: 200_000,
+            ambient_occlusion: false,
         }
+    }
+}
+
+impl Appearance {
+    pub fn volumetric_active(&self) -> bool {
+        self.volumetric && self.environment != crate::environment::Environment::Off
+    }
+
+    /// Preserve the user's Shadows preference while shafts need flock occluders.
+    pub fn effective_shadows(&self) -> bool {
+        self.shadows || self.volumetric_active()
     }
 }
 
 pub struct ScenePlugin;
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Appearance>()
+        app.add_plugins(crate::environment::EnvironmentPlugin)
+            .init_resource::<Appearance>()
             .add_systems(Startup, (setup_scene, setup_studio).chain())
+            .add_systems(
+                PostUpdate,
+                (sync_shadow_camera, sync_shadow_lights, sync_shadow_floor)
+                    .after(frame_world)
+                    .after(crate::presentation::animate_camera)
+                    .before(bevy::camera::CameraUpdateSystems),
+            )
+            .add_systems(
+                PostUpdate,
+                sync_glow_camera.before(bevy::camera::CameraUpdateSystems),
+            )
             .add_systems(
                 PostUpdate,
                 (frame_world, draw_world, update_studio)
@@ -181,10 +238,200 @@ impl Plugin for ScenePlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_glow_camera(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    cameras: Query<(Entity, Has<Hdr>, Option<&Bloom>), With<Camera3d>>,
+) {
+    let desired = if appearance.style == SceneStyle::Glow {
+        Some(Bloom {
+            intensity: 0.18,
+            low_frequency_boost: 0.2,
+            composite_mode: BloomCompositeMode::Additive,
+            prefilter: BloomPrefilter {
+                threshold: 1.0,
+                threshold_softness: 0.2,
+            },
+            ..default()
+        })
+    } else if appearance.environment != crate::environment::Environment::Off {
+        Some(Bloom {
+            intensity: 0.035,
+            low_frequency_boost: 0.0,
+            composite_mode: BloomCompositeMode::Additive,
+            prefilter: BloomPrefilter {
+                // The procedural surface highlight has a lower HDR range than the HDRIs.
+                threshold: if appearance.environment == crate::environment::Environment::Underwater
+                {
+                    1.5
+                } else {
+                    3.0
+                },
+                threshold_softness: 0.15,
+            },
+            ..default()
+        })
+    } else {
+        None
+    };
+    for (entity, hdr, bloom) in &cameras {
+        if let Some(desired) = &desired {
+            if !hdr {
+                commands.entity(entity).insert(Hdr);
+            }
+            // These values distinguish Glow and environment glare policies.
+            if bloom.is_none_or(|old| {
+                old.intensity != desired.intensity
+                    || old.prefilter.threshold != desired.prefilter.threshold
+            }) {
+                commands.entity(entity).insert(desired.clone());
+            }
+        } else {
+            if bloom.is_some() {
+                commands.entity(entity).remove::<Bloom>();
+            }
+            if hdr {
+                commands.entity(entity).remove::<Hdr>();
+            }
+        }
+    }
+}
+
+/// Remember only components added by this feature, and restore the camera's MSAA.
 #[derive(Component)]
-struct KeyLight;
+pub(crate) struct ShadowCameraState {
+    added_depth: bool,
+    added_normal: bool,
+    msaa: Option<Msaa>,
+}
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_shadow_camera(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    presentation: Option<Res<crate::presentation::Presentation>>,
+    cameras: Query<
+        (
+            Entity,
+            Has<DepthPrepass>,
+            Has<NormalPrepass>,
+            &Msaa,
+            Has<ScreenSpaceAmbientOcclusion>,
+            Option<&ShadowCameraState>,
+        ),
+        With<Camera3d>,
+    >,
+) {
+    for (entity, depth, normal, msaa, ao, saved) in &cameras {
+        let mut camera = commands.entity(entity);
+        if appearance.effective_shadows()
+            || appearance.ambient_occlusion
+            || presentation.as_ref().is_some_and(|p| p.motion_blur)
+        {
+            let mut next = saved.map_or(
+                ShadowCameraState {
+                    added_depth: !depth,
+                    added_normal: !normal,
+                    msaa: None,
+                },
+                |old| ShadowCameraState {
+                    added_depth: old.added_depth,
+                    added_normal: old.added_normal,
+                    msaa: old.msaa,
+                },
+            );
+            if !depth {
+                camera.insert(DepthPrepass);
+            }
+            if !normal && (appearance.effective_shadows() || appearance.ambient_occlusion) {
+                camera.insert(NormalPrepass);
+            }
+            if appearance.ambient_occlusion {
+                if next.msaa.is_none() {
+                    next.msaa = Some(*msaa);
+                }
+                if *msaa != Msaa::Off {
+                    camera.insert(Msaa::Off);
+                }
+                if !ao {
+                    camera.insert(ScreenSpaceAmbientOcclusion {
+                        radius: 4.0,
+                        constant_object_thickness: 0.5,
+                        ..default()
+                    });
+                }
+            } else if let Some(old) = next.msaa.take() {
+                camera.insert(old).remove::<ScreenSpaceAmbientOcclusion>();
+            }
+            camera.insert(next);
+        } else if let Some(saved) = saved {
+            if saved.added_depth {
+                camera.remove::<DepthPrepass>();
+            }
+            if saved.added_normal {
+                camera.remove::<NormalPrepass>();
+            }
+            if let Some(old) = saved.msaa {
+                camera.insert(old);
+            }
+            camera.remove::<(ScreenSpaceAmbientOcclusion, ShadowCameraState)>();
+        }
+    }
+}
+
+fn shadow_cascades(count: usize, eye: Vec3, riding: bool) -> CascadeShadowConfig {
+    let scale = vehicle::world_scale(count);
+    CascadeShadowConfigBuilder {
+        num_cascades: 3,
+        minimum_distance: 0.1,
+        first_cascade_far_bound: if riding { 25.0 * scale } else { 100.0 * scale },
+        maximum_distance: far_wall_distance(eye, vehicle::walls(count)).max(200.0 * scale) * 1.15,
+        overlap_proportion: 0.2,
+    }
+    .build()
+}
+fn sync_shadow_floor(
+    mut commands: Commands,
+    appearance: Res<Appearance>,
+    floors: Query<(Entity, &StudioSurface, Has<NotShadowReceiver>)>,
+) {
+    for (entity, surface, no_receiver) in &floors {
+        if !matches!(surface, StudioSurface::Ground) {
+            continue;
+        }
+        if appearance.effective_shadows() && no_receiver {
+            commands.entity(entity).remove::<NotShadowReceiver>();
+        }
+        if !appearance.effective_shadows() && !no_receiver {
+            commands.entity(entity).insert(NotShadowReceiver);
+        }
+    }
+}
+
+fn sync_shadow_lights(
+    appearance: Res<Appearance>,
+    state: Res<GlobalState>,
+    presentation: Res<crate::presentation::Presentation>,
+    cameras: Query<&Transform, With<Camera3d>>,
+    mut lights: Query<(&mut DirectionalLight, &mut CascadeShadowConfig), With<KeyLight>>,
+) {
+    let eye = cameras.iter().next().map_or(Vec3::ZERO, |t| t.translation);
+    let riding = presentation.follow.mode != crate::follow::FollowMode::Off;
+    for (mut light, mut cascades) in &mut lights {
+        light.shadow_maps_enabled = appearance.effective_shadows();
+        if appearance.effective_shadows() {
+            *cascades = shadow_cascades(state.vehicle_count, eye, riding);
+            // Much smaller than Bevy's 1.8-unit default: the birds are only a few units long.
+            light.shadow_normal_bias = 0.15;
+            light.shadow_depth_bias = 0.01;
+        }
+    }
+}
+
 #[derive(Component)]
-struct FillLight;
+pub(crate) struct KeyLight;
+#[derive(Component)]
+pub(crate) struct FillLight;
 
 pub fn setup_scene(
     mut commands: Commands,
@@ -270,7 +517,7 @@ pub fn setup_scene(
 }
 
 #[derive(Component)]
-enum StudioSurface {
+pub(crate) enum StudioSurface {
     Sky,
     Ground,
 }
@@ -395,11 +642,17 @@ fn scene_fog_range(style: SceneStyle, eye: Vec3, walls: Vec3, target_far: f32) -
     (far * 0.6, (walls.x * 5.0).max(far * 2.0))
 }
 
-fn update_studio(
+pub(crate) fn update_studio(
     state: Res<GlobalState>,
     appearance: Res<Appearance>,
     cameras: Query<&Transform, (With<Camera3d>, Without<StudioSurface>)>,
-    mut surfaces: Query<(&StudioSurface, &mut Transform, &mut Visibility)>,
+    mut surfaces: Query<(
+        &StudioSurface,
+        &mut Transform,
+        &mut Visibility,
+        Option<&MeshMaterial3d<StandardMaterial>>,
+    )>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     targets: Query<&Transform, (With<Target>, Without<StudioSurface>)>,
 ) {
     let Ok(camera) = cameras.single() else {
@@ -407,8 +660,25 @@ fn update_studio(
     };
     let walls = vehicle::walls(state.vehicle_count);
     let target_far = far_target_distance(camera.translation, targets.iter());
-    for (surface, mut transform, mut visibility) in &mut surfaces {
-        *visibility = if appearance.style == SceneStyle::Studio {
+    for (surface, mut transform, mut visibility, handle) in &mut surfaces {
+        if let Some(handle) = handle.filter(|_| appearance.is_changed()) {
+            let tint = if appearance.style == SceneStyle::Glow {
+                Color::srgb(0.25, 0.25, 0.32)
+            } else {
+                Color::WHITE
+            };
+            if materials
+                .get(&handle.0)
+                .is_some_and(|m| m.base_color != tint)
+            {
+                materials.get_mut(&handle.0).unwrap().base_color = tint;
+            }
+        }
+        *visibility = if appearance.style != SceneStyle::Classic
+            && appearance.environment == crate::environment::Environment::Off
+            || matches!(surface, StudioSurface::Ground)
+                && appearance.environment == crate::environment::Environment::Underwater
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -421,6 +691,10 @@ fn update_studio(
             StudioSurface::Ground => {
                 transform.translation = Vec3::new(0.0, -walls.y, 0.0);
                 transform.scale = Vec3::new(walls.x, 1.0, walls.z);
+                if appearance.environment == crate::environment::Environment::Underwater {
+                    transform.translation.y = -walls.y * 1.6;
+                    transform.scale *= Vec3::new(1000.0, 1.0, 1000.0);
+                }
             }
         }
     }
@@ -484,6 +758,11 @@ pub(crate) fn frame_world(
     let settled = debounce.pending
         && !appearance.count_editing
         && time.elapsed_secs_f64() - debounce.changed_at >= 0.35;
+    if presentation.as_ref().is_some_and(|p| p.follow.enabled()) {
+        debounce.pending = false;
+        appearance.frame_requested = false;
+        return;
+    }
     let requested = appearance.frame_requested || (appearance.auto_frame && settled);
     if settled {
         debounce.pending = false;
@@ -516,7 +795,7 @@ pub(crate) fn frame_world(
 
 // Wall outline and a floor grid for orientation; fog follows the world size.
 #[allow(clippy::too_many_arguments)]
-fn draw_world(
+pub(crate) fn draw_world(
     mut gizmos: Gizmos,
     state: Res<GlobalState>,
     appearance: Res<Appearance>,
@@ -529,7 +808,11 @@ fn draw_world(
     let look = appearance.style.settings();
     if appearance.is_changed() {
         clear.0 = look.background;
-        ambient.brightness = look.ambient;
+        ambient.brightness = if appearance.environment == crate::environment::Environment::Off {
+            look.ambient
+        } else {
+            0.0
+        };
         for (mut light, key, fill) in &mut lights {
             if key {
                 light.illuminance = look.key;
@@ -541,7 +824,9 @@ fn draw_world(
         }
     }
     let walls = vehicle::walls(state.vehicle_count);
-    if appearance.style == SceneStyle::Classic {
+    if appearance.environment != crate::environment::Environment::Off {
+        // HDRI scenes need no box or grid. Simulation walls remain unchanged.
+    } else if appearance.style == SceneStyle::Classic {
         gizmos.cube(Transform::from_scale(walls * 2.0), look.wall);
         let cell = walls.z / 2.5;
         gizmos.grid(
@@ -574,6 +859,10 @@ fn draw_world(
             projection.far = end
                 .max(sky_radius(transform.translation, walls, target_far) * 1.1)
                 .max(1000.0);
+            if appearance.environment == crate::environment::Environment::Underwater {
+                // Keep the distant sand beyond the fog horizon instead of clipping a visible edge.
+                projection.far = projection.far.max(walls.max_element() * 1000.0);
+            }
         }
     }
 }
@@ -581,6 +870,249 @@ fn draw_world(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_camera_and_floor_round_trip_and_preserve_external_prepasses() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .add_systems(Update, (sync_shadow_camera, sync_shadow_floor));
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample4, DepthPrepass))
+            .id();
+        let floor = app
+            .world_mut()
+            .spawn((StudioSurface::Ground, NotShadowReceiver))
+            .id();
+        app.update();
+        assert!(!app.world().entity(camera).contains::<ShadowCameraState>());
+        app.world_mut().resource_mut::<Appearance>().shadows = true;
+        app.update();
+        assert!(app.world().entity(camera).contains::<NormalPrepass>());
+        assert!(!app.world().entity(floor).contains::<NotShadowReceiver>());
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .ambient_occlusion = true;
+        app.update();
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Off));
+        assert!(app
+            .world()
+            .entity(camera)
+            .contains::<ScreenSpaceAmbientOcclusion>());
+        app.world_mut()
+            .resource_mut::<Appearance>()
+            .ambient_occlusion = false;
+        app.update();
+        assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+        assert!(app.world().entity(camera).contains::<NormalPrepass>());
+        app.world_mut().resource_mut::<Appearance>().shadows = false;
+        app.update();
+        assert!(app.world().entity(camera).contains::<DepthPrepass>());
+        assert!(!app.world().entity(camera).contains::<NormalPrepass>());
+        assert!(!app
+            .world()
+            .entity(camera)
+            .contains::<ScreenSpaceAmbientOcclusion>());
+        assert!(app.world().entity(floor).contains::<NotShadowReceiver>());
+    }
+
+    #[test]
+    fn cascades_cover_world_and_riding_near_field_and_only_key_casts() {
+        for count in [3_000, 20_000, 100_000, 1_000_000] {
+            let scale = vehicle::world_scale(count);
+            let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
+            let overview = shadow_cascades(count, eye, false);
+            let riding = shadow_cascades(count, Vec3::ZERO, true);
+            assert_eq!(overview.bounds.len(), 3);
+            assert!(
+                overview.bounds.last().unwrap() > &far_wall_distance(eye, vehicle::walls(count))
+            );
+            assert!(riding.bounds[0] < overview.bounds[0]);
+            assert_eq!(riding.minimum_distance, 0.1);
+        }
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .add_systems(Update, sync_shadow_lights);
+        let key = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), KeyLight))
+            .id();
+        let fill = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), FillLight))
+            .id();
+        for environment in crate::environment::Environment::ALL {
+            for enabled in [false, true, false] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.environment = environment;
+                    appearance.shadows = enabled;
+                }
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .get::<DirectionalLight>(key)
+                        .unwrap()
+                        .shadow_maps_enabled,
+                    enabled
+                );
+                assert!(
+                    !app.world()
+                        .get::<DirectionalLight>(fill)
+                        .unwrap()
+                        .shadow_maps_enabled
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glow_camera_components_are_optional_and_msaa_is_preserved() {
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .add_systems(Update, sync_glow_camera);
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample4))
+            .id();
+        for style in [
+            SceneStyle::Studio,
+            SceneStyle::Glow,
+            SceneStyle::Classic,
+            SceneStyle::Glow,
+            SceneStyle::Studio,
+        ] {
+            app.world_mut().resource_mut::<Appearance>().style = style;
+            app.update();
+            assert_eq!(
+                app.world().get::<Hdr>(camera).is_some(),
+                style == SceneStyle::Glow
+            );
+            assert_eq!(
+                app.world().get::<Bloom>(camera).is_some(),
+                style == SceneStyle::Glow
+            );
+            assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), Msaa::Sample4);
+            if let Some(bloom) = app.world().get::<Bloom>(camera) {
+                assert_eq!(bloom.composite_mode, BloomCompositeMode::Additive);
+                assert_eq!(bloom.prefilter.threshold, 1.0);
+            }
+        }
+        assert_eq!(SceneStyle::default(), SceneStyle::Studio);
+    }
+
+    #[test]
+    fn volumetric_transitions_restore_saved_shadows_and_glow_bloom() {
+        use crate::environment::Environment;
+        use bevy::light::Skybox;
+        let mut app = App::new();
+        app.init_resource::<Appearance>()
+            .init_resource::<GlobalState>()
+            .init_resource::<crate::presentation::Presentation>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<crate::volumetric::WaterParticles>()
+            .add_systems(
+                Update,
+                (
+                    sync_shadow_camera,
+                    sync_shadow_lights,
+                    sync_shadow_floor,
+                    sync_glow_camera,
+                    crate::volumetric::sync_volumetric,
+                ),
+            );
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), Skybox::default(), Msaa::Sample4))
+            .id();
+        let sun = app
+            .world_mut()
+            .spawn((KeyLight, DirectionalLight::default()))
+            .id();
+        let floor = app
+            .world_mut()
+            .spawn((StudioSurface::Ground, NotShadowReceiver))
+            .id();
+        for saved_shadows in [false, true] {
+            for (environment, enabled) in [
+                (Environment::Underwater, true),
+                (Environment::Off, true),
+                (Environment::Sunset, true),
+                (Environment::Midday, false),
+                (Environment::Off, true),
+                (Environment::Off, false),
+            ] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.shadows = saved_shadows;
+                    appearance.environment = environment;
+                    appearance.volumetric = enabled;
+                }
+                app.update();
+                let active = enabled && environment != Environment::Off;
+                let shadows = saved_shadows || active;
+                assert_eq!(
+                    app.world()
+                        .get::<DirectionalLight>(sun)
+                        .unwrap()
+                        .shadow_maps_enabled,
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(camera).contains::<DepthPrepass>(),
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(camera).contains::<NormalPrepass>(),
+                    shadows
+                );
+                assert_eq!(
+                    app.world().entity(floor).contains::<NotShadowReceiver>(),
+                    !shadows
+                );
+                assert_eq!(app.world().resource::<Appearance>().shadows, saved_shadows);
+                assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            }
+        }
+        for environment in Environment::ALL {
+            for style in [
+                SceneStyle::Studio,
+                SceneStyle::Glow,
+                SceneStyle::Classic,
+                SceneStyle::Glow,
+            ] {
+                {
+                    let mut appearance = app.world_mut().resource_mut::<Appearance>();
+                    appearance.environment = environment;
+                    appearance.style = style;
+                }
+                app.update();
+                let bloom = app.world().get::<Bloom>(camera);
+                if style == SceneStyle::Glow {
+                    let bloom = bloom.unwrap();
+                    assert_eq!(bloom.intensity, 0.18);
+                    assert_eq!(bloom.low_frequency_boost, 0.2);
+                    assert_eq!(bloom.prefilter.threshold, 1.0);
+                } else if environment != Environment::Off {
+                    let bloom = bloom.unwrap();
+                    assert_eq!(bloom.intensity, 0.035);
+                    assert_eq!(
+                        bloom.prefilter.threshold,
+                        if environment == Environment::Underwater {
+                            1.5
+                        } else {
+                            3.0
+                        }
+                    );
+                } else {
+                    assert!(bloom.is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn classic_preserves_original_scene_constants() {

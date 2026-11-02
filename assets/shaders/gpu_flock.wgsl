@@ -51,6 +51,8 @@ struct Params {
     formation_settings: vec4<f32>,
     predators: vec4<u32>,
     predator_settings: vec4<f32>,
+    track: vec4<u32>,
+    motion: vec4<f32>,
 };
 
 struct Boid {
@@ -254,6 +256,52 @@ fn heading_rotation(direction: vec3<f32>) -> vec4<f32> {
     return normalize(vec4<f32>(axis, 1.0 + d));
 }
 
+// CPU counterpart: src/motion.rs. Local +Y is forward, +Z is the back/up axis.
+fn rotate_motion(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+fn multiply_motion(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w*b.w - dot(a.xyz,b.xyz));
+}
+fn motion_tangent(v: vec3<f32>, h: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let projected = v - h * dot(v,h);
+    if dot(projected,projected) > 1e-12 { return normalize(projected); }
+    return fallback;
+}
+fn motion_angle(a: vec3<f32>, b: vec3<f32>, h: vec3<f32>) -> f32 {
+    let s = dot(h,cross(a,b)); let c = dot(a,b);
+    if abs(s) < 1e-6 && c < 0.0 { return PI; }
+    return atan2(s,c);
+}
+fn upright_target(previous: vec4<f32>, h: vec3<f32>, acceleration: vec3<f32>) -> vec4<f32> {
+    let arc = heading_rotation(h);
+    let arc_up = rotate_motion(arc,vec3<f32>(0.0,0.0,1.0));
+    let prior_up = motion_tangent(rotate_motion(previous,vec3<f32>(0.0,0.0,1.0)),h,arc_up);
+    let projected = vec3<f32>(0.0,1.0,0.0) - h*h.y;
+    var up = prior_up;
+    if dot(projected,projected) > 1e-12 { up = normalize(projected); }
+    let right = cross(h,up);
+    let lateral = acceleration - h*dot(acceleration,h);
+    let bank = clamp(atan2(dot(lateral,right),max(params.max_speed*0.35,1e-6))*params.motion.x,-PI/3.0,PI/3.0);
+    let old_roll = motion_angle(arc_up,prior_up,h);
+    let upright_roll = motion_angle(arc_up,up,h);
+    var delta = upright_roll+bank-old_roll;
+    if delta > PI { delta -= 2.0*PI; }
+    if delta <= -PI { delta += 2.0*PI; }
+    if abs(abs(delta)-PI) < 1e-5 { delta = PI; }
+    let t = clamp(dot(projected,projected)/0.1,0.0,1.0);
+    let roll = old_roll+delta*(t*t*(3.0-2.0*t));
+    let twist = vec4<f32>(h*sin(roll*0.5),cos(roll*0.5));
+    return normalize(multiply_motion(twist,arc));
+}
+fn smooth_motion(a: vec4<f32>, desired: vec4<f32>, amount: f32) -> vec4<f32> {
+    var b = desired; var cosine = dot(a,b);
+    if cosine < 0.0 { b = -b; cosine = -cosine; }
+    if cosine > 0.9995 { return normalize(mix(a,b,amount)); }
+    let angle = acos(clamp(cosine,0.0,1.0));
+    return normalize((a*sin((1.0-amount)*angle)+b*sin(amount*angle))/sin(angle));
+}
+
 @compute @workgroup_size(256)
 fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = params.spawn_from + id.x;
@@ -271,10 +319,20 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let spawn_id = params.groups.y + id.x;
     let group = spawn_id % select(params.groups.x, 8u, params.groups.x == 0u);
     boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
+    if params.motion.y == 0.0 { boids[index].rotation = upright_target(heading_rotation(direction),direction,vec3<f32>(0.0)); }
     arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
     write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
     instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
+    // A new boid has no earlier pose, including spawn-only updates at zero delta.
+    if params.motion.w >= 0.0 {
+        let history = params.obstacles.z + index * 2u;
+        let output = params.obstacles.w + index * 2u;
+        arena[history] = bitcast<vec4<u32>>(vec4<f32>(position, 0.0));
+        arena[history + 1u] = bitcast<vec4<u32>>(boids[index].rotation);
+        arena[output] = arena[history];
+        arena[output + 1u] = arena[history + 1u];
+    }
 }
 
 // Settings maintenance remains available while paused, without sorting or changing motion/phase.
@@ -285,7 +343,7 @@ fn update_groups(@builtin(global_invocation_id) id: vec3<u32>) {
     var group = 0u;
     if params.groups.x != 0u {
         let record = read_order(params.groups.z, index);
-        arena[record].y %= params.groups.x;
+        arena[record].y = arena[record].x % params.groups.x;
         group = arena[record].y;
     }
     let speed = bitcast<u32>(instances[index].position_speed_group.w) & 0xffffu;
@@ -618,9 +676,9 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             let wander = normalize_or_zero(wander_target - position) * params.wander_speed - velocity;
             acceleration += limit(wander, params.max_speed * params.wander_factor) / params.mass;
         }
-        let back = select(vec3<f32>(0.0), select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
-        if !FORMATION_ENABLED || !seeking {
-            acceleration += limit(back - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
+        let desired = select(velocity, select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
+        if any(outside) && (!FORMATION_ENABLED || !seeking) {
+            acceleration += limit(desired - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
         }
     }
 
@@ -629,11 +687,49 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     let direction = normalize_or_zero(velocity);
     var rotation = me.rotation;
     if any(direction != vec3<f32>(0.0)) {
-        rotation = heading_rotation(direction);
+        if params.motion.y != 0.0 { rotation = heading_rotation(direction); }
+        else {
+            let render_acceleration = (velocity - me.velocity) / params.dt;
+            rotation = smooth_motion(me.rotation, upright_target(me.rotation,direction,render_acceleration),
+                1.0-exp(-params.motion.z*params.dt));
+        }
     }
     boids[index] = Boid(next, theta, velocity, phi, rotation, vec4<f32>(0.0, 0.0, 0.0, me.separation.w));
     // Same 16-bit speed / reserved 7-bit group encoding as pack_speed_group on the CPU.
     let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
     let packed = 0x3f800000u | u32(floor(speed * 65535.0 + 0.5)) | (group << 16u);
+    // Metadata record follows this boid through both sorts. Keep the rendered frame's
+    // start pose, rather than the preceding integration substep or sorted slot.
+    if params.motion.w >= 0.0 {
+        let record = read_order(stepped_order_base(), index);
+        let history = params.obstacles.z + record * 2u;
+        if params.motion.w == 0.0 {
+            arena[history] = bitcast<vec4<u32>>(vec4<f32>(me.position, 0.0));
+            arena[history + 1u] = bitcast<vec4<u32>>(me.rotation);
+        }
+        let output = params.obstacles.w + index * 2u;
+        arena[output] = arena[history];
+        arena[output + 1u] = arena[history + 1u];
+    }
     instances[index] = Instance(vec4<f32>(next, bitcast<f32>(packed)), rotation, vec4<f32>(me.separation.w, 0.0, 0.0, 0.0));
+}
+
+// Optional camera sample. No invocation or arena write when camera following is off.
+@compute @workgroup_size(256)
+fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let i = invocation.x;
+    if i >= params.count { return; }
+    var base = params.groups.z;
+    if params.dt > 0.0 { base = stepped_order_base(); }
+    let spawn_id = arena[read_order(base, i)].x;
+    if (params.track.x == 1u && spawn_id == params.track.y) ||
+       (params.track.x == 2u && i == params.track.y) {
+        let boid = boids[i];
+        let output = params.track.w;
+        arena[output] = bitcast<vec4<u32>>(vec4<f32>(boid.position, boid.wander_theta));
+        arena[output + 1u] = bitcast<vec4<u32>>(vec4<f32>(boid.velocity, boid.wander_phi));
+        arena[output + 2u] = bitcast<vec4<u32>>(boid.rotation);
+        arena[output + 3u] = bitcast<vec4<u32>>(boid.separation);
+        arena[output + 4u] = vec4<u32>(spawn_id, params.track.z, 1u, 0u);
+    }
 }

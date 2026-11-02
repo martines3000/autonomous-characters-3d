@@ -58,8 +58,16 @@ struct TimedCommand {
 enum Command {
     Set(Setting),
     Follow(bool),
+    Ui(bool),
+    Director(bool),
+    Record(PathBuf, u32, u32),
+    BoidFollow(crate::follow::FollowMode),
+    FollowNext,
+    FollowId(u32),
     Pause(bool),
     Preset(CameraPreset),
+    Showcase(crate::showcase::Showcase),
+    Species(crate::species::Species),
     Target(Vec3),
     Attractor(Option<Vec3>),
     ObstacleAdd(Vec3, f32),
@@ -102,10 +110,28 @@ enum Setting {
     ObstacleClearance(f32),
     ObstaclesVisible(bool),
     Speed(f32),
+    ShotLength(f32),
+    Shake(f32),
+    SpeedRamp(bool),
+    MotionBlur(bool),
+    Shutter(f32),
     Orbit(bool),
     OrbitSpeed(f32),
     Mode(SimulationMode),
     Style(SceneStyle),
+    Environment(crate::environment::Environment),
+    Shadows(bool),
+    Volumetric(bool),
+    VolumetricSteps(u32),
+    ShadowCap(usize),
+    AmbientOcclusion(bool),
+    Glow(f32),
+    Streak(f32),
+    Dof(bool),
+    Bank(f32),
+    Flap(f32),
+    FlapFrequency(f32),
+    ClassicHeading(bool),
     Palette(HeadingPalette),
     AutoFrame(bool),
     FlockDraw(bool),
@@ -217,6 +243,15 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("obstacle_strength", _) => Setting::ObstacleStrength(number(value, 0.0, 20.0)?),
         ("obstacle_clearance", _) => Setting::ObstacleClearance(number(value, 0.1, 200.0)?),
         ("obstacles_visible", _) => Setting::ObstaclesVisible(switch(value)?),
+        ("shot_length", _) => Setting::ShotLength(number(
+            value,
+            crate::director::MIN_SHOT_LENGTH,
+            crate::director::MAX_SHOT_LENGTH,
+        )?),
+        ("shake", _) => Setting::Shake(number(value, 0.0, 1.0)?),
+        ("motion_blur", _) => Setting::MotionBlur(switch(value)?),
+        ("shutter", _) => Setting::Shutter(number(value, 0.0, 1.0)?),
+        ("speed_ramp", _) => Setting::SpeedRamp(switch(value)?),
         ("speed", _) => Setting::Speed(number(value, MIN_SPEED, MAX_SPEED)?),
         ("orbit", _) => Setting::Orbit(switch(value)?),
         ("orbit_speed", _) => Setting::OrbitSpeed(number(value, -45.0, 45.0)?),
@@ -226,6 +261,20 @@ fn setting(name: &str, value: &str, mode: SimulationMode) -> Result<Setting, Str
         ("mode", "naive") => Setting::Mode(SimulationMode::Naive),
         ("style", "studio") => Setting::Style(SceneStyle::Studio),
         ("style", "classic") => Setting::Style(SceneStyle::Classic),
+        ("style", "glow") => Setting::Style(SceneStyle::Glow),
+        ("environment", _) => Setting::Environment(value.parse()?),
+        ("volumetric", _) => Setting::Volumetric(switch(value)?),
+        ("volumetric_steps", _) => Setting::VolumetricSteps(integer(value, 16, 128)? as u32),
+        ("shadows", _) => Setting::Shadows(switch(value)?),
+        ("shadow_cap", _) => Setting::ShadowCap(integer(value, 0, 1_000_000)?),
+        ("ambient_occlusion", _) => Setting::AmbientOcclusion(switch(value)?),
+        ("glow", _) => Setting::Glow(number(value, 0.0, 20.0)?),
+        ("streak", _) => Setting::Streak(number(value, 0.0, 3.0)?),
+        ("dof", _) => Setting::Dof(switch(value)?),
+        ("bank", _) => Setting::Bank(number(value, 0.0, 1.0)?),
+        ("flap", _) => Setting::Flap(number(value, 0.0, 1.5)?),
+        ("flap_frequency", _) => Setting::FlapFrequency(number(value, 0.0, 3.0)?),
+        ("legacy_heading", _) => Setting::ClassicHeading(switch(value)?),
         ("palette", "classic") => Setting::Palette(HeadingPalette::Classic),
         ("palette", "ocean") => Setting::Palette(HeadingPalette::Ocean),
         ("palette", "dusk") => Setting::Palette(HeadingPalette::Dusk),
@@ -407,9 +456,42 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
                     hex_color(color)?,
                 )),
+                ["director", value] => Command::Director(switch(value)?),
+                ["record", directory, frames, fps] => {
+                    let directory = PathBuf::from(directory);
+                    if !directory.is_absolute() {
+                        return Err("record directory must be absolute".into());
+                    }
+                    Command::Record(
+                        directory,
+                        integer(frames, 1, 100_000)? as u32,
+                        integer(fps, 1, 240)? as u32,
+                    )
+                }
+                ["ui", value] => Command::Ui(switch(value)?),
                 ["pause"] => Command::Pause(true),
                 ["resume"] => Command::Pause(false),
                 ["preset", name] => Command::Preset(CameraPreset::parse(name)?),
+                ["showcase", name] => {
+                    let showcase = crate::showcase::Showcase::parse(name)?;
+                    let settings = showcase.settings();
+                    mode = settings.state.mode;
+                    predator_count = settings.swarm.predators.objects.len();
+                    obstacle_count = settings.swarm.obstacles.len();
+                    Command::Showcase(showcase)
+                }
+                ["species", name] => {
+                    let species = crate::species::Species::parse(name)?;
+                    predator_count = species.behavior().predators;
+                    Command::Species(species)
+                }
+                ["boidcam", "chase"] => Command::BoidFollow(crate::follow::FollowMode::Chase),
+                ["boidcam", "first"] => Command::BoidFollow(crate::follow::FollowMode::FirstPerson),
+                ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
+                ["boidcam", "next"] => Command::FollowNext,
+                ["boidcam", "id", id] => {
+                    Command::FollowId(integer(id, 0, u32::MAX as usize)? as u32)
+                }
                 ["follow", value @ ("on" | "off")] => Command::Follow(switch(value)?),
                 ["attractor", "mouse"] => Command::Attractor(None),
                 ["attractor", x, y, z] => Command::Attractor(Some(Vec3::new(
@@ -471,6 +553,10 @@ struct Measurement {
 }
 
 fn run_scenario(world: &mut World) {
+    // A recording is a barrier: later commands (especially exit) wait for every saved PNG.
+    if world.resource::<crate::capture::Capture>().active() {
+        return;
+    }
     // This system exists only when AC3D_SCRIPT was supplied; no normal-frame harness overhead.
     let now = world.resource::<Time<Real>>().elapsed_secs_f64();
     let delta_ms = world.resource::<Time<Real>>().delta_secs_f64() * 1000.0;
@@ -487,10 +573,35 @@ fn run_scenario(world: &mut World) {
             info!("scenario t={:.3} {:?}", now, entry.command);
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
+                Command::Showcase(showcase) => crate::showcase::apply(world, showcase),
+                Command::Species(species) => crate::species::apply(world, species),
+                Command::Director(enabled) => {
+                    world.resource_mut::<Presentation>().set_director(enabled)
+                }
+                Command::Record(directory, frames, fps) => {
+                    if let Err(error) = world
+                        .resource_mut::<crate::capture::Capture>()
+                        .start(directory, frames, fps)
+                    {
+                        error!("{error}");
+                        world.write_message(AppExit::error());
+                    }
+                    break;
+                }
+                Command::Ui(visible) => world.resource_mut::<Presentation>().ui_visible = visible,
                 Command::Pause(paused) => world.resource_mut::<Presentation>().paused = paused,
                 Command::Preset(preset) => {
-                    world.resource_mut::<Presentation>().preset = Some(preset)
+                    let mut presentation = world.resource_mut::<Presentation>();
+                    presentation.cancel_camera_transition();
+                    presentation.preset = Some(preset)
                 }
+                Command::BoidFollow(mode) => {
+                    let mut presentation = world.resource_mut::<Presentation>();
+                    presentation.cancel_camera_transition();
+                    presentation.follow.mode = mode;
+                }
+                Command::FollowNext => world.resource_mut::<Presentation>().follow.next(),
+                Command::FollowId(id) => world.resource_mut::<Presentation>().follow.select(id),
                 Command::Follow(follow) => {
                     for mut selection in world
                         .query_filtered::<&mut TargetSelection, With<Target>>()
@@ -678,6 +789,15 @@ fn apply_setting(world: &mut World, setting: Setting) {
                 scene.show_obstacles = value;
             }
         }
+        Setting::ShotLength(value) => {
+            world.resource_mut::<Presentation>().director.shot_length = value
+        }
+        Setting::Shake(value) => world.resource_mut::<Presentation>().director.shake = value,
+        Setting::SpeedRamp(value) => {
+            world.resource_mut::<Presentation>().director.speed_ramp = value
+        }
+        Setting::MotionBlur(value) => world.resource_mut::<Presentation>().motion_blur = value,
+        Setting::Shutter(value) => world.resource_mut::<Presentation>().shutter = value,
         Setting::Speed(value) => world.resource_mut::<Presentation>().speed = value,
         Setting::Orbit(value) => world.resource_mut::<Presentation>().orbit = value,
         Setting::OrbitSpeed(value) => world.resource_mut::<Presentation>().orbit_speed = value,
@@ -691,6 +811,27 @@ fn apply_setting(world: &mut World, setting: Setting) {
             }
         }
         Setting::Style(value) => world.resource_mut::<Appearance>().style = value,
+        Setting::Environment(value) => world.resource_mut::<Appearance>().environment = value,
+        Setting::Volumetric(value) => world.resource_mut::<Appearance>().volumetric = value,
+        Setting::VolumetricSteps(value) => {
+            world.resource_mut::<Appearance>().volumetric_steps = value
+        }
+        Setting::Shadows(value) => world.resource_mut::<Appearance>().shadows = value,
+        Setting::ShadowCap(value) => world.resource_mut::<Appearance>().shadow_cap = value,
+        Setting::AmbientOcclusion(value) => {
+            world.resource_mut::<Appearance>().ambient_occlusion = value
+        }
+        Setting::Glow(value) => world.resource_mut::<Appearance>().glow = value,
+        Setting::Streak(value) => world.resource_mut::<Appearance>().streak = value,
+        Setting::Dof(value) => world.resource_mut::<Presentation>().follow.dof = value,
+        Setting::Bank(value) => world.resource_mut::<GlobalState>().motion.bank = value,
+        Setting::Flap(value) => world.resource_mut::<GlobalState>().motion.flap = value,
+        Setting::FlapFrequency(value) => {
+            world.resource_mut::<GlobalState>().motion.frequency = value
+        }
+        Setting::ClassicHeading(value) => {
+            world.resource_mut::<GlobalState>().motion.classic_heading = value
+        }
         Setting::Palette(value) => world.resource_mut::<Appearance>().palette = value,
         Setting::AutoFrame(value) => world.resource_mut::<Appearance>().auto_frame = value,
         Setting::Shape(value) => {
@@ -800,6 +941,15 @@ fn report(world: &mut World, mut measurement: Measurement) {
         msaa.samples(),
         draw
     );
+    let presentation = world.resource::<Presentation>();
+    info!(
+        "AC3D_EFFECTS boidcam={} dof={} aperture={} glow={} streak={}",
+        presentation.follow.mode.name(),
+        presentation.follow.enabled() && presentation.follow.dof,
+        presentation.follow.aperture,
+        world.resource::<Appearance>().glow,
+        world.resource::<Appearance>().streak
+    );
     let state = world.resource::<GlobalState>();
     let appearance = world.resource::<Appearance>();
     let frames = measurement.samples.len();
@@ -820,6 +970,129 @@ fn report(world: &mut World, mut measurement: Measurement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_blur_and_shutter_parse_validate_and_apply() {
+        let commands =
+            parse("0 set motion_blur on\n0 set shutter 0.75\n1 set motion_blur off").unwrap();
+        assert_eq!(commands[0].command, Command::Set(Setting::MotionBlur(true)));
+        assert_eq!(commands[1].command, Command::Set(Setting::Shutter(0.75)));
+        for value in ["-0.01", "1.01", "NaN", "inf"] {
+            assert!(parse(&format!("0 set shutter {value}")).is_err());
+        }
+        assert!(parse("0 set motion_blur maybe").is_err());
+        assert!(parse("0 set shutter 0\n0 set shutter 1").is_ok());
+        let mut world = World::new();
+        world.init_resource::<Presentation>();
+        apply_setting(&mut world, Setting::MotionBlur(true));
+        apply_setting(&mut world, Setting::Shutter(0.75));
+        assert!(world.resource::<Presentation>().motion_blur);
+        assert_eq!(world.resource::<Presentation>().shutter, 0.75);
+    }
+
+    #[test]
+    fn showcase_commands_validate_names_and_reset_validation_state() {
+        use crate::showcase::Showcase;
+        for (name, showcase) in [
+            ("starling", Showcase::Starling),
+            ("fish-school", Showcase::Fish),
+            ("swallow", Showcase::Swallow),
+            ("neon-swarm", Showcase::Neon),
+            ("calm", Showcase::Calm),
+        ] {
+            let commands = parse(&format!("0 showcase {name}\n1 exit")).unwrap();
+            assert_eq!(commands[0].command, Command::Showcase(showcase));
+        }
+        for command in [
+            "showcase unknown",
+            "showcase",
+            "showcase fish extra",
+            "species shark",
+            "preset neon",
+        ] {
+            assert!(parse(&format!("0 {command}")).is_err(), "{command}");
+        }
+        // A showcase switches back to GPU and replaces bounded scene lists.
+        assert!(parse("0 set mode naive\n0 showcase neon\n0 set count 200000").is_ok());
+        let adds = "0 predator add 0 0 0 20\n";
+        assert!(parse(&format!("0 showcase starling\n{}", adds.repeat(2))).is_ok());
+        assert!(parse(&format!("0 showcase starling\n{}", adds.repeat(3))).is_err());
+        assert!(parse(&format!(
+            "{}0 showcase calm\n{}",
+            adds.repeat(4),
+            adds.repeat(4)
+        ))
+        .is_ok());
+        let obstacles = "0 obstacle add 0 0 0 20\n";
+        assert!(parse(&format!(
+            "{}0 showcase calm\n{}",
+            obstacles.repeat(8),
+            obstacles.repeat(8)
+        ))
+        .is_ok());
+    }
+    #[test]
+    fn shadows_ao_and_cap_parse_validate_and_apply() {
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        assert!(!world.resource::<Appearance>().shadows);
+        assert!(!world.resource::<Appearance>().ambient_occlusion);
+        for timed in
+            parse("0 set shadows on\n0 set shadow_cap 100000\n0 set ambient_occlusion on").unwrap()
+        {
+            if let Command::Set(setting) = timed.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(world.resource::<Appearance>().shadows);
+        assert!(world.resource::<Appearance>().ambient_occlusion);
+        assert_eq!(world.resource::<Appearance>().shadow_cap, 100_000);
+        for timed in
+            parse("0 set shadows off\n0 set ambient_occlusion off\n0 set shadow_cap 0").unwrap()
+        {
+            if let Command::Set(setting) = timed.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(!world.resource::<Appearance>().shadows);
+        assert!(!world.resource::<Appearance>().ambient_occlusion);
+        for bad in [
+            "shadows yes",
+            "ambient_occlusion maybe",
+            "shadow_cap -1",
+            "shadow_cap 1000001",
+            "shadow_cap 1.5",
+            "shadow_cap NaN",
+        ] {
+            assert!(parse(&format!("0 set {bad}")).is_err());
+        }
+    }
+
+    #[test]
+    fn environment_commands_are_validated_and_independent_of_style() {
+        use crate::environment::Environment;
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        for (name, expected) in [
+            ("off", Environment::Off),
+            ("sunset", Environment::Sunset),
+            ("midday", Environment::Midday),
+            ("underwater", Environment::Underwater),
+        ] {
+            let parsed = parse(&format!("0 set environment {name}")).unwrap();
+            assert_eq!(
+                parsed[0].command,
+                Command::Set(Setting::Environment(expected))
+            );
+            apply_setting(&mut world, Setting::Environment(expected));
+            assert_eq!(world.resource::<Appearance>().environment, expected);
+            assert_eq!(world.resource::<Appearance>().style, SceneStyle::Studio);
+        }
+        for bad in ["water", "Underwater", "Sunset", "", "on", "NaN"] {
+            assert!(parse(&format!("0 set environment {bad}")).is_err());
+        }
+    }
+
     #[test]
     fn predator_commands_validate_masks_capacity_paths_and_changed_only_setters() {
         let commands=parse("0 predator add 1 -2 3 20\n0 set predator_strength 8\n0 set predator_path orbit\n0 set predator_groups 5\n0 set predator_path_radius 50\n0 set predator_path_speed -30\n0 predator_center 4 5 6\n0 set predators_visible off\n1 predator clear").unwrap();
@@ -1033,6 +1306,140 @@ mod tests {
     }
 
     #[test]
+    fn motion_commands_validate_and_change_only_presentation_settings() {
+        let parsed = parse(
+            "0 set bank 0.7\n0 set flap 0.45\n0 set flap_frequency 1\n0 set legacy_heading on",
+        )
+        .unwrap();
+        assert_eq!(parsed[0].command, Command::Set(Setting::Bank(0.7)));
+        assert_eq!(
+            parsed[3].command,
+            Command::Set(Setting::ClassicHeading(true))
+        );
+        for line in [
+            "0 set bank -1",
+            "0 set bank 1.1",
+            "0 set flap NaN",
+            "0 set flap 1.6",
+            "0 set flap_frequency -1",
+            "0 set flap_frequency 4",
+            "0 set legacy_heading maybe",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
+        }
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        let original = world.resource::<GlobalState>().clone();
+        for setting in [
+            Setting::Bank(0.0),
+            Setting::Flap(1.0),
+            Setting::FlapFrequency(2.0),
+            Setting::ClassicHeading(true),
+        ] {
+            apply_setting(&mut world, setting);
+        }
+        let mut actual = world.resource::<GlobalState>().clone();
+        actual.motion = original.motion;
+        assert_eq!(actual, original);
+    }
+
+    #[test]
+    fn glow_dof_and_ui_commands_validate_and_keep_simulation_unchanged() {
+        let commands = parse(
+            "0 set style glow\n0 set glow 20\n0 set streak 3\n0 set dof off\n0 ui off\n1 ui on",
+        )
+        .unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::Set(Setting::Style(SceneStyle::Glow))
+        );
+        assert_eq!(commands[4].command, Command::Ui(false));
+        assert_eq!(commands[5].command, Command::Ui(true));
+        for line in [
+            "0 set glow -1",
+            "0 set glow 21",
+            "0 set glow NaN",
+            "0 set streak 3.1",
+            "0 set streak -0.1",
+            "0 set dof maybe",
+            "0 ui maybe",
+            "0 set style neon",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
+        }
+        let mut world = World::new();
+        world.init_resource::<Presentation>();
+        world.init_resource::<Appearance>();
+        world.init_resource::<GlobalState>();
+        let before = world.resource::<GlobalState>().clone();
+        for setting in [
+            Setting::Style(SceneStyle::Glow),
+            Setting::Glow(8.0),
+            Setting::Streak(1.0),
+            Setting::Dof(false),
+        ] {
+            apply_setting(&mut world, setting);
+        }
+        assert_eq!(world.resource::<GlobalState>(), &before);
+        assert_eq!(world.resource::<Appearance>().glow, 8.0);
+        assert!(!world.resource::<Presentation>().follow.dof);
+    }
+
+    #[test]
+    fn director_and_record_commands_validate_before_startup() {
+        let commands = parse("0 director on\n0 set shot_length 6\n0 set shake 0.5\n0 set speed_ramp off\n1 record /tmp/ac3d-video 90 30\n2 director off\n3 exit").unwrap();
+        assert_eq!(commands[0].command, Command::Director(true));
+        assert_eq!(
+            commands[4].command,
+            Command::Record("/tmp/ac3d-video".into(), 90, 30)
+        );
+        for line in [
+            "director maybe",
+            "director on extra",
+            "set shot_length 5.9",
+            "set shot_length 10.1",
+            "set shot_length NaN",
+            "set shake -0.1",
+            "set shake 1.1",
+            "set shake inf",
+            "set speed_ramp maybe",
+            "record relative 90 30",
+            "record /tmp/x 0 30",
+            "record /tmp/x 90 0",
+            "record /tmp/x 90 241",
+            "record /tmp/x 1.5 30",
+            "record /tmp/x 90 30 extra",
+        ] {
+            assert!(parse(&format!("0 {line}")).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn boid_follow_commands_validate_modes_and_spawn_ids() {
+        use crate::follow::FollowMode;
+        let commands = parse("0 boidcam chase\n0 boidcam id 4294967295\n1 boidcam next\n2 boidcam first\n3 boidcam off\n4 exit").unwrap();
+        assert_eq!(commands[0].command, Command::BoidFollow(FollowMode::Chase));
+        assert_eq!(commands[1].command, Command::FollowId(u32::MAX));
+        assert_eq!(commands[2].command, Command::FollowNext);
+        assert_eq!(
+            commands[3].command,
+            Command::BoidFollow(FollowMode::FirstPerson)
+        );
+        assert_eq!(commands[4].command, Command::BoidFollow(FollowMode::Off));
+        for line in [
+            "0 boidcam firstperson",
+            "0 boidcam id -1",
+            "0 boidcam id 4294967296",
+            "0 boidcam id 1.5",
+            "0 boidcam id",
+            "0 boidcam next 3",
+            "0 follow chase",
+        ] {
+            assert!(parse(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
     fn presentation_commands_validate_and_keep_equal_time_order() {
         let commands = parse("0 pause\n0 set speed 0.25\n0 set orbit on\n0 set orbit_speed -15\n0 preset closeup\n1 resume\n2 exit").unwrap();
         assert_eq!(commands[0].command, Command::Pause(true));
@@ -1137,6 +1544,35 @@ mod tests {
         assert!(parse("0 measure begin sample").is_err());
         assert!(parse("0 measure begin a\n1 measure begin b\n2 measure end").is_err());
         assert!(parse("0 measure begin a\n1 exit\n2 measure end").is_err());
+    }
+
+    #[test]
+    fn volumetric_commands_parse_apply_and_reject_invalid_quality() {
+        let commands = parse("0 set volumetric on\n0 set volumetric_steps 16\n0 set volumetric off\n0 set volumetric_steps 128").unwrap();
+        assert_eq!(commands[0].command, Command::Set(Setting::Volumetric(true)));
+        assert_eq!(
+            commands[1].command,
+            Command::Set(Setting::VolumetricSteps(16))
+        );
+        let mut world = World::new();
+        world.init_resource::<Appearance>();
+        for command in commands {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        assert!(!world.resource::<Appearance>().volumetric);
+        assert_eq!(world.resource::<Appearance>().volumetric_steps, 128);
+        for bad in [
+            "volumetric maybe",
+            "volumetric_steps 0",
+            "volumetric_steps 15",
+            "volumetric_steps 129",
+            "volumetric_steps 64.5",
+            "volumetric_steps NaN",
+        ] {
+            assert!(parse(&format!("0 set {bad}")).is_err());
+        }
     }
 
     #[test]

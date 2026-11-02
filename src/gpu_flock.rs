@@ -128,6 +128,10 @@ pub(crate) struct GpuParams {
     // Arena offset, active count, substep, reserved.
     pub predators: UVec4,
     pub predator_settings: Vec4,
+    // mode (0 off, 1 spawn ID, 2 index), selector, simulated-time bits, arena tail offset.
+    pub track: UVec4,
+    // bank strength, exact legacy flag, response rate, history substep (-1 disables history).
+    pub motion: Vec4,
 }
 
 impl GpuParams {
@@ -261,6 +265,13 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
                 .max(state.vehicle_alignment_distance)
                 .max(state.vehicle_cohesion_distance),
         size: state.vehicle_size,
+        motion: Vec4::new(
+            state.motion.bank,
+            u32::from(state.motion.classic_heading) as f32,
+            crate::motion::RESPONSE,
+            // History stays off unless the render graph has a motion-vector view.
+            -1.0,
+        ),
         mass: state.vehicle_mass,
         max_speed: state.vehicle_max_speed,
         wander_speed: state.vehicle_wander_speed,
@@ -300,10 +311,14 @@ fn init_gpu_flock(mut commands: Commands, device: Res<RenderDevice>) {
 }
 
 #[derive(SystemParam)]
-struct FlockFrame<'w> {
+struct FlockFrame<'w, 's> {
     simulation: Res<'w, crate::presentation::SimulationFrame>,
+    motion_views: Query<'w, 's, (), With<bevy::core_pipeline::prepass::MotionVectorPrepass>>,
     formation: Res<'w, FormationFrame>,
     predators: Res<'w, PredatorFrame>,
+    tracking: Option<Res<'w, crate::follow::TrackBuffer>>,
+    readback_buffers:
+        Res<'w, bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>,
 }
 
 fn run_gpu_flock(
@@ -318,6 +333,7 @@ fn run_gpu_flock(
     // egui edits in PostUpdate: derive count/settings from the same extracted scene as records.
     let mut params = (*params).with_scene(&scene);
     let frame = &frames.simulation;
+    let motion_history = !frames.motion_views.is_empty();
     flock.set_scene(&scene);
     flock.set_predators(&frames.predators);
     let device = context.render_device().clone();
@@ -333,6 +349,7 @@ fn run_gpu_flock(
     let span = recorder.time_span(context.command_encoder(), name);
     // A paused frame still permits spawn/truncate maintenance, never sorting or steering.
     if frame.steps > 0
+        || params.track.x != 0
         || params.count != flock.count
         || params.groups.x != flock.group_count
         || flock.scene_dirty
@@ -346,7 +363,18 @@ fn run_gpu_flock(
             if params.predators.y != 0 {
                 params.predators.z = index;
             }
+            // Preserve the start of the rendered frame across every simulation substep.
+            params.motion.w = if motion_history { index as f32 } else { -1.0 };
             flock.encode(&device, &queue, context.command_encoder(), &params);
+        }
+    }
+    if params.track.x != 0 {
+        if let Some(buffer) = frames
+            .tracking
+            .as_ref()
+            .and_then(|track| frames.readback_buffers.get(&track.handle))
+        {
+            flock.copy_track(context.command_encoder(), &buffer.buffer);
         }
     }
     span.end(context.command_encoder());
@@ -356,6 +384,12 @@ fn run_gpu_flock(
                 .buffers
                 .as_ref()
                 .map(|buffers| buffers.instances.clone()),
+            previous: flock.buffers.as_ref().map(|buffers| {
+                (
+                    buffers.arena.clone(),
+                    buffers.output_offset() as u64 * METADATA_SIZE,
+                )
+            }),
             count: flock.count,
         };
     }
@@ -381,6 +415,7 @@ pub(crate) struct GpuFlock {
     formation_assign: ComputePipeline,
     // Index bits: 0 groups, 1 obstacles, 2 formation, 3 predators. Disabled features compile out of steering.
     steer: [ComputePipeline; 16],
+    track: ComputePipeline,
     params: Buffer,
     buffers: Option<FlockBuffers>,
     // Boids alive on the GPU.
@@ -412,6 +447,14 @@ pub(crate) struct FlockBuffers {
 }
 
 impl FlockBuffers {
+    fn output_offset(&self) -> u32 {
+        self.track_offset() + 5 + self.capacity * 2
+    }
+
+    fn track_offset(&self) -> u32 {
+        self.capacity * 5 / 2 + 24 + PREDATOR_RECORDS as u32
+    }
+
     fn new(device: &RenderDevice, layout: &BindGroupLayout, params: &Buffer, count: u32) -> Self {
         let capacity = count.next_power_of_two().max(SCAN_BLOCK);
         // At least two hash slots per boid keeps collisions rare.
@@ -461,13 +504,15 @@ impl FlockBuffers {
         );
         let arena = buffer(
             "gpu_flock_metadata_arena",
-            // Two metadata tables and two packed u32 order maps; scene data shares this binding.
-            capacity as u64 * METADATA_SIZE * 5 / 2
+            // Metadata/order maps, plus two Vec4s each for frame-start history and sorted output.
+            // Scene data and tracking keep their existing offsets before the history tail.
+            capacity as u64 * METADATA_SIZE * (5 + 8) / 2
                 + (MAX_OBSTACLES as u64 * 2
                     + crate::swarm::MAX_GROUPS as u64
-                    + PREDATOR_RECORDS as u64)
+                    + PREDATOR_RECORDS as u64
+                    + 5)
                     * METADATA_SIZE,
-            BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
         );
         let bind_group = device.create_bind_group(
             "gpu_flock",
@@ -561,6 +606,7 @@ impl GpuFlock {
             formation_count: pipeline("formation_count", 0.0, 0.0, 0.0, 0.0),
             formation_scan: pipeline("formation_scan", 0.0, 0.0, 0.0, 0.0),
             formation_assign: pipeline("formation_assign", 0.0, 0.0, 0.0, 0.0),
+            track: pipeline("track", 0.0, 0.0, 0.0, 0.0),
             steer: std::array::from_fn(|flags| {
                 pipeline(
                     "steer",
@@ -635,6 +681,7 @@ impl GpuFlock {
             && !self.scene_dirty
             && !self.predators_dirty
             && formation == self.formation_enabled
+            && params.track.x == 0
         {
             self.count = count;
             return;
@@ -728,11 +775,22 @@ impl GpuFlock {
         let spawn_from = self.count.min(count);
         let block_count = buffers.table_size / SCAN_BLOCK;
         let step = GpuParams {
+            track: UVec4::new(
+                params.track.x,
+                params.track.y,
+                params.track.z,
+                buffers.track_offset(),
+            ),
             spawn_from,
             table_mask: buffers.table_size - 1,
             frame: self.frame,
             block_count,
-            obstacles: UVec4::new(buffers.capacity * 5 / 2, params.obstacles.y, 0, 0),
+            obstacles: UVec4::new(
+                buffers.capacity * 5 / 2,
+                params.obstacles.y,
+                buffers.track_offset() + 5,
+                buffers.output_offset(),
+            ),
             predators: UVec4::new(
                 buffers.capacity * 5 / 2 + 24 + params.predators.z * 8,
                 params.predators.y,
@@ -765,6 +823,13 @@ impl GpuFlock {
         encoder.copy_buffer_to_buffer(&upload, 0, &self.params, 0, GpuParams::min_size().get());
 
         let groups = |items: u32| items.div_ceil(WORKGROUP);
+        if params.track.x != 0 {
+            encoder.clear_buffer(
+                &buffers.arena,
+                buffers.track_offset() as u64 * METADATA_SIZE,
+                Some(80),
+            );
+        }
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("gpu_flock"),
             timestamp_writes: None,
@@ -801,6 +866,10 @@ impl GpuFlock {
             .expect("GPU spawn ID exhausted");
         self.group_count = params.groups.x;
         if !params.simulates() {
+            if params.track.x != 0 {
+                pass.set_pipeline(&self.track);
+                pass.dispatch_workgroups(groups(count), 1, 1);
+            }
             drop(pass);
             self.count = count;
             return;
@@ -837,12 +906,38 @@ impl GpuFlock {
             pass.set_pipeline(pipeline);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
+        if params.track.x != 0 {
+            pass.set_pipeline(&self.track);
+            pass.dispatch_workgroups(groups(count), 1, 1);
+        }
         drop(pass);
         if params.max_neighbors == 0 {
             self.order_base = buffers.capacity / 4 - self.order_base;
         }
         self.count = count;
         self.frame = self.frame.wrapping_add(1);
+    }
+
+    pub(crate) fn copy_track(&self, encoder: &mut CommandEncoder, destination: &Buffer) {
+        if self.count > 0 {
+            if let Some(buffers) = &self.buffers {
+                encoder.copy_buffer_to_buffer(
+                    &buffers.arena,
+                    buffers.track_offset() as u64 * METADATA_SIZE,
+                    destination,
+                    0,
+                    80,
+                );
+            }
+        } else {
+            encoder.clear_buffer(destination, 0, Some(80));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_track(&self, device: &RenderDevice, queue: &RenderQueue) -> Vec<UVec4> {
+        let offset = self.buffers.as_ref().unwrap().track_offset() as u64 * METADATA_SIZE;
+        self.read_arena(device, queue, offset, 5)
     }
 
     /// Replaces the flock with `boids`, as if they had been spawned.
@@ -1027,6 +1122,24 @@ impl GpuFlock {
             self.read_arena(device, queue, offset, PREDATOR_RECORDS as u64),
             self.predator_uploads,
         )
+    }
+
+    #[cfg(test)]
+    pub fn read_previous(&self, device: &RenderDevice, queue: &RenderQueue) -> Vec<[Vec4; 2]> {
+        let buffers = self.buffers.as_ref().unwrap();
+        self.read_arena(
+            device,
+            queue,
+            buffers.output_offset() as u64 * METADATA_SIZE,
+            self.count as u64 * 2,
+        )
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            std::array::from_fn(|i| Vec4::from_array(pair[i].to_array().map(f32::from_bits)))
+        })
+        .collect()
     }
 
     /// Copies the first `count` boids back to the CPU (blocking).
@@ -1364,12 +1477,20 @@ mod tests {
             formation_settings: Vec4::new(56.0, 57.0, 58.0, 59.0),
             predators: UVec4::new(9001, 4, 3, 0),
             predator_settings: Vec4::new(60.0, 61.0, 62.0, 63.0),
+            track: UVec4::new(2, 73, 74, 75),
+            motion: Vec4::new(0.7, 1.0, 8.0, 0.0),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 432);
-        assert_eq!(bytes.len(), 432);
+        assert_eq!(GpuParams::min_size().get(), 464);
+        assert_eq!(bytes.len(), 464);
+        for (axis, value) in [0.7_f32, 1.0, 8.0, 0.0].into_iter().enumerate() {
+            assert_eq!(&bytes[448 + axis * 4..452 + axis * 4], &value.to_le_bytes());
+        }
+        for (axis, value) in [2_u32, 73, 74, 75].into_iter().enumerate() {
+            assert_eq!(&bytes[432 + axis * 4..436 + axis * 4], &value.to_le_bytes());
+        }
         assert_eq!(size_of::<BoidData>(), 80);
         assert_eq!(BOID_SIZE, 64);
         for (axis, value) in [9001_u32, 4, 3, 0].into_iter().enumerate() {
