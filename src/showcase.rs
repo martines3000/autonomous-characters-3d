@@ -187,6 +187,11 @@ pub(crate) fn apply(world: &mut World, showcase: Showcase) {
         .restart_after(&world.resource::<Presentation>().follow);
     if let Some(mut models) = world.get_resource_mut::<crate::vehicle_model::VehicleModels>() {
         models.cancel();
+        // The hero swallow replaces the built-in Bird once its asynchronous load lands.
+        if showcase == Showcase::Swallow {
+            models.settings = default();
+            models.request("assets/models/swallow.glb".into());
+        }
     }
     for mut selection in world
         .query_filtered::<&mut TargetSelection, With<Target>>()
@@ -377,6 +382,27 @@ mod tests {
                 Showcase::Calm => assert_eq!(*state, GlobalState::default()),
             }
         }
+    }
+
+    #[test]
+    fn swallow_requests_the_hero_model_and_other_presets_cancel_it() {
+        bevy::tasks::IoTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let mut world = world();
+        world.insert_resource(crate::vehicle_model::VehicleModels::default());
+        world
+            .resource_mut::<crate::vehicle_model::VehicleModels>()
+            .settings
+            .scale = 3.0;
+        apply(&mut world, Showcase::Swallow);
+        let models = world.resource::<crate::vehicle_model::VehicleModels>();
+        assert_eq!(models.path_input, "assets/models/swallow.glb");
+        assert!(models.status.starts_with("Loading"));
+        assert_eq!(models.settings.scale, 1.0);
+        apply(&mut world, Showcase::Calm);
+        assert!(world
+            .resource::<crate::vehicle_model::VehicleModels>()
+            .status
+            .contains("cancelled"));
     }
 
     #[test]

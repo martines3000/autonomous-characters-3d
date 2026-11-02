@@ -96,8 +96,9 @@ hyphenated names, such as `starling-murmuration`). Camera `preset` commands rema
   controls standing in for falcons, against the **Sunset** sky. Director opens with a ten-second orbit shot.
 - **Fish school**: 20,000 swimming Fish in two ocean-colored groups, tighter cohesion and one
   orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
-- **Swallow formation**: 8,000 Birds morph from Sphere toward Helix over 12.5 simulated seconds,
-  with a slowly orbiting camera under the **Midday** sky.
+- **Swallow formation**: 8,000 swallows morph from Sphere toward Helix over 12.5 simulated seconds,
+  with a slowly orbiting camera under the **Midday** sky. The preset loads the low-poly hero
+  `assets/models/swallow.glb` in model colors; built-in Birds show until the load finishes.
 - **Neon swarm**: 200,000 Darts, Aurora colors, Glow and speed streaks; cursor attraction is off.
 - **Calm**: exact current simulation, appearance and presentation defaults. Startup remains unchanged.
 
@@ -687,6 +688,9 @@ Additional generated original assets, under the repository's terms, authored +Z 
   **Flap**: 1 second, 31 frames, 69.75 KiB baked. **Glide**: 2 seconds, 61 frames, 137.25 KiB baked.
 - `assets/models/material-glider.glb` (2,956 bytes): polished gold hull (metallic 1 / roughness 0.12)
   and matte blue wings (0 / 0.95), two primitives and 24 triangles.
+- `assets/models/swallow.glb` (29,228 bytes): low-poly barn swallow hero, 294 triangles, 14
+  primitives, steel-blue/rust/cream factor materials, 0.8-second rigid flap loop. Regenerate with
+  Blender 4.5: `blender --background --factory-startup --python scripts/make_swallow_blender.py -- <out.glb> <preview_dir>`.
 
 ```sh
 python3 scripts/make_example_models.py --kind bird
