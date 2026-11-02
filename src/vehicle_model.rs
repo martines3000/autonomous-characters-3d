@@ -2144,7 +2144,11 @@ mod tests {
                     .chain(crate::species::Species::BIRDS)
                     .map(|species| species.behavior().model),
             )
-            .chain(["assets/models/shark.glb", "assets/models/falcon.glb"])
+            .chain([
+                "assets/models/shark.glb",
+                "assets/models/falcon.glb",
+                "assets/models/tuna.glb",
+            ])
         {
             let model = load(&root().join(path), default()).unwrap();
             assert!(model.triangles <= 400, "{path}: {}", model.triangles);
@@ -2152,6 +2156,13 @@ mod tests {
             assert!(animation.frame_count > 2, "{path}");
             let document = gltf::Gltf::open(root().join(path)).unwrap();
             assert_eq!(document.animations().count(), 1, "{path}: coordinated clip");
+            for channel in document.animations().flat_map(|clip| clip.channels()) {
+                assert_eq!(
+                    channel.sampler().interpolation(),
+                    gltf::animation::Interpolation::Linear,
+                    "{path}: LINEAR clip"
+                );
+            }
             let first = &animation.data[..animation.vertices];
             let last = &animation.data[animation.data.len() - animation.vertices..];
             for (start, end) in first.iter().zip(last) {

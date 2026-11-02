@@ -283,6 +283,7 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
                         for model in [
                             crate::hunter::HunterModel::Shark,
                             crate::hunter::HunterModel::Falcon,
+                            crate::hunter::HunterModel::Tuna,
                         ] {
                             ui.selectable_value(
                                 &mut group.hunter_model,

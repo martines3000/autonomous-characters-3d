@@ -156,6 +156,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         if vertex.phase.z < 1.5 {
             let tail = clamp((1.25-position.y)/2.5,0.0,1.0);
             position.x += 0.22*tail*tail*wave;
+        } else if vertex.phase.z > 2.5 {
+            // Thunniform tuna keep the trunk stiff and beat the narrow tail quickly.
+            let tail = clamp((0.4-position.y)/1.65,0.0,1.0);
+            let beat = sin(6.2831853 * (appearance.motion.x * 3.0 + vertex.phase.x));
+            position.x += 0.18*tail*tail*tail*beat;
         } else {
             let wing = max(abs(position.x)-0.2,0.0);
             position.z += 0.3*wing*wave;

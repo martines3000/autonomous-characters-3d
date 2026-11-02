@@ -27,18 +27,21 @@ pub enum HunterModel {
     #[default]
     Shark,
     Falcon,
+    Tuna,
 }
 impl HunterModel {
     pub fn path(self) -> &'static str {
         match self {
             Self::Shark => "assets/models/shark.glb",
             Self::Falcon => "assets/models/falcon.glb",
+            Self::Tuna => "assets/models/tuna.glb",
         }
     }
     pub fn code(self) -> f32 {
         match self {
             Self::Shark => 1.0,
             Self::Falcon => 2.0,
+            Self::Tuna => 3.0,
         }
     }
 }

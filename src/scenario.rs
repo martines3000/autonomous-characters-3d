@@ -471,7 +471,8 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     let model = match *value {
                         "shark" => crate::hunter::HunterModel::Shark,
                         "falcon" => crate::hunter::HunterModel::Falcon,
-                        _ => return Err("hunter_model expects shark or falcon".into()),
+                        "tuna" => crate::hunter::HunterModel::Tuna,
+                        _ => return Err("hunter_model expects shark, falcon or tuna".into()),
                     };
                     Command::Set(Setting::HunterModel(
                         integer(group, 1, crate::swarm::MAX_GROUPS - 1)?,
@@ -1397,7 +1398,7 @@ mod tests {
 
     #[test]
     fn hunter_commands_validate_and_apply_bounded_group_settings() {
-        let commands = parse("0 set groups 8\n0 group_role 1 hunter\n0 group_size 1 5\n0 group_speed 1 1.3\n0 hunter_count 1 3\n0 hunter_model 1 shark\n0 group_role 7 hunter\n0 hunter_count 7 16\n0 hunter_model 7 falcon\n1 species shark-attack\n2 species falcon-strike").unwrap();
+        let commands = parse("0 set groups 8\n0 group_role 1 hunter\n0 group_size 1 5\n0 group_speed 1 1.3\n0 hunter_count 1 3\n0 hunter_model 1 shark\n0 hunter_model 2 tuna\n0 group_role 7 hunter\n0 hunter_count 7 16\n0 hunter_model 7 falcon\n1 species shark-attack\n2 species falcon-strike\n3 species tuna-raid").unwrap();
         let mut world = World::new();
         world.init_resource::<GlobalState>();
         for command in commands {
@@ -1414,6 +1415,10 @@ mod tests {
         assert_eq!(
             groups.table[7].hunter_model,
             crate::hunter::HunterModel::Falcon
+        );
+        assert_eq!(
+            groups.table[2].hunter_model,
+            crate::hunter::HunterModel::Tuna
         );
         for bad in [
             "group_role 0 hunter",

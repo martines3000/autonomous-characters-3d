@@ -111,13 +111,14 @@ the natural-animation assets await idle-machine GPU measurements. The detailed *
 
 ### Hunters and prey
 
-Choose **Shark attack** (30,000 sardines, three sharks) or **Falcon strike** (40,000 starlings,
-two falcons) next to Species. Existing presets keep their original behavior. These examples replace
-groups and remove the invisible orbiting flee fields; environment and camera remain yours.
-Shark attack gives prey a shared target at the origin to gather the school.
+Choose **Shark attack** (30,000 sardines, three sharks), **Falcon strike** (40,000 starlings,
+two falcons), or **Tuna raid** (30,000 sardines, twelve tuna) next to Species. Existing presets keep
+their original behavior. These examples replace groups and remove the invisible orbiting flee fields; environment and camera remain yours.
+Shark attack and Tuna raid give prey a shared target at the origin to gather the school.
+Tuna use 2.5× size and 1.6× cruise speed: larger than sardines, smaller and faster than the 5× sharks.
 
 Under **Swarm → Groups**, choose Prey or Hunter, size and speed multipliers, then hunter count
-and Shark/Falcon model. Group 0 stays prey. The vehicle count controls prey; hunters are additional,
+and Shark/Falcon/Tuna model. Group 0 stays prey. The vehicle count controls prey; hunters are additional,
 capped at **16 total**, with earlier groups taking priority. Prey membership skips hunter groups.
 Size changes rendering only; speed changes steering and its speed ceiling.
 
@@ -129,8 +130,8 @@ share the rules. GPU pursuit searches resident prey in parallel and writes flee 
 with no readback. Each hunter group draws only its small population with its own hero mesh and
 procedural swim/flap. Hunter-free defaults retain the original buffers and compile out hunter work.
 
-Scenarios: `species shark-attack`, `species falcon-strike`, `group_role 1 hunter`, `group_size 1 5`,
-`group_speed 1 1.3`, `hunter_count 1 3`, `hunter_model 1 shark` (or `falcon`). Enable groups first
+Scenarios: `species shark-attack`, `species falcon-strike`, `species tuna-raid`, `group_role 1 hunter`,
+`group_size 1 5`, `group_speed 1 1.3`, `hunter_count 1 3`, `hunter_model 1 shark` (or `falcon` / `tuna`). Enable groups first
 with `set groups 2`; `group_role 1 prey` or `set groups off` removes hunters.
 
 ### Showcase presets
@@ -767,13 +768,15 @@ Additional generated original assets, under the repository's terms, authored +Z 
 - `assets/models/rook.glb`: 334-triangle black rook, pale beak base, fingered primaries and wedge
   tail; 4.27-second loop (32-frame strokes, 64-frame glide). Used by **Rook roost**.
 - `assets/models/shark.glb`: 254-triangle grey shark, white belly, tall dorsal and heterocercal
-  tail; slow 1.8-second powerful swim. Asset only, reserved for future predators.
+  tail; slow 1.8-second powerful swim. Used by **Shark attack**.
 - `assets/models/falcon.glb`: 350-triangle peregrine, slate back, pale barred belly and pointed
-  wings; fast 1.4-second loop (12-frame strokes, 18-frame glide). Asset only, reserved for predators.
+  wings; fast 1.4-second loop (12-frame strokes, 18-frame glide). Used by **Falcon strike**.
+- `assets/models/tuna.glb`: 346-triangle torpedo body, blue-black back, silver belly, yellow finlets
+  and lunate tail; stiff trunk with a fast 0.4-second skinned tail beat. Used by **Tuna raid**.
 
-These six assets each export **one coordinated looping clip**, sampled every frame at 30 Hz with
+These seven Blender assets each export **one coordinated looping clip**, sampled every frame at 30 Hz with
 LINEAR interpolation. Bird shoulders ease through two flaps, hands fold and pitch on recovery,
-bodies counter-bob and tails trim; the glide holds slight dihedral. Fish and shark use eight-joint
+bodies counter-bob and tails trim; the glide holds slight dihedral. Fish, shark and tuna use eight-joint
 skins (six spine/tail joints and two pectorals), at most two weights per vertex. The wave grows and
 lags toward the tail. Existing per-instance phases mix strokes and glides throughout the flock.
 Regenerate each with Blender 4.5:
@@ -982,7 +985,7 @@ pgrep -a autonomous   # no process should remain after exit
 | Command | Arguments / behavior |
 | --- | --- |
 | `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
-| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`, `shark-attack`, `falcon-strike`; replace flocking behavior and model only (see Species behaviors) |
+| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`, `shark-attack`, `falcon-strike`, `tuna-raid`; replace flocking behavior and model only (see Species behaviors) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |

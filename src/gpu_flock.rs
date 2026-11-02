@@ -1581,6 +1581,8 @@ fn hunter_configs(params: &GpuParams) -> Vec<(u32, crate::swarm::Group)> {
             groups.table[i].hunter_count = settings.z as usize;
             groups.table[i].hunter_model = if settings.w == 2.0 {
                 crate::hunter::HunterModel::Falcon
+            } else if settings.w == 3.0 {
+                crate::hunter::HunterModel::Tuna
             } else {
                 crate::hunter::HunterModel::Shark
             };
@@ -1701,6 +1703,29 @@ impl HunterGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunter_models_roundtrip_through_gpu_settings_and_cpu_instances() {
+        for model in [
+            crate::hunter::HunterModel::Shark,
+            crate::hunter::HunterModel::Falcon,
+            crate::hunter::HunterModel::Tuna,
+        ] {
+            let mut state = GlobalState::default();
+            state.groups.count = 2;
+            let group = &mut state.groups.table[1];
+            group.role = crate::swarm::GroupRole::Hunter;
+            group.hunter_count = 12;
+            group.size_scale = 2.5;
+            group.speed_scale = 1.6;
+            group.hunter_model = model;
+            let params = gpu_params(&state, Vec3::ZERO, false, 0.01);
+            let configs = hunter_configs(&params);
+            assert_eq!(configs, state.groups.hunter_configs());
+            let instance = crate::hunter::Hunter::default().instance(configs[0].1, 110.0, 0.0);
+            assert_eq!(instance[2].z, model.code());
+        }
+    }
 
     #[test]
     fn dormant_hunter_groups_preserve_uniforms_and_buffer_layouts() {
