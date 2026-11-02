@@ -165,7 +165,10 @@ impl HeadingPalette {
 #[derive(Resource)]
 pub struct Appearance {
     pub style: SceneStyle,
+    /// Requested environment, shown in the menu even while its bake is pending.
     pub environment: crate::environment::Environment,
+    /// Set by EnvironmentPlugin; None lets isolated scene consumers use configuration directly.
+    pub(crate) applied_environment: Option<crate::environment::Environment>,
     pub palette: HeadingPalette,
     pub vehicles: crate::vehicle_appearance::VehicleAppearance,
     pub auto_frame: bool,
@@ -185,6 +188,7 @@ impl Default for Appearance {
         Self {
             style: SceneStyle::default(),
             environment: default(),
+            applied_environment: None,
             palette: HeadingPalette::default(),
             vehicles: default(),
             auto_frame: true,
@@ -202,8 +206,16 @@ impl Default for Appearance {
 }
 
 impl Appearance {
+    pub fn active_environment(&self) -> crate::environment::Environment {
+        self.applied_environment.unwrap_or(self.environment)
+    }
+
+    pub(crate) fn environment_ready(&self) -> bool {
+        self.active_environment() == self.environment
+    }
+
     pub fn volumetric_active(&self) -> bool {
-        self.volumetric && self.environment != crate::environment::Environment::Off
+        self.volumetric && self.active_environment() != crate::environment::Environment::Off
     }
 
     /// Preserve the user's Shadows preference while shafts need flock occluders.
@@ -255,14 +267,15 @@ pub(crate) fn sync_glow_camera(
             },
             ..default()
         })
-    } else if appearance.environment != crate::environment::Environment::Off {
+    } else if appearance.active_environment() != crate::environment::Environment::Off {
         Some(Bloom {
             intensity: 0.035,
             low_frequency_boost: 0.0,
             composite_mode: BloomCompositeMode::Additive,
             prefilter: BloomPrefilter {
                 // The procedural surface highlight has a lower HDR range than the HDRIs.
-                threshold: if appearance.environment == crate::environment::Environment::Underwater
+                threshold: if appearance.active_environment()
+                    == crate::environment::Environment::Underwater
                 {
                     1.5
                 } else {
@@ -675,9 +688,9 @@ pub(crate) fn update_studio(
             }
         }
         *visibility = if appearance.style != SceneStyle::Classic
-            && appearance.environment == crate::environment::Environment::Off
+            && appearance.active_environment() == crate::environment::Environment::Off
             || matches!(surface, StudioSurface::Ground)
-                && appearance.environment == crate::environment::Environment::Underwater
+                && appearance.active_environment() == crate::environment::Environment::Underwater
         {
             Visibility::Inherited
         } else {
@@ -691,7 +704,7 @@ pub(crate) fn update_studio(
             StudioSurface::Ground => {
                 transform.translation = Vec3::new(0.0, -walls.y, 0.0);
                 transform.scale = Vec3::new(walls.x, 1.0, walls.z);
-                if appearance.environment == crate::environment::Environment::Underwater {
+                if appearance.active_environment() == crate::environment::Environment::Underwater {
                     transform.translation.y = -walls.y * 1.6;
                     transform.scale *= Vec3::new(1000.0, 1.0, 1000.0);
                 }
@@ -808,11 +821,12 @@ pub(crate) fn draw_world(
     let look = appearance.style.settings();
     if appearance.is_changed() {
         clear.0 = look.background;
-        ambient.brightness = if appearance.environment == crate::environment::Environment::Off {
-            look.ambient
-        } else {
-            0.0
-        };
+        ambient.brightness =
+            if appearance.active_environment() == crate::environment::Environment::Off {
+                look.ambient
+            } else {
+                0.0
+            };
         for (mut light, key, fill) in &mut lights {
             if key {
                 light.illuminance = look.key;
@@ -824,7 +838,7 @@ pub(crate) fn draw_world(
         }
     }
     let walls = vehicle::walls(state.vehicle_count);
-    if appearance.environment != crate::environment::Environment::Off {
+    if appearance.active_environment() != crate::environment::Environment::Off {
         // HDRI scenes need no box or grid. Simulation walls remain unchanged.
     } else if appearance.style == SceneStyle::Classic {
         gizmos.cube(Transform::from_scale(walls * 2.0), look.wall);
@@ -859,7 +873,7 @@ pub(crate) fn draw_world(
             projection.far = end
                 .max(sky_radius(transform.translation, walls, target_far) * 1.1)
                 .max(1000.0);
-            if appearance.environment == crate::environment::Environment::Underwater {
+            if appearance.active_environment() == crate::environment::Environment::Underwater {
                 // Keep the distant sand beyond the fog horizon instead of clipping a visible edge.
                 projection.far = projection.far.max(walls.max_element() * 1000.0);
             }

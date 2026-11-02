@@ -63,7 +63,7 @@ fn sync_sand(
         Option<&OriginalGround>,
     )>,
 ) {
-    let active = appearance.environment == Environment::Underwater;
+    let active = appearance.active_environment() == Environment::Underwater;
     for (entity, surface, mesh, material, original) in &grounds {
         if !matches!(surface, StudioSurface::Ground) {
             continue;

@@ -225,10 +225,21 @@ pub(crate) fn prepare_simulation(
     mut presentation: ResMut<Presentation>,
     real: Res<Time<Real>>,
     capture: Option<ResMut<crate::capture::Capture>>,
+    appearance: Option<Res<scene::Appearance>>,
+    environments: Option<Res<crate::environment::EnvironmentCache>>,
     mut clock: ResMut<SimulationClock>,
     mut frame: ResMut<SimulationFrame>,
 ) {
-    let fixed = capture.and_then(|mut capture| capture.frame_delta());
+    let environment_ready = appearance.is_none_or(|appearance| {
+        crate::environment::capture_ready(&appearance, environments.as_deref())
+    });
+    let fixed = capture.and_then(|mut capture| {
+        if capture.active() && !environment_ready {
+            Some(Duration::ZERO)
+        } else {
+            capture.frame_delta()
+        }
+    });
     presentation.camera_delta = fixed.map(|dt| dt.as_secs_f32());
     let dt = presentation.camera_dt(&real);
     if presentation.director.advance(dt) {

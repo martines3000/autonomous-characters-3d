@@ -1,0 +1,18 @@
+# Fresh process, default 20k GPU boids; first selections, no GPU timing.
+0 present immediate
+0 ui off
+3 measure begin sunset-first
+3.1 set environment sunset
+6 measure end
+6.1 screenshot /tmp/ac3d-environment-sunset.png
+7 set environment off
+8 measure begin midday-first
+8.1 set environment midday
+11 measure end
+11.1 screenshot /tmp/ac3d-environment-midday.png
+12 set environment off
+13 measure begin underwater-first
+13.1 set environment underwater
+16 measure end
+16.1 screenshot /tmp/ac3d-environment-underwater.png
+18 exit

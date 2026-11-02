@@ -198,9 +198,17 @@ force weights are unchanged; visual speed tuning remains an owner decision. See
 **Scene → Environment** selects **Off** (default), **Sunset**, **Midday** or **Underwater**, independently of Style.
 Sunset and Midday use the bundled CC0 Poly Haven HDRIs; attribution is in
 [assets/environment/CREDITS.md](assets/environment/CREDITS.md).
-Each sky loads on first selection, then caches a 512px HDR cubemap, cosine-convolved diffuse lighting
-and a GGX-filtered specular mip chain. First selection can briefly pause while CPU conversion runs;
-subsequent switches reuse the maps. No environment assets load while Off.
+First selection loads the HDRI and bakes its 512px sky, cosine-convolved diffuse lighting and GGX
+specular mip chain on a background task. Underwater bakes its smaller procedural maps the same way.
+The previous environment stays visible until the complete look swaps in one frame; later switches
+reuse cached maps. Changing selection discards obsolete bake results. No startup bake runs while Off.
+Scripted screenshots and recordings wait for baked maps, GPU uploads and shader readiness, including same-time commands;
+recording clocks hold during pending switches. Failed environments keep the previous look and fail captures.
+To measure first-switch frame stalls at the default 20k, run
+`flock /tmp/ac3d-heavy.lock env CARGO_BUILD_JOBS=4 AC3D_SCRIPT="$PWD/scripts/measure-environment.txt" CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d`.
+Compare `AC3D_MEASURE` maximum and p95 frame milliseconds; captures go to `/tmp/ac3d-environment-*.png`.
+For capture validation, use `scripts/capture-environment.txt` as `AC3D_SCRIPT` with the same launch command.
+Start with a fresh `/tmp/ac3d-env-captures` directory; paused environment pairs and the Off round trip must match.
 
 The HDRI's brightest upper-sky region sets the directional sun's direction and color. Horizon-tinted
 fog replaces the Studio haze; the box, grid and Studio floor disappear. Simulation walls stay active.
@@ -916,8 +924,9 @@ Each line is `<seconds-since-start> <command> [args]`. Blank lines and `#` comme
 `set solid_color #RRGGBB` and `group_color 0 #RRGGBB` treat their color token as a value rather than a comment.
 Times are real elapsed seconds, nonnegative and nondecreasing. Equal-time commands retain file
 order. Names and enum values are lowercase; paths and labels are single whitespace-free tokens.
-Commands run on the first frame at or after their timestamp, so separate dependent screenshots
-from changes by several frames. Screenshot paths are relative to the launch directory unless absolute;
+Commands run on the first frame at or after their timestamp. Environment captures wait for readiness;
+other changes may need several frames before a dependent screenshot. Stills serialize readback and
+hold later commands until completion. Screenshot paths are relative to the launch directory unless absolute;
 parent directories are created and existing files can be replaced. Leave time for capture before `exit`.
 
 ```text
@@ -1039,7 +1048,7 @@ with mean/p95 milliseconds over the retained diagnostic history (up to 120 sampl
 These spans include all substeps and their ordered uniform copies. Diagnostic readback adds overhead;
 keep it off for ordinary frame-rate measurements. No GPU test/benchmark is needed.
 
-`AC3D_MEASURE` reports frames, arithmetic mean/p50/p95 frame milliseconds, FPS (`1000 / mean`),
+`AC3D_MEASURE` reports frames, arithmetic mean/p50/p95/maximum frame milliseconds, FPS (`1000 / mean`),
 physical window resolution, count, mode, style, palette, shape, color mode and render multipliers. Samples use `Time<Real>` and include
 presentation, CPU/GPU overlap and desktop scheduling; these are rendered frame intervals, not GPU
 timestamps. Begin excludes the preceding interval; end includes the final interval. Metadata reflects
