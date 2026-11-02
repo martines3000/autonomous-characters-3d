@@ -39,7 +39,7 @@ struct Vertex {
     @builtin(vertex_index) index: u32,
     @if(MODEL_MATERIALS)
     @location(6) material: vec2<f32>,
-    @if(ANIMATED || PROCEDURAL)
+    @if(ANIMATED || PROCEDURAL || HUNTER)
     @location(10) phase: vec4<f32>,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -151,8 +151,22 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         position.y *= stretch;
         normal.y /= stretch;
     }
+    @if(HUNTER) {
+        let wave = sin(6.2831853 * (appearance.motion.x * 1.6 + vertex.phase.x));
+        if vertex.phase.z < 1.5 {
+            let tail = clamp((1.25-position.y)/2.5,0.0,1.0);
+            position.x += 0.22*tail*tail*wave;
+        } else {
+            let wing = max(abs(position.x)-0.2,0.0);
+            position.z += 0.3*wing*wave;
+        }
+    }
+    let group = (bitcast<u32>(vertex.i_position_speed_group.w) >> 16u) & 0x7fu;
+    var size = 1.0;
+    @if(GROUP_SCALE) { size = appearance.group_colors[min(group,7u)].w; }
+    @if(HUNTER) { size = vertex.phase.y; }
     let q = vertex.i_rotation;
-    let world = rotate(q, position * appearance.proportions.xyz * appearance.material.w) + vertex.i_position_speed_group.xyz;
+    let world = rotate(q, position * appearance.proportions.xyz * appearance.material.w * size) + vertex.i_position_speed_group.xyz;
     var out: VertexOutput;
     @if(GLOW) {
         let glow_speed = f32(bitcast<u32>(vertex.i_position_speed_group.w) & 0xffffu) / 65535.0;
@@ -161,7 +175,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     @if(MODEL_MATERIALS) { out.material = vertex.material; }
     @if(FLOCK_MOTION) {
         // Reuse current deformation for both poses: no animation-only velocity.
-        let previous = rotate(vertex.previous_rotation, position * appearance.proportions.xyz * appearance.material.w) + vertex.previous_position.xyz;
+        let previous = rotate(vertex.previous_rotation, position * appearance.proportions.xyz * appearance.material.w * size) + vertex.previous_position.xyz;
         out.previous_world = vec4<f32>(previous, 1.0);
     }
     out.world_position = vec4<f32>(world, 1.0);

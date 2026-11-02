@@ -103,6 +103,11 @@ enum Setting {
     FormationMorphSpeed(f32),
     GroupTarget(usize, Option<Vec3>),
     GroupColor(usize, [u8; 3]),
+    GroupRole(usize, crate::swarm::GroupRole),
+    GroupSize(usize, f32),
+    GroupSpeed(usize, f32),
+    HunterCount(usize, usize),
+    HunterModel(usize, crate::hunter::HunterModel),
     AttractorMode(AttractorMode),
     AttractorStrength(f32),
     AttractorRadius(f32),
@@ -439,6 +444,39 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                         ),
                         number(radius, 0.1, 200.0)?,
                     )
+                }
+                ["group_role", group, role] => {
+                    let group = integer(group, 0, crate::swarm::MAX_GROUPS - 1)?;
+                    let role = match *role {
+                        "prey" => crate::swarm::GroupRole::Prey,
+                        "hunter" if group != 0 => crate::swarm::GroupRole::Hunter,
+                        "hunter" => return Err("group 0 is reserved for prey".into()),
+                        _ => return Err("group_role expects prey or hunter".into()),
+                    };
+                    Command::Set(Setting::GroupRole(group, role))
+                }
+                ["group_size", group, value] => Command::Set(Setting::GroupSize(
+                    integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
+                    number(value, 0.25, 10.0)?,
+                )),
+                ["group_speed", group, value] => Command::Set(Setting::GroupSpeed(
+                    integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
+                    number(value, 0.25, 3.0)?,
+                )),
+                ["hunter_count", group, value] => Command::Set(Setting::HunterCount(
+                    integer(group, 1, crate::swarm::MAX_GROUPS - 1)?,
+                    integer(value, 1, 16)?,
+                )),
+                ["hunter_model", group, value] => {
+                    let model = match *value {
+                        "shark" => crate::hunter::HunterModel::Shark,
+                        "falcon" => crate::hunter::HunterModel::Falcon,
+                        _ => return Err("hunter_model expects shark or falcon".into()),
+                    };
+                    Command::Set(Setting::HunterModel(
+                        integer(group, 1, crate::swarm::MAX_GROUPS - 1)?,
+                        model,
+                    ))
                 }
                 ["group_target", group, "off"] => Command::Set(Setting::GroupTarget(
                     integer(group, 0, crate::swarm::MAX_GROUPS - 1)?,
@@ -923,6 +961,15 @@ fn apply_setting(world: &mut World, setting: Setting) {
                         state.groups.table[group].color = color;
                     }
                 }
+                Setting::GroupRole(group, role) => state.groups.table[group].role = role,
+                Setting::GroupSize(group, size) => state.groups.table[group].size_scale = size,
+                Setting::GroupSpeed(group, speed) => state.groups.table[group].speed_scale = speed,
+                Setting::HunterCount(group, count) => {
+                    state.groups.table[group].hunter_count = count
+                }
+                Setting::HunterModel(group, model) => {
+                    state.groups.table[group].hunter_model = model
+                }
                 Setting::AttractorMode(value) => state.attractor.mode = value,
                 Setting::AttractorStrength(value) => state.attractor.strength = value,
                 Setting::AttractorRadius(value) => state.attractor.radius = value,
@@ -1346,6 +1393,54 @@ mod tests {
         ] {
             assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn hunter_commands_validate_and_apply_bounded_group_settings() {
+        let commands = parse("0 set groups 8\n0 group_role 1 hunter\n0 group_size 1 5\n0 group_speed 1 1.3\n0 hunter_count 1 3\n0 hunter_model 1 shark\n0 group_role 7 hunter\n0 hunter_count 7 16\n0 hunter_model 7 falcon\n1 species shark-attack\n2 species falcon-strike").unwrap();
+        let mut world = World::new();
+        world.init_resource::<GlobalState>();
+        for command in commands {
+            if let Command::Set(setting) = command.command {
+                apply_setting(&mut world, setting);
+            }
+        }
+        let groups = &world.resource::<GlobalState>().groups;
+        assert_eq!(groups.hunter_count(), 16);
+        assert_eq!(groups.table[1].role, crate::swarm::GroupRole::Hunter);
+        assert_eq!(groups.table[1].size_scale, 5.0);
+        assert_eq!(groups.table[1].speed_scale, 1.3);
+        assert_eq!(groups.table[1].hunter_count, 3);
+        assert_eq!(
+            groups.table[7].hunter_model,
+            crate::hunter::HunterModel::Falcon
+        );
+        for bad in [
+            "group_role 0 hunter",
+            "group_role 8 prey",
+            "group_role 1 predator",
+            "group_size 1 0",
+            "group_size 1 NaN",
+            "group_size 1 11",
+            "group_speed 1 0.1",
+            "group_speed 1 inf",
+            "group_speed 1 4",
+            "hunter_count 0 1",
+            "hunter_count 1 0",
+            "hunter_count 1 17",
+            "hunter_model 1 fish",
+            "hunter_model 8 falcon",
+        ] {
+            assert!(parse(&format!("0 {bad}")).is_err(), "{bad}");
+        }
+        apply_setting(
+            &mut world,
+            Setting::GroupRole(1, crate::swarm::GroupRole::Prey),
+        );
+        assert_eq!(
+            world.resource::<GlobalState>().groups.table[1].role,
+            crate::swarm::GroupRole::Prey
+        );
     }
 
     #[test]

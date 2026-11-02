@@ -109,6 +109,30 @@ The earlier species assets held the 60 FPS vsync cap at 3816×2110 on the RX 790
 the natural-animation assets await idle-machine GPU measurements. The detailed **Simulation**,
 **Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
 
+### Hunters and prey
+
+Choose **Shark attack** (30,000 sardines, three sharks) or **Falcon strike** (40,000 starlings,
+two falcons) next to Species. Existing presets keep their original behavior. These examples replace
+groups and remove the invisible orbiting flee fields; environment and camera remain yours.
+Shark attack gives prey a shared target at the origin to gather the school.
+
+Under **Swarm → Groups**, choose Prey or Hunter, size and speed multipliers, then hunter count
+and Shark/Falcon model. Group 0 stays prey. The vehicle count controls prey; hunters are additional,
+capped at **16 total**, with earlier groups taking priority. Prey membership skips hunter groups.
+Size changes rendering only; speed changes steering and its speed ceiling.
+
+Hunters seek the nearest prey within 180 reference units, lead slightly, commit to a **0.45 s**
+lunge at up to **1.8×** cruise speed, then recover for **0.8 s**. They separate from each other.
+Prey flee within 24 reference units and gain a **35%** speed allowance for **0.65 s** after danger.
+Radii scale with population; timers follow simulated time and freeze on pause. Naive, Octree and GPU
+share the rules. GPU pursuit searches resident prey in parallel and writes flee records each substep,
+with no readback. Each hunter group draws only its small population with its own hero mesh and
+procedural swim/flap. Hunter-free defaults retain the original buffers and compile out hunter work.
+
+Scenarios: `species shark-attack`, `species falcon-strike`, `group_role 1 hunter`, `group_size 1 5`,
+`group_speed 1 1.3`, `hunter_count 1 3`, `hunter_model 1 shark` (or `falcon`). Enable groups first
+with `set groups 2`; `group_role 1 prey` or `set groups off` removes hunters.
+
 ### Showcase presets
 
 Open **Showcase** at the top of the menu for live, one-click scenes. Scenario command
@@ -290,7 +314,8 @@ Spatial falloff scales with count; the existing world-unit max speed stays uncha
 to use the per-group sRGB colors. Separation sees every group; alignment and cohesion see only the
 same group. Each group can optionally seek a world-space target using the existing seek law instead
 of wander/walls. Selecting the global target overrides every group target; clearing global follow
-restores each group's target or normal wander. The cursor field affects all groups additively.
+restores each group's target or normal wander. The cursor field affects all prey groups additively.
+Hunter groups pursue prey independently; see Hunters and prey above.
 
 Other-group neighbors do **not** consume GPU alignment/cohesion samples. Exact separation remains
 unfiltered. The configured follow cap applies during global following or whenever an enabled group
@@ -302,7 +327,7 @@ Membership uses a stable spawn ID and reserved formation slot in a separate 16-b
 GPU Boids stay **64 bytes**. Sorting carries a 32-bit table index; groups Off never reads metadata
 in steering. Two metadata tables (one maintenance scratch) and two order maps add 5 MiB at 100k
 capacity and 40 MiB at 1M capacity. They share the eighth storage binding with future scene data.
-Instance stride stays 48 bytes and the draw count stays one. Animation phase keeps its original bits
+Instance stride stays 48 bytes and hunter-free scenes retain one draw. Animation phase keeps its original bits
 and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headless Off step medians
 are within 5% of the original baseline in 100k/1M wander/follow. See the
 [swarm plan](plans/completed/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
@@ -957,7 +982,7 @@ pgrep -a autonomous   # no process should remain after exit
 | Command | Arguments / behavior |
 | --- | --- |
 | `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
-| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`; replace flocking behavior and model only (see Species behaviors) |
+| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`, `shark-attack`, `falcon-strike`; replace flocking behavior and model only (see Species behaviors) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |
@@ -1005,7 +1030,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `boidcam chase`, `boidcam first`, `boidcam off` | Boid chase camera, first-person camera, or exit |
 | `boidcam next` | Pick a random living boid; retains camera mode |
 | `boidcam id` | Stable spawn ID, integer 0–4,294,967,295; retains camera mode; missing IDs auto-repick |
-| `set groups` | `off` (default) or integer `2`–`8`; membership changes use modulo mapping |
+| `set groups` | `off` (default) or integer `2`–`8`; membership changes distribute prey across Prey groups |
 | `group_target` | `group x y z` sets a target, or `group off` clears it; group index 0–7, world coordinates within ±10,000,000 |
 | `group_color` | `group RRGGBB` or `group #RRGGBB`; group index 0–7; accepts inactive table entries |
 | `set attractor_mode` | `off` (default), `attract`, `repel`; additive with target following |

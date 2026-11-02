@@ -112,6 +112,7 @@ pub(crate) struct GpuParams {
     pub target_position: Vec3,
     pub attractor_position_radius: Vec4,
     // x: signed strength (zero disables); yzw: reserved.
+    // Hunters use y=count, z=optional flee-record offset, w=active hunter-group mask.
     pub attractor_strength: Vec4,
     // x: active group count (0 = off), y: next spawn ID, z: input order-map base, w: capacity.
     pub groups: UVec4,
@@ -126,6 +127,7 @@ pub(crate) struct GpuParams {
     // World arrival radius, strength, actual morph, reserved.
     pub formation_settings: Vec4,
     // Arena offset, active count, substep, reserved.
+    // The optional hunter pass uses w as its input snapshot offset.
     pub predators: UVec4,
     pub predator_settings: Vec4,
     // mode (0 off, 1 spawn ID, 2 index), selector, simulated-time bits, arena tail offset.
@@ -253,10 +255,22 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
             0
         },
         groups: UVec4::new(state.groups.count, 0, 0, 0),
-        group_targets: state
-            .groups
-            .table
-            .map(|group| group.target.map_or(Vec4::ZERO, |point| point.extend(1.0))),
+        group_targets: std::array::from_fn(|i| {
+            let group = state.groups.table[i];
+            if i != 0
+                && i < state.groups.count as usize
+                && group.role == crate::swarm::GroupRole::Hunter
+            {
+                Vec4::new(
+                    group.size_scale,
+                    group.speed_scale,
+                    group.hunter_count as f32,
+                    group.hunter_model.code(),
+                )
+            } else {
+                group.target.map_or(Vec4::ZERO, |point| point.extend(1.0))
+            }
+        }),
         follow: follow as u32,
         dt,
         cell_size: state.vehicle_size
@@ -298,9 +312,13 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
             } else {
                 0.0
             },
+            if state.mode == SimulationMode::Gpu {
+                state.groups.hunter_count() as f32
+            } else {
+                0.0
+            },
             0.0,
-            0.0,
-            0.0,
+            state.groups.hunter_mask() as f32,
         ),
         ..default()
     }
@@ -313,6 +331,8 @@ fn init_gpu_flock(mut commands: Commands, device: Res<RenderDevice>) {
 #[derive(SystemParam)]
 struct FlockFrame<'w, 's> {
     simulation: Res<'w, crate::presentation::SimulationFrame>,
+    hunter_settings: Option<Res<'w, crate::hunter::HunterSettings>>,
+    hunter_draw: ResMut<'w, crate::instancing::HunterInstances>,
     motion_views: Query<'w, 's, (), With<bevy::core_pipeline::prepass::MotionVectorPrepass>>,
     formation: Res<'w, FormationFrame>,
     predators: Res<'w, PredatorFrame>,
@@ -325,11 +345,14 @@ fn run_gpu_flock(
     mut context: RenderContext,
     mut flock: ResMut<GpuFlock>,
     params: Res<GpuParams>,
-    frames: FlockFrame,
+    mut frames: FlockFrame,
     queue: Res<RenderQueue>,
     mut draw: ResMut<FlockInstances>,
     scene: Res<SwarmScene>,
 ) {
+    if let Some(settings) = &frames.hunter_settings {
+        flock.set_group_scales(&settings.0);
+    }
     // egui edits in PostUpdate: derive count/settings from the same extracted scene as records.
     let mut params = (*params).with_scene(&scene);
     let frame = &frames.simulation;
@@ -357,6 +380,14 @@ fn run_gpu_flock(
         || params.track.x != 0
         || params.count != flock.count
         || params.groups.x != flock.group_count
+        || params.attractor_strength.w as u32 != flock.group_mask
+        || flock.group_scales_dirty
+        || flock
+            .hunters
+            .as_ref()
+            .map(|h| h.configs.clone())
+            .unwrap_or_default()
+            != hunter_configs(&params)
         || flock.scene_dirty
         || flock.predators_dirty
         || (params.formation.x != 0) != flock.formation_enabled
@@ -391,6 +422,16 @@ fn run_gpu_flock(
         }
     }
     span.end(context.command_encoder());
+    if params.count > 0 || params.attractor_strength.y > 0.0 {
+        frames.hunter_draw.0 = flock
+            .hunters
+            .as_ref()
+            .map_or_else(FlockInstances::default, |h| FlockInstances {
+                buffer: Some(h.instances.clone()),
+                count: h.configs.len() as u32,
+                previous: Some((h.instances.clone(), 48 * 16)),
+            });
+    }
     if params.count > 0 {
         *draw = FlockInstances {
             buffer: flock
@@ -428,7 +469,12 @@ pub(crate) struct GpuFlock {
     formation_scan: ComputePipeline,
     formation_assign: ComputePipeline,
     // Index bits: 0 groups, 1 obstacles, 2 formation, 3 predators. Disabled features compile out of steering.
-    steer: [ComputePipeline; 16],
+    // Bits 4 and 5 add hunters and non-default speed scales; lower 16 variants stay unchanged.
+    steer: [ComputePipeline; 64],
+    hunters: Option<HunterGpu>,
+    group_mask: u32,
+    group_scales: [[f32; 2]; 8],
+    group_scales_dirty: bool,
     track: ComputePipeline,
     params: Buffer,
     buffers: Option<FlockBuffers>,
@@ -460,6 +506,7 @@ pub(crate) struct FlockBuffers {
     capacity: u32,
     table_size: u32,
     history: bool,
+    hunters: bool,
 }
 
 impl FlockBuffers {
@@ -480,12 +527,13 @@ impl FlockBuffers {
                 * METADATA_SIZE
     }
 
-    fn arena(device: &RenderDevice, capacity: u32, history: bool) -> Buffer {
+    fn arena(device: &RenderDevice, capacity: u32, history: bool, hunters: bool) -> Buffer {
         device.create_buffer(&BufferDescriptor {
             label: Some("gpu_flock_metadata_arena"),
             // Metadata/order maps, plus two Vec4s each for frame-start history and sorted output.
             // Scene data and tracking keep their existing offsets before the history tail.
-            size: Self::arena_size(capacity, history),
+            size: Self::arena_size(capacity, history)
+                + if hunters { 32 * METADATA_SIZE } else { 0 },
             usage: BufferUsages::STORAGE
                 | BufferUsages::COPY_SRC
                 | BufferUsages::COPY_DST
@@ -501,8 +549,9 @@ impl FlockBuffers {
         params: &Buffer,
         encoder: &mut CommandEncoder,
         history: bool,
+        hunters: bool,
     ) {
-        let arena = Self::arena(device, self.capacity, history);
+        let arena = Self::arena(device, self.capacity, history, hunters);
         // Off shrinks immediately. Preserve every byte before the optional history tail,
         // including both order maps, scene records, formation ranges and tracking samples.
         encoder.copy_buffer_to_buffer(
@@ -510,7 +559,7 @@ impl FlockBuffers {
             0,
             &arena,
             0,
-            Self::arena_size(self.capacity, false),
+            Self::arena_size(self.capacity, self.history && history),
         );
         self.arena = arena;
         self.bind_group = device.create_bind_group(
@@ -529,6 +578,7 @@ impl FlockBuffers {
             )),
         );
         self.history = history;
+        self.hunters = hunters;
     }
 
     fn new(
@@ -584,7 +634,7 @@ impl FlockBuffers {
             capacity as u64 * size_of::<crate::instancing::InstanceData>() as u64,
             BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
-        let arena = Self::arena(device, capacity, history);
+        let arena = Self::arena(device, capacity, history, false);
         let bind_group = device.create_bind_group(
             "gpu_flock",
             layout,
@@ -609,6 +659,7 @@ impl FlockBuffers {
             capacity,
             table_size,
             history,
+            hunters: false,
         }
     }
 }
@@ -639,7 +690,7 @@ impl GpuFlock {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |entry_point, groups, obstacles, formation, predators| {
+        let pipeline = |entry_point, groups, obstacles, formation, predators, hunters, scales| {
             device.create_compute_pipeline(&RawComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&pipeline_layout),
@@ -651,6 +702,8 @@ impl GpuFlock {
                         ("OBSTACLES_ENABLED", obstacles),
                         ("FORMATION_ENABLED", formation),
                         ("PREDATORS_ENABLED", predators),
+                        ("HUNTERS_ENABLED", hunters),
+                        ("SCALES_ENABLED", scales),
                     ],
                     ..default()
                 },
@@ -664,23 +717,23 @@ impl GpuFlock {
             mapped_at_creation: false,
         });
         Self {
-            spawn: pipeline("spawn", 0.0, 0.0, 0.0, 0.0),
-            update_groups: pipeline("update_groups", 0.0, 0.0, 0.0, 0.0),
-            gather_metadata: pipeline("gather_metadata", 0.0, 0.0, 0.0, 0.0),
-            compact_metadata: pipeline("compact_metadata", 0.0, 0.0, 0.0, 0.0),
-            initialize_history: pipeline("initialize_history", 0.0, 0.0, 0.0, 0.0),
-            clear_counts: pipeline("clear_counts", 0.0, 0.0, 0.0, 0.0),
-            count_cells: pipeline("count", 0.0, 0.0, 0.0, 0.0),
-            count_separation: pipeline("count_separation", 0.0, 0.0, 0.0, 0.0),
-            scan_blocks: pipeline("scan_blocks", 0.0, 0.0, 0.0, 0.0),
-            scan_block_sums: pipeline("scan_block_sums", 0.0, 0.0, 0.0, 0.0),
-            scatter: pipeline("scatter", 0.0, 0.0, 0.0, 0.0),
-            scatter_fine: pipeline("scatter_fine", 0.0, 0.0, 0.0, 0.0),
-            separate: pipeline("separate", 0.0, 0.0, 0.0, 0.0),
-            formation_count: pipeline("formation_count", 0.0, 0.0, 0.0, 0.0),
-            formation_scan: pipeline("formation_scan", 0.0, 0.0, 0.0, 0.0),
-            formation_assign: pipeline("formation_assign", 0.0, 0.0, 0.0, 0.0),
-            track: pipeline("track", 0.0, 0.0, 0.0, 0.0),
+            spawn: pipeline("spawn", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            update_groups: pipeline("update_groups", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            gather_metadata: pipeline("gather_metadata", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            compact_metadata: pipeline("compact_metadata", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            initialize_history: pipeline("initialize_history", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            clear_counts: pipeline("clear_counts", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            count_cells: pipeline("count", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            count_separation: pipeline("count_separation", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            scan_blocks: pipeline("scan_blocks", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            scan_block_sums: pipeline("scan_block_sums", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            scatter: pipeline("scatter", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            scatter_fine: pipeline("scatter_fine", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            separate: pipeline("separate", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            formation_count: pipeline("formation_count", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            formation_scan: pipeline("formation_scan", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            formation_assign: pipeline("formation_assign", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            track: pipeline("track", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             steer: std::array::from_fn(|flags| {
                 pipeline(
                     "steer",
@@ -688,11 +741,17 @@ impl GpuFlock {
                     (flags & 2 != 0) as u32 as f64,
                     (flags & 4 != 0) as u32 as f64,
                     (flags & 8 != 0) as u32 as f64,
+                    (flags & 16 != 0) as u32 as f64,
+                    (flags & 32 != 0) as u32 as f64,
                 )
             }),
             layout,
             params,
             buffers: None,
+            hunters: None,
+            group_mask: 0,
+            group_scales: [[1.0; 2]; 8],
+            group_scales_dirty: false,
             count: 0,
             frame: 0,
             next_id: 0,
@@ -719,6 +778,14 @@ impl GpuFlock {
         if self.obstacles != scene.obstacles {
             self.obstacles.clone_from(&scene.obstacles);
             self.scene_dirty = true;
+        }
+    }
+
+    pub(crate) fn set_group_scales(&mut self, groups: &crate::swarm::Groups) {
+        let scales = groups.table.map(|g| [g.size_scale, g.speed_scale]);
+        if self.group_scales != scales {
+            self.group_scales = scales;
+            self.group_scales_dirty = true;
         }
     }
 
@@ -751,25 +818,44 @@ impl GpuFlock {
         let count = params.count;
         let formation = params.formation.x != 0;
         let history = params.motion.w >= 0.0;
+        let hunters_enabled = params.attractor_strength.y > 0.0;
         let mut initialize_history = false;
         let mut arena_copied = false;
         if let Some(buffers) = &mut self.buffers {
-            if buffers.capacity >= count && buffers.history != history {
-                buffers.set_history(device, &self.layout, &self.params, encoder, history);
+            if buffers.capacity >= count
+                && (buffers.history != history || buffers.hunters != hunters_enabled)
+            {
+                buffers.set_history(
+                    device,
+                    &self.layout,
+                    &self.params,
+                    encoder,
+                    history,
+                    hunters_enabled,
+                );
                 initialize_history = history;
                 arena_copied = true;
             }
         }
-        if count == 0 {
+        if count == 0 && !hunters_enabled {
             self.count = 0;
+            self.hunters = None;
+            self.group_mask = params.attractor_strength.w as u32;
             self.next_id = 0;
             self.order_base = 0;
             self.group_count = params.groups.x;
             self.formation_enabled = formation;
             return;
         }
-        let remap = params.groups.x != self.group_count;
+        let remap = params.groups.x != self.group_count
+            || params.attractor_strength.w as u32 != self.group_mask;
         let assign_slots = formation && (count != self.count || remap || !self.formation_enabled);
+        let hunter_changed = self
+            .hunters
+            .as_ref()
+            .map(|h| h.configs.clone())
+            .unwrap_or_default()
+            != hunter_configs(params);
         if !params.simulates()
             && count == self.count
             && !remap
@@ -778,6 +864,8 @@ impl GpuFlock {
             && formation == self.formation_enabled
             && params.track.x == 0
             && !initialize_history
+            && !hunter_changed
+            && !self.group_scales_dirty
         {
             self.count = count;
             return;
@@ -821,10 +909,42 @@ impl GpuFlock {
                 }
             }
             self.buffers = Some(grown);
+            self.group_scales_dirty |= self.group_scales != [[1.0; 2]; 8];
             self.scene_dirty = true;
             self.predators_dirty = true;
             self.order_base = 0;
             initialize_history = history;
+        }
+        if self.buffers.as_ref().unwrap().hunters != hunters_enabled {
+            self.buffers.as_mut().unwrap().set_history(
+                device,
+                &self.layout,
+                &self.params,
+                encoder,
+                history,
+                hunters_enabled,
+            );
+            arena_copied = true;
+        }
+        if hunters_enabled {
+            let configs = hunter_configs(params);
+            if self.hunters.as_ref().is_none_or(|h| {
+                h.configs
+                    .iter()
+                    .map(|(id, _)| id)
+                    .ne(configs.iter().map(|(id, _)| id))
+            }) {
+                self.hunters = Some(HunterGpu::new(
+                    device,
+                    &self.params,
+                    &configs,
+                    params.spawn_size / 100.0,
+                ));
+            } else if let Some(hunters) = &mut self.hunters {
+                hunters.configs = configs;
+            }
+        } else {
+            self.hunters = None;
         }
         let buffers = self.buffers.as_ref().unwrap();
         let write_arena = |encoder: &mut CommandEncoder, offset, bytes: &[u8]| {
@@ -889,6 +1009,18 @@ impl GpuFlock {
             }
             self.predators_dirty = false;
         }
+        if self.group_scales_dirty {
+            for (i, scale) in self.group_scales.iter().enumerate() {
+                let bytes: Vec<u8> = scale.iter().flat_map(|v| v.to_le_bytes()).collect();
+                write_arena(
+                    encoder,
+                    (buffers.capacity as u64 * 5 / 2 + 16 + i as u64) * METADATA_SIZE + 8,
+                    &bytes,
+                );
+            }
+        }
+        self.group_scales_dirty = false;
+        let hunter_offset = FlockBuffers::arena_size(buffers.capacity, history) / METADATA_SIZE;
         let spawn_from = self.count.min(count);
         let block_count = buffers.table_size / SCAN_BLOCK;
         let step = GpuParams {
@@ -912,7 +1044,7 @@ impl GpuFlock {
                 buffers.capacity * 5 / 2 + 24 + params.predators.z * 8,
                 params.predators.y,
                 params.predators.z,
-                0,
+                self.hunters.as_ref().map_or(0, |h| h.input),
             ),
             formation: UVec4::new(
                 params.formation.x,
@@ -925,6 +1057,12 @@ impl GpuFlock {
                 self.next_id,
                 self.order_base,
                 buffers.capacity,
+            ),
+            attractor_strength: Vec4::new(
+                params.attractor_strength.x,
+                params.attractor_strength.y,
+                hunter_offset as f32,
+                params.attractor_strength.w,
             ),
             ..*params
         };
@@ -982,6 +1120,16 @@ impl GpuFlock {
             .checked_add(count - spawn_from)
             .expect("GPU spawn ID exhausted");
         self.group_count = params.groups.x;
+        self.group_mask = params.attractor_strength.w as u32;
+        if let Some(hunters) = &mut self.hunters {
+            drop(pass);
+            hunters.encode(device, &self.params, buffers, encoder);
+            pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: Some("gpu_flock_prey"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, &*buffers.bind_group, &[]);
+        }
         if !params.simulates() {
             if initialize_history {
                 // A paused toggle has no steering dispatch to initialize the new tail.
@@ -1021,7 +1169,9 @@ impl GpuFlock {
                 &self.steer[(params.groups.x != 0) as usize
                     | (((params.obstacles.y != 0) as usize) << 1)
                     | ((formation as usize) << 2)
-                    | (((params.predators.y != 0) as usize) << 3)],
+                    | (((params.predators.y != 0) as usize) << 3)
+                    | ((hunters_enabled as usize) << 4)
+                    | (((self.group_scales != [[1.0; 2]; 8]) as usize) << 5)],
                 groups(count),
             ),
         ] {
@@ -1118,6 +1268,60 @@ impl GpuFlock {
             .checked_add(1)
             .unwrap();
         self.group_count = 0;
+    }
+
+    #[cfg(test)]
+    pub fn hunter_storage_is_off(&self) -> bool {
+        self.hunters.is_none()
+            && self.buffers.as_ref().is_none_or(|b| {
+                !b.hunters && b.arena.size() == FlockBuffers::arena_size(b.capacity, b.history)
+            })
+    }
+
+    #[cfg(test)]
+    pub fn read_hunters(
+        &self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> Vec<crate::hunter::Hunter> {
+        let Some(hunters) = &self.hunters else {
+            return Vec::new();
+        };
+        let size = hunters.configs.len() as u64 * 48;
+        let staging = device.create_buffer(&BufferDescriptor {
+            label: Some("hunter_test_readback"),
+            size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&default());
+        encoder.copy_buffer_to_buffer(&hunters.state, hunters.input as u64 * 16, &staging, 0, size);
+        queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(MapMode::Read, |result| result.unwrap());
+        device.poll(PollType::wait_indefinitely()).unwrap();
+        let bytes = staging.slice(..).get_mapped_range().unwrap();
+        bytes
+            .as_chunks::<48>()
+            .0
+            .iter()
+            .map(|bytes| {
+                let floats: Vec<f32> = bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect();
+                crate::hunter::Hunter {
+                    position: Vec3::new(floats[0], floats[1], floats[2]),
+                    timer: floats[3],
+                    velocity: Vec3::new(floats[4], floats[5], floats[6]),
+                    group: floats[7] as u32,
+                    rotation: Quat::from_xyzw(floats[8], floats[9], floats[10], floats[11]),
+                }
+            })
+            .collect()
     }
 
     /// Read the draw stream to verify stable phase transport after sorting and paused growth.
@@ -1363,9 +1567,154 @@ impl GpuFlock {
     }
 }
 
+fn hunter_configs(params: &GpuParams) -> Vec<(u32, crate::swarm::Group)> {
+    let mut groups = crate::swarm::Groups {
+        count: params.groups.x,
+        ..default()
+    };
+    for i in 1..params.groups.x as usize {
+        if params.attractor_strength.w as u32 & (1 << i) != 0 {
+            let settings = params.group_targets[i];
+            groups.table[i].role = crate::swarm::GroupRole::Hunter;
+            groups.table[i].size_scale = settings.x;
+            groups.table[i].speed_scale = settings.y;
+            groups.table[i].hunter_count = settings.z as usize;
+            groups.table[i].hunter_model = if settings.w == 2.0 {
+                crate::hunter::HunterModel::Falcon
+            } else {
+                crate::hunter::HunterModel::Shark
+            };
+        }
+    }
+    groups.hunter_configs()
+}
+
+struct HunterGpu {
+    configs: Vec<(u32, crate::swarm::Group)>,
+    state: Buffer,
+    instances: Buffer,
+    layout: BindGroupLayout,
+    pipeline: ComputePipeline,
+    input: u32,
+}
+impl HunterGpu {
+    fn new(
+        device: &RenderDevice,
+        _params: &Buffer,
+        configs: &[(u32, crate::swarm::Group)],
+        scale: f32,
+    ) -> Self {
+        let layout = device.create_bind_group_layout(
+            "hunters",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer::<GpuParams>(false),
+                    storage_buffer_sized(false, None),
+                    storage_buffer_sized(false, None),
+                    storage_buffer_sized(false, None),
+                    storage_buffer_sized(false, None),
+                ),
+            ),
+        );
+        let prefix = SHADER.split("@group(0)").next().unwrap();
+        let rotations = &SHADER
+            [SHADER.find("fn heading_rotation").unwrap()..SHADER.find("fn smooth_motion").unwrap()];
+        let source = format!("{prefix}\nconst EPSILON: f32 = 1.1920929e-7;\nconst PI: f32 = 3.14159265;\n{rotations}\n{}", include_str!("../assets/shaders/hunter.wgsl"));
+        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("hunters"),
+            source: ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("hunters"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: Some("hunters"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("hunt"),
+            compilation_options: default(),
+            cache: None,
+        });
+        let mut records = vec![Vec4::ZERO; 96];
+        for (i, hunter) in crate::hunter::initial(configs, scale)
+            .into_iter()
+            .enumerate()
+        {
+            records[i * 3..i * 3 + 3].copy_from_slice(&hunter.records());
+        }
+        let bytes: Vec<u8> = records
+            .iter()
+            .flat_map(|v| v.to_array().into_iter().flat_map(f32::to_le_bytes))
+            .collect();
+        let state = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("hunters_state"),
+            contents: &bytes,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        });
+        let instances = device.create_buffer(&BufferDescriptor {
+            label: Some("hunters_instances"),
+            size: 80 * 16,
+            usage: BufferUsages::STORAGE | BufferUsages::VERTEX | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        Self {
+            configs: configs.to_vec(),
+            state,
+            instances,
+            layout,
+            pipeline,
+            input: 0,
+        }
+    }
+    fn encode(
+        &mut self,
+        device: &RenderDevice,
+        params: &Buffer,
+        flock: &FlockBuffers,
+        encoder: &mut CommandEncoder,
+    ) {
+        let binding = device.create_bind_group(
+            "hunters",
+            &self.layout,
+            &BindGroupEntries::sequential((
+                params.as_entire_binding(),
+                flock.boids.as_entire_binding(),
+                flock.arena.as_entire_binding(),
+                self.state.as_entire_binding(),
+                self.instances.as_entire_binding(),
+            )),
+        );
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("hunters"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &*binding, &[]);
+        pass.dispatch_workgroups(self.configs.len() as u32, 1, 1);
+        self.input = 48 - self.input;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dormant_hunter_groups_preserve_uniforms_and_buffer_layouts() {
+        let baseline = GlobalState::default();
+        let mut dormant = baseline.clone();
+        dormant.groups.table[1].role = crate::swarm::GroupRole::Hunter;
+        dormant.groups.table[1].hunter_count = 16;
+        assert_eq!(
+            gpu_params(&baseline, Vec3::ZERO, false, 0.01),
+            gpu_params(&dormant, Vec3::ZERO, false, 0.01)
+        );
+        assert_eq!(size_of::<crate::instancing::InstanceData>(), 48);
+        assert_eq!(GpuParams::min_size().get(), 464);
+    }
 
     #[test]
     fn presentation_params_skip_paused_steps_and_scale_simulated_delta() {

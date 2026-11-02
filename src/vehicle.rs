@@ -64,6 +64,7 @@ pub(crate) fn step_cpu(world: &mut World) {
         {
             world.resource_mut::<PredatorFrame>().step = index as usize;
         }
+        crate::hunter::step_cpu(world, frame.step.as_secs_f32());
         world.run_schedule(CpuStep);
     }
     *world.resource_mut::<Time>() = original;
@@ -78,6 +79,7 @@ pub struct Vehicle;
 pub(crate) struct PreviousVehicleTransform(pub Transform);
 
 // x: spawn ID, y: group, z: formation slot, w: reserved. Travels with the vehicle.
+// With hunters active, w stores panic time as f32 bits; disabled steering leaves it untouched.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct VehicleMetadata(pub(crate) UVec4);
 
@@ -85,7 +87,7 @@ pub(crate) struct VehicleMetadata(pub(crate) UVec4);
 pub(crate) struct VehicleVelocity(pub Vector3<f32>);
 
 #[derive(Component, Default)]
-struct VehicleAcceleration(pub Vector3<f32>);
+pub(crate) struct VehicleAcceleration(pub Vector3<f32>);
 
 #[derive(Component, Default)]
 struct VehicleWanderRotation {
@@ -270,15 +272,19 @@ fn movement(
 
         // Seek
         vehicle_query.par_iter_mut().for_each(
-            |(_, velocity, mut acceleration, transform, _, _)| {
+            |(_, velocity, mut acceleration, transform, _, metadata)| {
+                let max_speed = state.vehicle_max_speed * state.groups.speed_scale(metadata.0.y);
                 // Calculate force
                 let mut force: Vector3<f32> =
                     (target_transform.translation - transform.translation).into();
-                force = normalize_or_zero(force).mul(state.vehicle_max_speed);
+                force = normalize_or_zero(force).mul(max_speed);
                 force -= velocity.0;
 
                 // Limit force
-                limit(&mut force, limit_seek);
+                limit(
+                    &mut force,
+                    limit_seek * state.groups.speed_scale(metadata.0.y),
+                );
 
                 // Apply force
                 acceleration.apply_force(force, state.vehicle_mass);
@@ -301,6 +307,7 @@ fn movement(
         // Wander (random steering force within a Sphere)
         vehicle_query.par_iter_mut().for_each(
             |(_, velocity, mut acceleration, transform, mut wander_rotation, metadata)| {
+                let max_speed = state.vehicle_max_speed * state.groups.speed_scale(metadata.0.y);
                 if formation.settings.enabled() && selection.0 {
                     return;
                 }
@@ -310,12 +317,9 @@ fn movement(
                     }
                     let mut force =
                         normalize_or_zero(Vector3::from(target - transform.translation))
-                            * state.vehicle_max_speed
+                            * max_speed
                             - velocity.0;
-                    limit(
-                        &mut force,
-                        state.vehicle_max_speed * state.vehicle_seek_factor,
-                    );
+                    limit(&mut force, max_speed * state.vehicle_seek_factor);
                     acceleration.apply_force(force, state.vehicle_mass);
                     return;
                 }
@@ -346,11 +350,15 @@ fn movement(
                     // Calculate force
                     let mut force: Vector3<f32> =
                         (target - Into::<Vector3<f32>>::into(transform.translation)).into();
-                    force = normalize_or_zero(force).mul(state.vehicle_wander_speed);
+                    force = normalize_or_zero(force)
+                        .mul(state.vehicle_wander_speed * state.groups.speed_scale(metadata.0.y));
                     force -= velocity.0;
 
                     // Limit force
-                    limit(&mut force, limit_wander);
+                    limit(
+                        &mut force,
+                        limit_wander * state.groups.speed_scale(metadata.0.y),
+                    );
 
                     // Apply force
                     acceleration.apply_force(force, state.vehicle_mass);
@@ -361,8 +369,8 @@ fn movement(
                         transform.translation,
                         velocity.0,
                         walls,
-                        state.vehicle_max_speed,
-                        limit_wall_avoid,
+                        max_speed,
+                        limit_wall_avoid * state.groups.speed_scale(metadata.0.y),
                     );
                     // Apply force
                     acceleration.apply_force(force, state.vehicle_mass);
@@ -447,13 +455,13 @@ fn vehicle_cleanup(
 
 fn update_membership(
     state: Res<GlobalState>,
-    mut previous: Local<Option<u32>>,
+    mut previous: Local<Option<(u32, u32)>>,
     mut vehicles: Query<&mut VehicleMetadata, With<Vehicle>>,
 ) {
-    if *previous == Some(state.groups.count) {
+    if *previous == Some((state.groups.count, state.groups.hunter_mask())) {
         return;
     }
-    *previous = Some(state.groups.count);
+    *previous = Some((state.groups.count, state.groups.hunter_mask()));
     if state.groups.count == 0 {
         return;
     }
@@ -468,13 +476,14 @@ fn update_membership(
 fn update_formation_slots(
     state: Res<GlobalState>,
     mut formation: ResMut<FormationFrame>,
-    mut previous: Local<Option<(usize, u32, bool)>>,
+    mut previous: Local<Option<(usize, u32, bool, u32)>>,
     mut vehicles: Query<&mut VehicleMetadata, With<Vehicle>>,
 ) {
     let key = (
         cpu_vehicle_count(&state),
         state.groups.count,
         formation.settings.enabled(),
+        state.groups.hunter_mask(),
     );
     if *previous == Some(key) {
         return;
@@ -505,18 +514,22 @@ fn update(
             &mut VehicleVelocity,
             &mut VehicleAcceleration,
             &mut Transform,
+            &VehicleMetadata,
         ),
         With<Vehicle>,
     >,
     time: Res<Time>,
     state: Res<GlobalState>,
 ) {
-    vehicle_query
-        .par_iter_mut()
-        .for_each(|(_, mut velocity, mut acceleration, mut transform)| {
+    vehicle_query.par_iter_mut().for_each(
+        |(_, mut velocity, mut acceleration, mut transform, metadata)| {
             let old_velocity = velocity.0;
             velocity.0 += acceleration.0 * (time.delta_secs() * REFERENCE_HZ);
-            limit(&mut velocity.0, state.vehicle_max_speed);
+            let panic = state.groups.hunter_count() > 0 && f32::from_bits(metadata.0.w) > 0.0;
+            let max_speed = state.vehicle_max_speed
+                * state.groups.speed_scale(metadata.0.y)
+                * if panic { 1.35 } else { 1.0 };
+            limit(&mut velocity.0, max_speed);
 
             transform.translation.x += velocity.0.x * time.delta_secs();
             transform.translation.y += velocity.0.y * time.delta_secs();
@@ -536,7 +549,8 @@ fn update(
             }
 
             acceleration.0 *= 0.0;
-        });
+        },
+    );
 }
 
 // Uniform on the unit sphere, so the flock starts disordered.
@@ -732,6 +746,16 @@ fn group_flocking_force(
     frames: (&FormationFrame, &PredatorFrame),
 ) -> Vector3<f32> {
     let (formation, predators) = frames;
+    let scaled;
+    let state = if state.groups.speed_scale(metadata.y) != 1.0 {
+        scaled = GlobalState {
+            vehicle_max_speed: state.vehicle_max_speed * state.groups.speed_scale(metadata.y),
+            ..state.clone()
+        };
+        &scaled
+    } else {
+        state
+    };
     let separate_radius = state.vehicle_size * state.vehicle_separation_distance;
     let dist_separate = separate_radius.powi(2);
     let dist_align = (state.vehicle_size * state.vehicle_alignment_distance).powi(2);
@@ -3722,6 +3746,180 @@ mod tests {
         assert_eq!(flock.read_predators(&device, &queue).1, uploads);
     }
 
+    #[test]
+    fn hunter_role_edits_rebuild_cpu_formation_slots() {
+        let mut app = App::new();
+        let mut state = GlobalState {
+            mode: SimulationMode::Naive,
+            vehicle_count: 12,
+            ..default()
+        };
+        state.groups.count = 3;
+        let mut formation = FormationFrame::default();
+        formation.settings.mode = crate::formation::FormationMode::Sphere;
+        app.insert_resource(state.clone())
+            .insert_resource(formation)
+            .add_systems(Update, (update_membership, update_formation_slots).chain());
+        for id in 0..12 {
+            app.world_mut().spawn((
+                Vehicle,
+                VehicleMetadata(UVec4::new(id, state.groups.spawn_group(id), 0, 0)),
+            ));
+        }
+        app.update();
+        app.world_mut().resource_mut::<GlobalState>().groups.table[1].role =
+            crate::swarm::GroupRole::Hunter;
+        app.update();
+        assert_eq!(app.world().resource::<FormationFrame>().ranges[1].y, 0);
+        let mut slots: Vec<_> = app
+            .world_mut()
+            .query::<&VehicleMetadata>()
+            .iter(app.world())
+            .map(|m| {
+                assert_ne!(m.0.y, 1);
+                m.0.z
+            })
+            .collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..12).collect::<Vec<_>>());
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_hunter_pass_recovery_growth_history_and_off_roundtrip() {
+        use crate::{
+            gpu_flock::{gpu_params, GpuFlock},
+            hunter,
+        };
+        let (device, queue) = gpu_device();
+        let mut state = GlobalState {
+            mode: SimulationMode::Gpu,
+            vehicle_count: 32,
+            ..default()
+        };
+        state.groups.count = 2;
+        state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
+        state.groups.table[1].hunter_count = 3;
+        state.groups.table[1].speed_scale = 1.4;
+        let configs = state.groups.hunter_configs();
+        let mut expected = hunter::initial(&configs, world_scale(32));
+        let mut flock = GpuFlock::new(&device);
+        let mut passed = false;
+        for step in 0..120 {
+            if step == 50 {
+                state.vehicle_count = 600;
+            }
+            let boids: Vec<crate::gpu_flock::BoidData> = (0..state.vehicle_count)
+                .map(|id| {
+                    let position = Vec3::new(
+                        (id % 8) as f32 * 6.0 - 21.0,
+                        (id / 8 % 8) as f32 * 6.0 - 21.0,
+                        (id / 64) as f32 * 3.0,
+                    );
+                    let mut b: crate::gpu_flock::BoidData =
+                        [position.extend(0.0), Vec4::ZERO, Vec4::W, Vec4::ZERO].into();
+                    b.metadata = UVec4::new(id as u32, 0, 0, 0);
+                    b
+                })
+                .collect();
+            let prey: Vec<_> = boids
+                .iter()
+                .map(|b| (b.metadata.x, b[0].truncate(), b[1].truncate()))
+                .collect();
+            let old = expected.clone();
+            for (i, me) in old.iter().copied().enumerate() {
+                expected[i] = hunter::advance(
+                    me,
+                    &old,
+                    &prey,
+                    i,
+                    hunter::HuntStep {
+                        speed: state.vehicle_max_speed * 1.4,
+                        scale: world_scale(state.vehicle_count),
+                        dt: 1.0 / 60.0,
+                        bounds: walls(state.vehicle_count),
+                    },
+                );
+            }
+            passed |= expected.iter().any(|h| h.timer < 0.0);
+            flock.upload(&device, &queue, &boids);
+            let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
+            if (20..80).contains(&step) {
+                params.motion.w = 0.0;
+            }
+            gpu_step(&mut flock, &device, &queue, &params);
+            let actual = flock.read_hunters(&device, &queue);
+            assert_eq!(actual.len(), expected.len());
+            for (a, e) in actual.iter().zip(&expected) {
+                assert!(
+                    a.position.distance(e.position) < 0.002,
+                    "step={step} {a:?} {e:?}"
+                );
+                assert!(a.velocity.distance(e.velocity) < 0.002);
+                assert_eq!(a.timer, e.timer);
+                assert!(a.rotation.dot(e.rotation).abs() > 1.0 - 1e-5);
+            }
+        }
+        assert!(passed);
+        // Disabling hunters restores the original arena size and no hunter allocation.
+        state.groups = default();
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.0),
+        );
+        assert!(flock.read_hunters(&device, &queue).is_empty());
+        assert!(flock.hunter_storage_is_off());
+        // An empty prey population still permits the separate hunters to cruise.
+        state.vehicle_count = 0;
+        state.groups.count = 2;
+        state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.01),
+        );
+        let first = flock.read_hunters(&device, &queue);
+        assert_eq!(first.len(), 3);
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.01),
+        );
+        let second = flock.read_hunters(&device, &queue);
+        assert!(second[0].position.is_finite());
+        assert_ne!(first[0].position, second[0].position);
+        state.groups = default();
+        gpu_step(
+            &mut flock,
+            &device,
+            &queue,
+            &gpu_params(&state, Vec3::ZERO, false, 0.0),
+        );
+        assert!(flock.hunter_storage_is_off());
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_hunters_and_panic_match_cpu_reference() {
+        let mut groups = crate::swarm::Groups {
+            count: 3,
+            ..default()
+        };
+        groups.table[0].target = Some(Vec3::ZERO);
+        groups.table[1].role = crate::swarm::GroupRole::Hunter;
+        groups.table[1].hunter_count = 3;
+        groups.table[1].speed_scale = 1.4;
+        groups.table[1].size_scale = 4.0;
+        groups.table[2].speed_scale = 0.8;
+        for cap in [0, 512] {
+            gpu_steering_parity(64, cap, default(), groups, default());
+        }
+    }
+
     fn gpu_steering_parity(
         count: usize,
         cap: u32,
@@ -3778,6 +3976,14 @@ mod tests {
                 },
                 &crate::presentation::SimulationFrame::default(),
             );
+            if groups.hunter_count() > 0 {
+                let configs = groups.hunter_configs();
+                let boids = crate::hunter::initial(&configs, world_scale(count));
+                let mut hunters = crate::hunter::Hunters::default();
+                hunters.boids = boids;
+                hunters.configs = configs;
+                app.insert_resource(hunters);
+            }
             app.insert_resource(predators);
             app.insert_resource(formation);
             app.insert_resource(scene.clone());
@@ -3836,6 +4042,7 @@ mod tests {
             let mut flock = GpuFlock::new(&device);
             flock.set_scene(&scene);
             flock.set_predators(&predators);
+            flock.set_group_scales(&groups);
             flock.upload(&device, &queue, &boids);
             state.mode = SimulationMode::Gpu;
             gpu_step(
@@ -3876,6 +4083,7 @@ mod tests {
                 app.world_mut()
                     .resource_mut::<Time>()
                     .advance_by(Duration::from_secs_f32(dt));
+                crate::hunter::step_cpu(app.world_mut(), dt);
                 app.update();
                 let expected: Vec<_> = entities
                     .iter()
@@ -3897,6 +4105,19 @@ mod tests {
                     params.predators.z = step as u32;
                 }
                 gpu_step(&mut flock, &device, &queue, &params);
+                if let Some(hunters) = app.world().get_resource::<crate::hunter::Hunters>() {
+                    for (actual, expected) in flock
+                        .read_hunters(&device, &queue)
+                        .iter()
+                        .zip(&hunters.boids)
+                    {
+                        assert!(actual.position.distance(expected.position) < 1e-4);
+                        assert!(actual.velocity.distance(expected.velocity) < 1e-3);
+                        assert_eq!(actual.timer, expected.timer);
+                        assert_eq!(actual.group, expected.group);
+                        assert!(actual.rotation.dot(expected.rotation).abs() > 1.0 - 1e-5);
+                    }
+                }
                 let actual = flock.read_boids(&device, &queue);
                 assert_eq!(actual.len(), count);
                 let mut seen = vec![false; count];

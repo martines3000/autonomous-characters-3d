@@ -95,6 +95,24 @@ override GROUPS_ENABLED: bool = false;
 override OBSTACLES_ENABLED: bool = false;
 override FORMATION_ENABLED: bool = false;
 override PREDATORS_ENABLED: bool = false;
+override HUNTERS_ENABLED: bool = false;
+override SCALES_ENABLED: bool = false;
+
+fn prey_group(id: u32) -> u32 {
+    let count = select(8u, params.groups.x, params.groups.x != 0u);
+    let mask = u32(params.attractor_strength.w);
+    if mask == 0u { return id % count; }
+    let prey_count = count - countOneBits(mask);
+    let slot = id % max(prey_count, 1u);
+    var found = 0u;
+    for (var group = 0u; group < count; group += 1u) {
+        if (mask & (1u << group)) == 0u {
+            if found == slot { return group; }
+            found += 1u;
+        }
+    }
+    return 0u;
+}
 
 fn read_order(base: u32, index: u32) -> u32 {
     return arena[2u * params.groups.w + base + index / 4u][index % 4u];
@@ -131,7 +149,7 @@ fn formation_scan(@builtin(local_invocation_index) group: u32) {
     workgroupBarrier();
     var base = 0u;
     for (var other = 0u; other < group; other += 1u) { base += formation_totals[other]; }
-    arena[params.formation.w + group] = vec4<u32>(base, total, 0u, 0u);
+    arena[params.formation.w + group] = vec4<u32>(base, total, arena[params.formation.w + group].zw);
     for (var block = 0u; block < params.formation.z; block += 1u) {
         starts[block * 8u + group] = base;
         base += atomicLoad(&counts[block * 8u + group]);
@@ -317,7 +335,7 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
     let phase = f32(pcg(index ^ pcg(params.frame ^ 0xa511e9b3u)) >> 8u) / 16777216.0;
     let spawn_id = params.groups.y + id.x;
-    let group = spawn_id % select(params.groups.x, 8u, params.groups.x == 0u);
+    let group = prey_group(spawn_id);
     boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
     if params.motion.y == 0.0 { boids[index].rotation = upright_target(heading_rotation(direction),direction,vec3<f32>(0.0)); }
     arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
@@ -343,7 +361,7 @@ fn update_groups(@builtin(global_invocation_id) id: vec3<u32>) {
     var group = 0u;
     if params.groups.x != 0u {
         let record = read_order(params.groups.z, index);
-        arena[record].y = arena[record].x % params.groups.x;
+        arena[record].y = prey_group(arena[record].x);
         group = arena[record].y;
     }
     let speed = bitcast<u32>(instances[index].position_speed_group.w) & 0xffffu;
@@ -508,6 +526,13 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     let me = sorted[index];
     var group = 0u;
     if GROUPS_ENABLED { group = arena[read_order(stepped_order_base(), index)].y; }
+    var max_speed = params.max_speed;
+    var speed_scale = 1.0;
+    if GROUPS_ENABLED && SCALES_ENABLED {
+        let scales = bitcast<vec2<f32>>(arena[params.formation.w + group].zw);
+        if scales.y > 0.0 { speed_scale = scales.y; max_speed *= speed_scale; }
+    }
+    var panic = 0.0;
     let position = me.position;
     var velocity = me.velocity;
 
@@ -584,20 +609,20 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    var force = separation * (params.max_speed * params.separation_factor);
+    var force = separation * (max_speed * params.separation_factor);
     if alignment_count > 0u {
         let average = alignment / f32(alignment_count);
         force += limit(
-            normalize_or_zero(average) * params.max_speed - velocity,
-            params.max_speed * params.alignment_factor,
+            normalize_or_zero(average) * max_speed - velocity,
+            max_speed * params.alignment_factor,
         );
     }
     if cohesion_count > 0u {
         let offset = cohesion / f32(cohesion_count) - position;
         let distance = length(offset);
         force += limit(
-            normalize_or_zero(offset) * params.max_speed * min(distance / 10.0, 1.0) - velocity,
-            params.max_speed * params.cohesion_factor,
+            normalize_or_zero(offset) * max_speed * min(distance / 10.0, 1.0) - velocity,
+            max_speed * params.cohesion_factor,
         );
     }
     if params.attractor_strength.x != 0.0 {
@@ -605,7 +630,7 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         let q = length(offset);
         if q < 1.0 {
             // Mirrors Attractor::force: peak magnitude max_speed * strength at q=1/3.
-            force += offset * (params.max_speed * params.attractor_strength.x * 6.75 * (1.0 - q) * (1.0 - q));
+            force += offset * (max_speed * params.attractor_strength.x * 6.75 * (1.0 - q) * (1.0 - q));
         }
     }
     if OBSTACLES_ENABLED {
@@ -625,13 +650,13 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             let weight = 1.0 - clamp(surface / clearance, 0.0, 1.0);
             avoidance += normal * (weight * weight * (3.0 - 2.0 * weight));
         }
-        force += limit(avoidance, 1.0) * (params.max_speed * params.obstacle_settings.x);
+        force += limit(avoidance, 1.0) * (max_speed * params.obstacle_settings.x);
     }
     if FORMATION_ENABLED {
         let slot = arena[read_order(stepped_order_base(), index)].z;
         let offset = formation_target(slot, group) - position;
-        let desired = normalize_or_zero(offset) * params.max_speed * min(length(offset) / params.formation_settings.x, 1.0);
-        force += limit(desired - velocity, params.max_speed * params.formation_settings.y);
+        let desired = normalize_or_zero(offset) * max_speed * min(length(offset) / params.formation_settings.x, 1.0);
+        force += limit(desired - velocity, max_speed * params.formation_settings.y);
     }
     if PREDATORS_ENABLED {
         var flee = vec3<f32>(0.0);
@@ -646,7 +671,25 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             let weight = 1.0 - clamp(distance / predator.w, 0.0, 1.0);
             flee += normal * (weight * weight * (3.0 - 2.0 * weight));
         }
-        force += limit(flee, 1.0) * (params.max_speed * params.predator_settings.x);
+        force += limit(flee, 1.0) * (max_speed * params.predator_settings.x);
+    }
+    if HUNTERS_ENABLED {
+        let record = read_order(stepped_order_base(), index);
+        panic = max(0.0, clamp(bitcast<f32>(arena[record].w),0.0,0.65) - params.dt);
+        var flee = vec3<f32>(0.0);
+        for (var i = 0u; i < u32(params.attractor_strength.y); i += 1u) {
+            let hunter = bitcast<vec4<f32>>(arena[u32(params.attractor_strength.z) + i*2u]);
+            let offset = position-hunter.xyz;
+            let distance = length(offset);
+            let weight = 1.0-clamp(distance/hunter.w,0.0,1.0);
+            var normal = vec3<f32>(1.0,0.0,0.0);
+            if distance > 0.0 { normal = offset/distance; }
+            flee += normal*(weight*weight*(3.0-2.0*weight));
+            if weight > 0.0 { panic = 0.65; }
+        }
+        force += limit(flee,1.0)*(max_speed*8.0);
+        if panic > 0.0 { force += normalize_or_zero(velocity)*max_speed*0.5; }
+        arena[record].w = bitcast<u32>(panic);
     }
     var acceleration = force / params.mass;
 
@@ -660,8 +703,8 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         seek_target = group_target.xyz;
     }
     if seeking && !FORMATION_ENABLED {
-        let seek = normalize_or_zero(seek_target - position) * params.max_speed - velocity;
-        acceleration += limit(seek, params.max_speed * params.seek_factor) / params.mass;
+        let seek = normalize_or_zero(seek_target - position) * max_speed - velocity;
+        acceleration += limit(seek, max_speed * params.seek_factor) / params.mass;
     } else {
         let walls = params.walls;
         let outside = (position < -walls) | (position > walls);
@@ -673,16 +716,16 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
             let center = normalize_or_zero(velocity) * params.wander_distance + position;
             let wander_target = center
                 + vec3<f32>(cos(theta) * sin(phi), sin(theta) * sin(phi), cos(phi)) * params.wander_radius;
-            let wander = normalize_or_zero(wander_target - position) * params.wander_speed - velocity;
-            acceleration += limit(wander, params.max_speed * params.wander_factor) / params.mass;
+            let wander = normalize_or_zero(wander_target - position) * (params.wander_speed * speed_scale) - velocity;
+            acceleration += limit(wander, max_speed * params.wander_factor) / params.mass;
         }
-        let desired = select(velocity, select(vec3<f32>(-params.max_speed), vec3<f32>(params.max_speed), position < -walls), outside);
+        let desired = select(velocity, select(vec3<f32>(-max_speed), vec3<f32>(max_speed), position < -walls), outside);
         if any(outside) && (!FORMATION_ENABLED || !seeking) {
-            acceleration += limit(desired - velocity, params.max_speed * params.wall_avoid_factor) / params.mass;
+            acceleration += limit(desired - velocity, max_speed * params.wall_avoid_factor) / params.mass;
         }
     }
 
-    velocity = limit(velocity + acceleration * (params.dt * REFERENCE_HZ), params.max_speed);
+    velocity = limit(velocity + acceleration * (params.dt * REFERENCE_HZ), max_speed * select(1.0, 1.35, panic > 0.0));
     let next = position + velocity * params.dt;
     let direction = normalize_or_zero(velocity);
     var rotation = me.rotation;
