@@ -44,8 +44,8 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Hunters and prey](completed/2026-11-03-hunters-and-prey.md) (2026-11-02): up to 16 visible shark/falcon hunters, shared CPU/GPU pursuit and panic, per-group role/size/speed and two examples; 196 release and 19 GPU tests pass, seven baseline Clippy warnings; idle-machine GPU benchmarks deferred.
 - [Async environment baking](completed/2026-11-03-async-environment-bake.md) (2026-11-02): keyed background sky/IBL baking, atomic applied look and capture readiness; 20k first-switch max 2297/2010/120 ms to ≤6.003/3.433/2.448 ms; 193 release and 17 GPU tests pass, seven baseline Clippy warnings, exact paired captures.
-
 - [Natural low-poly animation](completed/2026-11-03-natural-model-animation.md) (2026-11-02): six coordinated smooth clips, skinned fish/shark, new rook and peregrine; rook species wired; 185 release and 16 GPU tests pass, seven baseline Clippy warnings, close-up/40k captures.
 - [Stronger, cheaper volumetric shafts](completed/2026-11-03-volumetric-shafts.md) (2026-11-02): 16 default steps, tighter fog and sun-aligned particle columns; 4K/20k overhead +2.59 ms Sunset / +1.75 ms Underwater; exact Off round trips; 186 release and 16 GPU tests pass.
 - [Lazy motion-blur history](completed/2026-11-03-lazy-blur-history.md) (2026-11-02): allocate only for motion-vector views, shrink on disable, preserve the arena prefix and initialize zero-motion poses; saves 64 MiB at 1M boids; 185 release and 17 GPU tests pass.

@@ -4,6 +4,7 @@ mod environment;
 mod follow;
 mod formation;
 mod gpu_flock;
+mod hunter;
 mod instancing;
 mod motion;
 mod octree;
@@ -85,6 +86,7 @@ fn main() {
             capture::CapturePlugin,
             swarm::SwarmPlugin,
         ))
+        .add_plugins(hunter::HunterPlugin)
         .add_systems(
             PreUpdate,
             camera_input
@@ -285,6 +287,14 @@ fn ui(
                             }
                         }
                     });
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Hunters and prey");
+                for species in species::Species::HUNTS {
+                    if ui.button(species.name()).clicked() {
+                        swarm_ui.commands.queue(move |world: &mut World| species::apply(world, species));
+                    }
                 }
             });
             if models.status.starts_with("Error:") {

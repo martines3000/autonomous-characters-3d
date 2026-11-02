@@ -1,5 +1,6 @@
 //! Named flocking behaviors: one click sets how a school or flock moves, and its hero model.
 //! Unlike showcases, a species leaves the environment, camera, Director, groups and obstacles alone.
+//! Attack examples configure hunter groups; selecting another species clears those groups.
 
 use bevy::prelude::*;
 
@@ -20,6 +21,8 @@ pub enum Species {
     Murmuration,
     SwallowHunt,
     RookRoost,
+    SharkAttack,
+    FalconStrike,
 }
 
 /// Everything a species controls. Unlisted steering settings return to their defaults.
@@ -46,6 +49,7 @@ pub struct Behavior {
 impl Species {
     pub const FISH: [Self; 3] = [Self::BaitBall, Self::TunaStream, Self::ReefDrift];
     pub const BIRDS: [Self; 3] = [Self::Murmuration, Self::SwallowHunt, Self::RookRoost];
+    pub const HUNTS: [Self; 2] = [Self::SharkAttack, Self::FalconStrike];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -55,6 +59,8 @@ impl Species {
             Self::Murmuration => "Starling murmuration",
             Self::SwallowHunt => "Swallow hunt",
             Self::RookRoost => "Rook roost",
+            Self::SharkAttack => "Shark attack",
+            Self::FalconStrike => "Falcon strike",
         }
     }
 
@@ -66,6 +72,10 @@ impl Species {
             Self::Murmuration => "Huge cloud of starlings waving around two falcons.",
             Self::SwallowHunt => "Small, very fast, agile birds darting loosely.",
             Self::RookRoost => "Large, heavy birds circling slowly in a loose crowd.",
+            Self::SharkAttack => {
+                "Three larger sharks pursue a sardine school; prey scatter and regroup."
+            }
+            Self::FalconStrike => "Two falcons slash through a starling murmuration, then recover.",
         }
     }
 
@@ -77,8 +87,10 @@ impl Species {
             "murmuration" | "starling" | "starlings" => Ok(Self::Murmuration),
             "swallow" | "swallow-hunt" => Ok(Self::SwallowHunt),
             "rook" | "rooks" | "rook-roost" => Ok(Self::RookRoost),
+            "shark-attack" => Ok(Self::SharkAttack),
+            "falcon-strike" => Ok(Self::FalconStrike),
             _ => Err(format!(
-                "invalid species '{name}'; expected sardine, tuna, reef, murmuration, swallow or rook"
+                "invalid species '{name}'; expected sardine, tuna, reef, murmuration, swallow, rook, shark-attack or falcon-strike"
             )),
         }
     }
@@ -87,6 +99,16 @@ impl Species {
         const FISH: &str = "assets/models/fish.glb";
         const STARLING: &str = "assets/models/starling.glb";
         match self {
+            Self::SharkAttack => Behavior {
+                predators: 0,
+                predator_strength: 0.0,
+                ..Self::BaitBall.behavior()
+            },
+            Self::FalconStrike => Behavior {
+                predators: 0,
+                predator_strength: 0.0,
+                ..Self::Murmuration.behavior()
+            },
             Self::BaitBall => Behavior {
                 count: 30_000,
                 mass: 25.0,
@@ -205,6 +227,40 @@ pub(crate) fn apply(world: &mut World, species: Species) {
         octree_size: old.octree_size,
         ..default()
     };
+    if state
+        .groups
+        .table
+        .iter()
+        .any(|group| group.role == crate::swarm::GroupRole::Hunter)
+    {
+        state.groups = default();
+    }
+    if Species::HUNTS.contains(&species) {
+        state.groups = crate::swarm::Groups {
+            count: 2,
+            ..default()
+        };
+        if species == Species::SharkAttack {
+            state.groups.table[0].target = Some(Vec3::ZERO);
+        }
+        let hunter = &mut state.groups.table[1];
+        hunter.role = crate::swarm::GroupRole::Hunter;
+        match species {
+            Species::SharkAttack => {
+                hunter.hunter_count = 3;
+                hunter.size_scale = 5.0;
+                hunter.speed_scale = 1.3;
+                hunter.hunter_model = crate::hunter::HunterModel::Shark;
+            }
+            Species::FalconStrike => {
+                hunter.hunter_count = 2;
+                hunter.size_scale = 3.0;
+                hunter.speed_scale = 1.5;
+                hunter.hunter_model = crate::hunter::HunterModel::Falcon;
+            }
+            _ => unreachable!(),
+        }
+    }
     state.vehicle_count = b.count.min(state.mode.max_vehicles());
     state.vehicle_mass = b.mass;
     state.vehicle_max_speed = b.max_speed;
@@ -232,13 +288,16 @@ pub(crate) fn apply(world: &mut World, species: Species) {
     for _ in 0..b.predators {
         swarm.predators.add(Vec3::ZERO, 70.0);
     }
-    swarm.predators.path = PredatorPath::Orbit;
-    swarm.predators.path_radius = 40.0;
-    swarm.predators.path_speed = 30.0;
-    swarm.predators.strength = b.predator_strength;
-    swarm.predators.visible = false;
+    if !Species::HUNTS.contains(&species) {
+        swarm.predators.path = PredatorPath::Orbit;
+        swarm.predators.path_radius = 40.0;
+        swarm.predators.path_speed = 30.0;
+        swarm.predators.strength = b.predator_strength;
+        swarm.predators.visible = false;
+    }
     world.insert_resource(FormationFrame::default());
     world.insert_resource(PredatorFrame::default());
+    world.insert_resource(crate::hunter::Hunters::default());
 
     let mut appearance = world.resource_mut::<Appearance>();
     appearance.vehicles.shape = b.shape;
@@ -340,6 +399,81 @@ mod tests {
                 apply(&mut world, second);
                 assert_eq!(*world.resource::<GlobalState>(), expected[i].0);
                 assert_eq!(*world.resource::<SwarmScene>(), expected[i].1);
+            }
+        }
+    }
+
+    #[test]
+    fn attack_examples_configure_visible_hunters_and_preserve_scene() {
+        for (species, count, model, size, speed) in [
+            (
+                Species::SharkAttack,
+                3,
+                crate::hunter::HunterModel::Shark,
+                5.0,
+                1.3,
+            ),
+            (
+                Species::FalconStrike,
+                2,
+                crate::hunter::HunterModel::Falcon,
+                3.0,
+                1.5,
+            ),
+        ] {
+            let mut world = world();
+            world.resource_mut::<Appearance>().environment = Environment::Underwater;
+            world.resource_mut::<Presentation>().orbit = true;
+            apply(&mut world, species);
+            let state = world.resource::<GlobalState>();
+            assert_eq!(state.groups.count, 2);
+            assert_eq!(state.groups.hunter_count(), count);
+            assert_eq!(state.groups.table[0].role, crate::swarm::GroupRole::Prey);
+            assert_eq!(
+                state.groups.table[0].target,
+                (species == Species::SharkAttack).then_some(Vec3::ZERO)
+            );
+            let hunter = state.groups.table[1];
+            assert_eq!(hunter.role, crate::swarm::GroupRole::Hunter);
+            assert_eq!(hunter.hunter_model, model);
+            assert_eq!(hunter.size_scale, size);
+            assert_eq!(hunter.speed_scale, speed);
+            assert_eq!(world.resource::<SwarmScene>().predators, default());
+            assert_eq!(
+                world.resource::<Appearance>().environment,
+                Environment::Underwater
+            );
+            assert!(world.resource::<Presentation>().orbit);
+            assert!(world.contains_resource::<crate::hunter::Hunters>());
+            apply(&mut world, Species::ReefDrift);
+            assert_eq!(world.resource::<GlobalState>().groups, default());
+        }
+    }
+
+    #[test]
+    fn attack_names_parse_and_examples_are_order_independent() {
+        assert_eq!(Species::parse("shark-attack"), Ok(Species::SharkAttack));
+        assert_eq!(Species::parse("falcon-strike"), Ok(Species::FalconStrike));
+        let all: Vec<_> = Species::FISH
+            .into_iter()
+            .chain(Species::BIRDS)
+            .chain(Species::HUNTS)
+            .collect();
+        for &second in &Species::HUNTS {
+            let mut expected = world();
+            apply(&mut expected, second);
+            for &first in &all {
+                let mut actual = world();
+                apply(&mut actual, first);
+                apply(&mut actual, second);
+                assert_eq!(
+                    actual.resource::<GlobalState>(),
+                    expected.resource::<GlobalState>()
+                );
+                assert_eq!(
+                    actual.resource::<SwarmScene>(),
+                    expected.resource::<SwarmScene>()
+                );
             }
         }
     }

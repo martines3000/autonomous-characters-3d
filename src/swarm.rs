@@ -88,10 +88,22 @@ impl Attractor {
 
 pub const MAX_GROUPS: usize = 8;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupRole {
+    #[default]
+    Prey,
+    Hunter,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Group {
     pub target: Option<Vec3>,
     pub color: [u8; 3],
+    pub role: GroupRole,
+    pub size_scale: f32,
+    pub speed_scale: f32,
+    pub hunter_count: usize,
+    pub hunter_model: crate::hunter::HunterModel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,13 +130,71 @@ impl Default for Groups {
             table: colors.map(|color| Group {
                 target: None,
                 color,
+                role: GroupRole::Prey,
+                size_scale: 1.0,
+                speed_scale: 1.0,
+                hunter_count: 3,
+                hunter_model: crate::hunter::HunterModel::Shark,
             }),
         }
     }
 }
 
 impl Groups {
+    pub fn hunter_mask(&self) -> u32 {
+        (1..self.count as usize).fold(0, |mask, i| {
+            mask | (u32::from(self.table[i].role == GroupRole::Hunter) << i)
+        })
+    }
+
+    pub fn hunter_count(&self) -> usize {
+        self.table[1..self.count.max(1) as usize]
+            .iter()
+            .filter(|g| g.role == GroupRole::Hunter)
+            .map(|g| g.hunter_count.min(16))
+            .sum::<usize>()
+            .min(crate::hunter::MAX_HUNTERS)
+    }
+
+    pub fn hunter_configs(&self) -> Vec<(u32, Group)> {
+        let mut result = Vec::new();
+        for i in 1..self.count as usize {
+            let group = self.table[i];
+            if group.role == GroupRole::Hunter {
+                for _ in 0..group.hunter_count.min(16) {
+                    if result.len() == crate::hunter::MAX_HUNTERS {
+                        return result;
+                    }
+                    result.push((i as u32, group));
+                }
+            }
+        }
+        result
+    }
+
+    pub fn speed_scale(&self, group: u32) -> f32 {
+        if self.count == 0 {
+            1.0
+        } else {
+            self.table[self.mapped_group(group) as usize].speed_scale
+        }
+    }
+
     pub fn spawn_group(&self, id: u32) -> u32 {
+        let mask = self.hunter_mask();
+        if mask != 0 {
+            let slot = id % (self.count - mask.count_ones());
+            let mut found = 0;
+            for group in 0..self.count {
+                if mask & (1 << group) == 0 {
+                    if found == slot {
+                        return group;
+                    }
+                    found += 1;
+                }
+            }
+            return 0;
+        }
         id % if self.count == 0 {
             MAX_GROUPS as u32
         } else {
@@ -159,7 +229,7 @@ impl Groups {
     pub fn has_targets(&self) -> bool {
         self.table[..self.count as usize]
             .iter()
-            .any(|group| group.target.is_some())
+            .any(|group| group.role == GroupRole::Prey && group.target.is_some())
     }
 }
 
@@ -185,11 +255,47 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
         ui.horizontal(|ui| {
             ui.label(format!("Group {index}"));
             ui.color_edit_button_srgb(&mut group.color);
-            let mut enabled = group.target.is_some();
-            if ui.checkbox(&mut enabled, "Seek target").changed() {
-                group.target = enabled.then_some(Vec3::ZERO);
+            egui::ComboBox::from_id_salt(("role", index))
+                .selected_text(format!("{:?}", group.role))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut group.role, GroupRole::Prey, "Prey");
+                    if index != 0 {
+                        ui.selectable_value(&mut group.role, GroupRole::Hunter, "Hunter");
+                    }
+                });
+            if group.role == GroupRole::Prey {
+                let mut enabled = group.target.is_some();
+                if ui.checkbox(&mut enabled, "Seek target").changed() {
+                    group.target = enabled.then_some(Vec3::ZERO);
+                }
             }
         });
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut group.size_scale, 0.25..=10.0).text("size"));
+            ui.add(egui::Slider::new(&mut group.speed_scale, 0.25..=3.0).text("speed"));
+        });
+        if index != 0 && group.role == GroupRole::Hunter {
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut group.hunter_count, 1..=16).text("hunters"));
+                egui::ComboBox::from_id_salt(("hunter model", index))
+                    .selected_text(format!("{:?}", group.hunter_model))
+                    .show_ui(ui, |ui| {
+                        for model in [
+                            crate::hunter::HunterModel::Shark,
+                            crate::hunter::HunterModel::Falcon,
+                        ] {
+                            ui.selectable_value(
+                                &mut group.hunter_model,
+                                model,
+                                format!("{model:?}"),
+                            );
+                        }
+                    });
+            });
+        }
+        if group.role != GroupRole::Prey {
+            continue;
+        }
         if let Some(target) = &mut group.target {
             ui.horizontal(|ui| {
                 for (axis, value) in ["x", "y", "z"].into_iter().zip(target.as_mut()) {
@@ -203,7 +309,8 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &mut Groups) {
             });
         }
     }
-    ui.small("Selected global target overrides group targets. Use Vehicles → Color → Group.");
+    ui.small("Group 0 stays prey. Hunters are additional boids, capped at 16 total (earlier groups first).");
+    ui.small("Selected global target overrides prey targets. Use Vehicles → Color → Group.");
 }
 
 pub const MAX_OBSTACLES: usize = 8;

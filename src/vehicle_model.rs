@@ -376,6 +376,11 @@ struct LoadedModel {
     selected_clip: usize,
 }
 
+/// Reuse the bounded importer for the small, independently drawn hunter population.
+pub(crate) fn hunter_mesh(path: &str) -> Result<Mesh, String> {
+    load_clip(Path::new(path), ModelSettings::default(), "0").map(|model| model.mesh)
+}
+
 #[cfg(test)]
 fn load(path: &Path, settings: ModelSettings) -> LoadResult {
     load_clip(path, settings, "0")

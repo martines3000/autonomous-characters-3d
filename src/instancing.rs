@@ -156,6 +156,8 @@ impl Plugin for InstancingPlugin {
                 RawBufferVec::new(BufferUsages::VERTEX),
             ))
             .init_resource::<FlockInstances>()
+            .init_resource::<HunterInstances>()
+            .init_resource::<HunterInstanceBuffer>()
             .add_systems(
                 RenderStartup,
                 init_pipeline
@@ -175,6 +177,7 @@ impl Plugin for InstancingPlugin {
                         .after(bevy::pbr::queue_prepass_material_meshes)
                         .after(bevy::pbr::queue_shadows),
                     prepare_instance_buffer.in_set(RenderSystems::PrepareResources),
+                    prepare_hunter_buffer.in_set(RenderSystems::PrepareResources),
                     prepare_appearance.in_set(RenderSystems::PrepareBindGroups),
                 ),
             );
@@ -253,6 +256,11 @@ impl AppearanceUniform {
                 Color::srgb_u8(group.color[0], group.color[1], group.color[2])
                     .to_linear()
                     .to_vec4()
+                    .with_w(if state.groups.count == 0 {
+                        1.0
+                    } else {
+                        group.size_scale
+                    })
             }),
             solid_color: Color::srgb_u8(
                 appearance.vehicles.solid_color[0],
@@ -274,13 +282,14 @@ fn update_appearance(
 ) {
     if appearance.is_changed()
         || state.is_changed()
+        || state.groups.hunter_count() > 0
         || uniform.modes.w != 0
         || uniform.motion.w != 0.0
         || presentation.as_ref().is_some_and(|p| p.is_changed())
     {
         let mut next = AppearanceUniform::from_settings(&appearance, &state);
         next.history.x = u32::from(presentation.as_ref().is_some_and(|p| p.paused));
-        if next.modes.w != 0 || next.motion.w != 0.0 {
+        if next.modes.w != 0 || next.motion.w != 0.0 || state.groups.hunter_count() > 0 {
             next.motion.x = clock.as_ref().map_or(0.0, |c| c.elapsed_secs());
         }
         uniform.set_if_neq(next);
@@ -466,7 +475,10 @@ fn queue_instanced(
     pipeline_cache: Res<PipelineCache>,
     meshes: Res<RenderAssets<RenderMesh>>,
     render_mesh_instances: Res<RenderMeshInstances>,
-    flocks: Query<(Entity, &MainEntity), With<VehicleInstances>>,
+    flocks: Query<
+        (Entity, &MainEntity, Option<&crate::hunter::HunterDraw>),
+        Or<(With<VehicleInstances>, With<crate::hunter::HunterDraw>)>,
+    >,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<&ExtractedView>,
     view_key_cache: Res<ViewKeyCache>,
@@ -479,7 +491,7 @@ fn queue_instanced(
         }
     }
     previous.clear();
-    previous.extend(flocks.iter().map(|(_, main)| *main));
+    previous.extend(flocks.iter().map(|(_, main, _)| *main));
     if !draw.0 {
         return;
     }
@@ -491,7 +503,7 @@ fn queue_instanced(
         let Some(&view_key) = view_key_cache.get(&view.retained_view_entity) else {
             continue;
         };
-        for (entity, main_entity) in &flocks {
+        for (entity, main_entity, hunter) in &flocks {
             let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*main_entity)
             else {
                 continue;
@@ -512,11 +524,13 @@ fn queue_instanced(
                         key,
                         animation.mesh == Some(mesh_instance.mesh_asset_id()),
                         appearance.modes.z != 0,
-                        appearance.modes.w != 0,
+                        appearance.modes.w != 0 && hunter.is_none(),
                         appearance.motion.w != 0.0,
                     ),
                     settings.shadows,
                     settings.opaque,
+                    u8::from(hunter.is_some())
+                        | (u8::from(appearance.group_colors.iter().any(|c| c.w != 1.0)) << 1),
                 ),
                 &mesh.layout,
             ) else {
@@ -638,17 +652,23 @@ fn flock_pipeline_key(
 }
 
 impl SpecializedMeshPipeline for InstancingPipeline {
-    type Key = ((MeshPipelineKey, bool, bool, bool, bool), bool, bool);
+    type Key = ((MeshPipelineKey, bool, bool, bool, bool), bool, bool, u8);
 
     fn specialize(
         &self,
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
-        let (key, receives_shadows, opaque) = key;
+        let (key, receives_shadows, opaque, flags) = key;
         // Preserve ENVIRONMENT_MAP, directional-light and fog definitions from the view key.
         // Both Bevy view bind groups below provide the corresponding PBR textures/uniforms.
         let mut descriptor = self.mesh_pipeline.specialize(key.0, layout)?;
+        if flags & 1 != 0 {
+            descriptor.vertex.shader_defs.push("HUNTER".into());
+        }
+        if flags & 2 != 0 {
+            descriptor.vertex.shader_defs.push("GROUP_SCALE".into());
+        }
         let material = layout.0.contains(ATTRIBUTE_MATERIAL);
         let mut attributes = vec![
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
@@ -739,7 +759,13 @@ struct InstancingDepthPipeline {
 }
 impl SpecializedMeshPipeline for InstancingDepthPipeline {
     // base vertex key, normal attachment, motion-view layout, shadow depth clamp.
-    type Key = ((MeshPipelineKey, bool, bool, bool, bool), bool, bool, bool);
+    type Key = (
+        (MeshPipelineKey, bool, bool, bool, bool),
+        bool,
+        bool,
+        bool,
+        u8,
+    );
     fn specialize(
         &self,
         key: Self::Key,
@@ -751,7 +777,7 @@ impl SpecializedMeshPipeline for InstancingDepthPipeline {
             appearance_layout: appearance_layout(),
             empty_layout: self.empty_layout.clone(),
         };
-        let mut descriptor = color.specialize((key.0, false, false), layout)?;
+        let mut descriptor = color.specialize((key.0, false, false, key.4), layout)?;
         descriptor.label = Some("flock_depth_prepass".into());
         descriptor.layout[0] = if key.2 {
             self.motion_view_layout.clone()
@@ -826,7 +852,10 @@ fn queue_instanced_depth(
     meshes: Res<RenderAssets<RenderMesh>>,
     instances: Res<RenderMeshInstances>,
     allocator: Res<MeshAllocator>,
-    flocks: Query<(Entity, &MainEntity), With<VehicleInstances>>,
+    flocks: Query<
+        (Entity, &MainEntity, Option<&crate::hunter::HunterDraw>),
+        Or<(With<VehicleInstances>, With<crate::hunter::HunterDraw>)>,
+    >,
     views: Query<(
         &ExtractedView,
         Has<DepthPrepass>,
@@ -854,7 +883,7 @@ fn queue_instanced_depth(
         }
     }
     previous.clear();
-    previous.extend(flocks.iter().map(|(_, main)| *main));
+    previous.extend(flocks.iter().map(|(_, main, _)| *main));
     if !draw.0 {
         return;
     }
@@ -866,7 +895,7 @@ fn queue_instanced_depth(
         } else if !depth && !normal && !motion {
             continue;
         }
-        for (entity, main) in &flocks {
+        for (entity, main, hunter) in &flocks {
             let Some(instance) = instances.render_mesh_queue_data(*main) else {
                 continue;
             };
@@ -891,13 +920,15 @@ fn queue_instanced_depth(
                         key,
                         animation.mesh == Some(mesh_id),
                         appearance.modes.z != 0,
-                        appearance.modes.w != 0,
+                        appearance.modes.w != 0 && hunter.is_none(),
                         // Caustics only shade the color pass.
                         false,
                     ),
                     normal,
                     motion,
                     shadow,
+                    u8::from(hunter.is_some())
+                        | (u8::from(appearance.group_colors.iter().any(|c| c.w != 1.0)) << 1),
                 ),
                 &mesh.layout,
             ) else {
@@ -985,6 +1016,49 @@ impl<P: PhaseItem> RenderCommand<P> for SetAppearanceBindGroup {
     }
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct HunterInstances(pub FlockInstances);
+
+#[derive(Resource)]
+struct HunterInstanceBuffer(RawBufferVec<InstanceData>, RawBufferVec<[Vec4; 2]>);
+impl Default for HunterInstanceBuffer {
+    fn default() -> Self {
+        Self(
+            RawBufferVec::new(BufferUsages::VERTEX),
+            RawBufferVec::new(BufferUsages::VERTEX),
+        )
+    }
+}
+fn prepare_hunter_buffer(
+    hunters: Option<Res<crate::hunter::Hunters>>,
+    gpu: Res<GpuParams>,
+    mut buffer: ResMut<HunterInstanceBuffer>,
+    mut draw: ResMut<HunterInstances>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    if gpu.count > 0 {
+        return;
+    }
+    buffer.0.clear();
+    buffer.1.clear();
+    if let Some(hunters) = hunters {
+        buffer.0.extend(hunters.instances.iter().copied());
+        buffer.1.extend(hunters.history.iter().copied());
+    }
+    if buffer.0.is_empty() {
+        draw.0 = FlockInstances::default();
+        return;
+    }
+    buffer.0.write_buffer(&device, &queue);
+    buffer.1.write_buffer(&device, &queue);
+    draw.0 = FlockInstances {
+        buffer: buffer.0.buffer().cloned(),
+        count: buffer.0.len() as u32,
+        previous: buffer.1.buffer().cloned().map(|b| (b, 0)),
+    };
+}
+
 struct DrawMeshInstanced;
 
 impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
@@ -993,16 +1067,17 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
         SRes<RenderMeshInstances>,
         SRes<MeshAllocator>,
         SRes<FlockInstances>,
+        SRes<HunterInstances>,
     );
     type ViewQuery = ();
-    type ItemQuery = ();
+    type ItemQuery = Option<&'static crate::hunter::HunterDraw>;
 
     #[inline]
     fn render<'w>(
         item: &P,
         _view: (),
-        _entity: Option<()>,
-        (meshes, render_mesh_instances, mesh_allocator, instances): SystemParamItem<
+        hunter: Option<Option<&'w crate::hunter::HunterDraw>>,
+        (meshes, render_mesh_instances, mesh_allocator, instances, hunter_instances): SystemParamItem<
             'w,
             '_,
             Self::Param,
@@ -1010,7 +1085,16 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let mesh_allocator = mesh_allocator.into_inner();
-        let instances = instances.into_inner();
+        let hunter = hunter.flatten();
+        let instances = if hunter.is_some() {
+            &hunter_instances.into_inner().0
+        } else {
+            instances.into_inner()
+        };
+        let start = hunter.map_or(0, |h| h.start);
+        let end = hunter.map_or(instances.count, |h| {
+            (h.start + h.count).min(instances.count)
+        });
         let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(item.main_entity())
         else {
             return RenderCommandResult::Skip;
@@ -1049,11 +1133,11 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
                 pass.draw_indexed(
                     index_slice.range.start..(index_slice.range.start + index_count),
                     vertex_slice.range.start as i32,
-                    0..count,
+                    start..end,
                 );
             }
             RenderMeshBufferInfo::NonIndexed => {
-                pass.draw(vertex_slice.range, 0..count);
+                pass.draw(vertex_slice.range, start..end);
             }
         }
         RenderCommandResult::Success
