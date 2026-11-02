@@ -70,6 +70,7 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 | Left-click the red target sphere | Vehicles follow it (target turns green) |
 | Left-click the background | Back to wandering |
 | W A S D, Space, left Shift | Move the selected target (relative to the camera, real time) |
+| Species → Fish / Birds | One-click flocking behavior and model (see Species behaviors) |
 | Swarm → Predators | Add/remove up to four flee fields; static or simulated Orbit paths, prey-group masks |
 | Swarm → Sphere obstacles | Add/remove/edit up to eight spheres; Show toggles wireframes |
 | Hold F over the scene | Apply selected Swarm cursor attractor/repulsor; release stops it |
@@ -86,6 +87,26 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
+
+### Species behaviors
+
+**Species**, under Showcase, swaps how the flock moves with one click and loads that species' low-poly
+model. It sets count, mass, speeds, separation/alignment/cohesion, wander, wall avoidance, motion and
+hidden orbiting predators; every other steering setting returns to its default. Environment, camera,
+Director, groups, obstacles and the simulation mode stay as they are; CPU modes cap the count.
+Scenario command: `species <name>`.
+
+| Species (`species` name) | Count | Look |
+| --- | --- | --- |
+| Sardine bait ball (`sardine`) | 30,000 | Dense, fast balls; three hidden hunters punch holes |
+| Tuna stream (`tuna`) | 8,000 | Heavy, fast fish in long aligned ribbons |
+| Reef drift (`reef`) | 3,000 | Slow, scattered, wandering fish |
+| Starling murmuration (`murmuration`) | 40,000 | Huge flowing cloud around two hidden falcons |
+| Swallow hunt (`swallow`) | 1,500 | Very fast, loose, darting birds |
+| Rook roost (`rook`) | 5,000 | Large, heavy birds circling slowly in loose groups |
+
+At 3816×2110 on the RX 7900 XT every species holds the 60 FPS vsync cap. The detailed
+**Simulation**, **Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
 
 ### Showcase presets
 
@@ -899,6 +920,7 @@ pgrep -a autonomous   # no process should remain after exit
 | Command | Arguments / behavior |
 | --- | --- |
 | `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
+| `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`; replace flocking behavior and model only (see Species behaviors) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |
 | `set mode` | `gpu`, `octree`, `naive`; mode changes retain existing respawn/count-clamp rules |
 | `set style` | `studio` (default), `classic`, `glow` |

@@ -12,6 +12,7 @@ mod presentation;
 mod scenario;
 mod scene;
 mod showcase;
+mod species;
 mod swarm;
 mod target;
 mod underwater;
@@ -274,13 +275,25 @@ fn ui(
                     }
                 });
             });
+            egui::CollapsingHeader::new("Species").default_open(true).show(ui, |ui| {
+                for (label, group) in [("Fish", species::Species::FISH), ("Birds", species::Species::BIRDS)] {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(label);
+                        for species in group {
+                            if ui.button(species.name()).on_hover_text(species.description()).clicked() {
+                                swarm_ui.commands.queue(move |world: &mut World| species::apply(world, species));
+                            }
+                        }
+                    });
+                }
+            });
             if models.status.starts_with("Error:") {
                 ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
             }
             egui::CollapsingHeader::new("Presentation").default_open(true).show(ui, |ui| {
                 presentation::ui(ui, &mut presentation);
             });
-            egui::CollapsingHeader::new("Simulation").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Simulation").default_open(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (mode, label) in [
                     (SimulationMode::Gpu, "GPU"),
@@ -323,7 +336,7 @@ fn ui(
                 );
             }
             });
-            egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Swarm").default_open(false).show(ui, |ui| {
                 swarm::ui(ui, &mut state.attractor);
                 ui.separator();
                 let mut scene = swarm_ui.scene.clone();
@@ -439,7 +452,7 @@ fn ui(
                     appearance.frame_requested = true;
                 }
             });
-            egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
+            egui::CollapsingHeader::new("Vehicles").default_open(false).show(ui, |ui| {
                 vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
                 vehicle_appearance::ui(ui, &mut appearance.vehicles);
                 egui::CollapsingHeader::new("Motion").default_open(true).show(ui, |ui| {

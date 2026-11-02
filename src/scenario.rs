@@ -67,6 +67,7 @@ enum Command {
     Pause(bool),
     Preset(CameraPreset),
     Showcase(crate::showcase::Showcase),
+    Species(crate::species::Species),
     Target(Vec3),
     Attractor(Option<Vec3>),
     ObstacleAdd(Vec3, f32),
@@ -479,6 +480,11 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     obstacle_count = settings.swarm.obstacles.len();
                     Command::Showcase(showcase)
                 }
+                ["species", name] => {
+                    let species = crate::species::Species::parse(name)?;
+                    predator_count = species.behavior().predators;
+                    Command::Species(species)
+                }
                 ["boidcam", "chase"] => Command::BoidFollow(crate::follow::FollowMode::Chase),
                 ["boidcam", "first"] => Command::BoidFollow(crate::follow::FollowMode::FirstPerson),
                 ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
@@ -568,6 +574,7 @@ fn run_scenario(world: &mut World) {
             match entry.command {
                 Command::Set(setting) => apply_setting(world, setting),
                 Command::Showcase(showcase) => crate::showcase::apply(world, showcase),
+                Command::Species(species) => crate::species::apply(world, species),
                 Command::Director(enabled) => {
                     world.resource_mut::<Presentation>().set_director(enabled)
                 }
@@ -1000,6 +1007,7 @@ mod tests {
             "showcase unknown",
             "showcase",
             "showcase fish extra",
+            "species shark",
             "preset neon",
         ] {
             assert!(parse(&format!("0 {command}")).is_err(), "{command}");
