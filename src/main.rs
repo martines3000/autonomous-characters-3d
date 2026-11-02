@@ -1,28 +1,32 @@
+mod formation;
 mod gpu_flock;
 mod instancing;
 mod octree;
+mod predator;
+mod presentation;
+mod scenario;
+mod scene;
+mod swarm;
 mod target;
 mod vehicle;
+mod vehicle_appearance;
+mod vehicle_model;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
     camera_controller::pan_orbit_camera::prelude::*,
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
-    picking::{
-        mesh_picking::{MeshPickingCamera, MeshPickingSettings},
-        PickingSystems,
-    },
+    picking::{mesh_picking::MeshPickingSettings, PickingSystems},
     prelude::*,
-    render::view::NoIndirectDrawing,
-    text::FontSize,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
-use std::f32::consts::FRAC_PI_2;
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(BACKGROUND))
+        .insert_resource(ClearColor(
+            scene::SceneStyle::default().settings().background,
+        ))
         .init_resource::<GlobalState>()
         .insert_resource(MeshPickingSettings {
             require_markers: true,
@@ -64,15 +68,19 @@ fn main() {
             gpu_flock::GpuFlockPlugin,
             vehicle::VehiclePlugin,
             target::TargetPlugin,
+            scene::ScenePlugin,
+            vehicle_model::VehicleModelPlugin,
+            scenario::ScenarioPlugin,
+            presentation::PresentationPlugin,
+            swarm::SwarmPlugin,
         ))
-        .add_systems(Startup, setup_scene)
         .add_systems(
             PreUpdate,
             camera_input
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
-        .add_systems(Update, (fps_update_system, draw_world))
+        .add_systems(Update, fps_update_system)
         .add_systems(EguiPrimaryContextPass, ui)
         .run();
 }
@@ -101,7 +109,8 @@ fn camera_input(
         0
     };
     for mut camera in &mut cameras {
-        if mode != *previous_mode {
+        // Framing resets the controller while a drag can still be held.
+        if mode != *previous_mode || (mode != 0 && !camera.current_motion.is_user_controlled()) {
             camera.end_move();
             match mode {
                 1 => camera.start_orbit(None),
@@ -125,88 +134,6 @@ fn camera_input(
     *previous_mode = mode;
 }
 
-const BACKGROUND: Color = Color::srgb(0.035, 0.045, 0.07);
-const WALL_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.3);
-const GRID_COLOR: Color = Color::srgba(0.55, 0.65, 0.85, 0.12);
-// Fog visibility as a multiple of the wall half-width, so it scales with the world.
-const FOG_VISIBILITY: f32 = 5.0;
-
-fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>, state: Res<GlobalState>) {
-    commands.insert_resource(GlobalAmbientLight {
-        brightness: 400.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 6000.0,
-            ..default()
-        },
-        Transform::from_xyz(1.0, 2.0, 0.6).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    let font = TextFont {
-        font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
-        font_size: FontSize::Px(60.0),
-        ..default()
-    };
-    commands
-        .spawn((
-            Text::new("FPS: "),
-            font.clone(),
-            TextColor(Color::WHITE),
-            Node {
-                position_type: PositionType::Absolute,
-                top: px(5),
-                right: px(5),
-                ..default()
-            },
-        ))
-        .with_child((
-            TextSpan::new(""),
-            font,
-            TextColor(Color::srgb(1.0, 0.84, 0.0)),
-            FpsText,
-        ));
-    // Far enough back to see the whole default world: flocks spread to the walls within seconds.
-    let scale = vehicle::world_scale(state.vehicle_count);
-    let eye = Vec3::new(0.0, 140.0, 450.0) * scale;
-    commands.spawn((
-        Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection {
-            far: PerspectiveProjection::default().far * scale,
-            ..default()
-        }),
-        Msaa::Sample4,
-        // The instanced flock draws directly, not through indirect draw buffers.
-        NoIndirectDrawing,
-        DistanceFog {
-            color: BACKGROUND,
-            ..default()
-        },
-        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
-        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
-        MeshPickingCamera,
-    ));
-}
-
-// Wall outline and a floor grid for orientation; fog follows the world size.
-fn draw_world(mut gizmos: Gizmos, state: Res<GlobalState>, mut fogs: Query<&mut DistanceFog>) {
-    let walls = vehicle::walls(state.vehicle_count);
-    gizmos.cube(Transform::from_scale(walls * 2.0), WALL_COLOR);
-    let cell = walls.z / 2.5;
-    gizmos.grid(
-        Isometry3d::new(
-            Vec3::new(0.0, -walls.y, 0.0),
-            Quat::from_rotation_x(FRAC_PI_2),
-        ),
-        UVec2::new((walls.x * 2.0 / cell) as u32, 5),
-        Vec2::splat(cell),
-        GRID_COLOR,
-    );
-    for mut fog in &mut fogs {
-        fog.falloff = FogFalloff::from_visibility(walls.x * FOG_VISIBILITY);
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SimulationMode {
     /// Every vehicle checks every other one on the CPU.
@@ -227,8 +154,11 @@ impl SimulationMode {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, Debug, PartialEq)]
 struct GlobalState {
+    attractor: swarm::Attractor,
+    groups: swarm::Groups,
+
     // Basic info
     vehicle_count: usize,
     vehicle_size: f32,
@@ -262,6 +192,8 @@ struct GlobalState {
 impl Default for GlobalState {
     fn default() -> Self {
         Self {
+            attractor: default(),
+            groups: default(),
             vehicle_count: 20_000,
             vehicle_size: 1.0,
             vehicle_mass: 60.0,
@@ -289,12 +221,25 @@ fn ui(
     mut egui_context: EguiContexts,
     mut state: ResMut<GlobalState>,
     targets: Query<&target::TargetSelection, With<target::Target>>,
+    mut appearance: ResMut<scene::Appearance>,
+    mut models: ResMut<vehicle_model::VehicleModels>,
+    mut presentation: ResMut<presentation::Presentation>,
+    mut swarm_ui: swarm::SwarmUi,
 ) -> Result {
     let ctx = egui_context.ctx_mut()?;
+    appearance.count_editing = false;
     egui::Window::new("Menu")
-        .default_size([300.0, 100.0])
+        .default_size([340.0, 640.0])
+        .vscroll(true)
+        .max_height(ctx.content_rect().height() - 24.0)
         .show(ctx, |ui| {
-            ui.label("Simulation");
+            if models.status.starts_with("Error:") {
+                ui.colored_label(egui::Color32::LIGHT_RED, &models.status);
+            }
+            egui::CollapsingHeader::new("Presentation").default_open(true).show(ui, |ui| {
+                presentation::ui(ui, &mut presentation);
+            });
+            egui::CollapsingHeader::new("Simulation").default_open(true).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (mode, label) in [
                     (SimulationMode::Gpu, "GPU"),
@@ -307,11 +252,11 @@ fn ui(
             let max_vehicles = state.mode.max_vehicles();
             state.vehicle_count = state.vehicle_count.min(max_vehicles);
             ui.label("Vehicle count");
-            ui.add(
+            appearance.count_editing = ui.add(
                 egui::Slider::new(&mut state.vehicle_count, 0..=max_vehicles)
                     .logarithmic(true)
                     .text("count"),
-            );
+            ).dragged();
             if state.mode == SimulationMode::Gpu {
                 ui.add(
                     egui::Slider::new(&mut state.gpu_max_neighbors, 0..=512)
@@ -328,6 +273,31 @@ fn ui(
                 egui::Slider::new(&mut state.vehicle_wander_speed, 0.1..=100.0)
                     .text("wander speed"),
             );
+            if state.mode == SimulationMode::Octree {
+                ui.separator();
+                ui.add(
+                    egui::Slider::new(&mut state.octree_size, 2..=500)
+                        .text("octree size")
+                        .step_by(1.0),
+                );
+            }
+            });
+            egui::CollapsingHeader::new("Swarm").default_open(true).show(ui, |ui| {
+                swarm::ui(ui, &mut state.attractor);
+                ui.separator();
+                let mut scene = swarm_ui.scene.clone();
+                formation::ui(ui, &mut scene.formation, swarm_ui.orbit_focus(), swarm_ui.formation.morph);
+                ui.separator();
+                let mut groups = state.groups;
+                swarm::groups_ui(ui, &mut groups);
+                if groups != state.groups { state.groups = groups; }
+                ui.separator();
+                swarm::obstacles_ui(ui, &mut scene);
+                ui.separator();
+                predator::ui(ui, &mut scene.predators, state.groups.count, swarm_ui.orbit_focus());
+                if scene != *swarm_ui.scene { *swarm_ui.scene = scene; }
+            });
+            egui::CollapsingHeader::new("Steering").show(ui, |ui| {
             ui.label("Vehicle separation factor");
             ui.add(
                 egui::Slider::new(&mut state.vehicle_separation_factor, 0.1..=10.0)
@@ -390,14 +360,29 @@ fn ui(
                     .step_by(1.0),
             );
 
-            if state.mode == SimulationMode::Octree {
-                ui.separator();
-                ui.add(
-                    egui::Slider::new(&mut state.octree_size, 2..=500)
-                        .text("octree size")
-                        .step_by(1.0),
-                );
-            }
+            });
+            egui::CollapsingHeader::new("Scene").default_open(true).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Style");
+                    for style in scene::SceneStyle::ALL {
+                        ui.selectable_value(&mut appearance.style, style, style.name());
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Palette");
+                    for palette in scene::HeadingPalette::ALL {
+                        ui.selectable_value(&mut appearance.palette, palette, palette.name());
+                    }
+                });
+                ui.checkbox(&mut appearance.auto_frame, "Auto-frame on count change");
+                if ui.button("Frame world").clicked() {
+                    appearance.frame_requested = true;
+                }
+            });
+            egui::CollapsingHeader::new("Vehicles").default_open(true).show(ui, |ui| {
+                vehicle_model::ui(ui, &mut models, &mut appearance.vehicles);
+                vehicle_appearance::ui(ui, &mut appearance.vehicles);
+            });
         });
     let following = targets.iter().any(|selection| selection.0);
     egui::Window::new("Controls")
@@ -405,16 +390,40 @@ fn ui(
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
+            if presentation.paused {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "PAUSED — target and camera remain live",
+                );
+            } else {
+                ui.label(format!("Simulation: {:.2}×", presentation.speed));
+            }
             if following {
                 ui.colored_label(egui::Color32::LIGHT_GREEN, "Follow: ON (green target)");
-                ui.label("Vehicles follow the selected target.");
+                ui.label(if swarm_ui.scene.formation.enabled() {
+                    "Formation overrides following; selection stays stored."
+                } else {
+                    "Vehicles follow the selected target."
+                });
             } else {
                 ui.colored_label(egui::Color32::LIGHT_RED, "Follow: OFF (red target)");
-                ui.label("Vehicles wander freely.");
+                ui.label(if swarm_ui.scene.formation.enabled() {
+                    "Vehicles use formation slots."
+                } else if state.groups.has_targets() {
+                    "Vehicles use group targets where enabled."
+                } else {
+                    "Vehicles wander freely."
+                });
             }
             ui.separator();
             egui::Grid::new("controls").show(ui, |ui| {
                 for (input, action) in [
+                    ("Hold F", "Apply cursor field (Swarm)"),
+                    ("P / O", "Pause / auto-orbit"),
+                    (
+                        "1 / 2 / 3 / 4 / 5",
+                        "Front / side / top / overview / target",
+                    ),
                     ("Left-click target", "Start following"),
                     ("Left-click background", "Stop following"),
                     ("Right-drag", "Orbit camera"),
@@ -429,7 +438,17 @@ fn ui(
                 }
             });
             ui.separator();
+            if state.groups.count > 0 {
+                ui.small(format!(
+                    "Groups: {} — edit targets/colors in Swarm",
+                    state.groups.count
+                ));
+            }
             ui.small("Target movement is relative to the camera.");
+            ui.small(format!(
+                "Cursor field: {} — plane through orbit focus",
+                state.attractor.mode.name()
+            ));
         });
     Ok(())
 }
@@ -469,7 +488,8 @@ mod tests {
             .init_asset::<bevy::text::Font>()
             .init_asset_loader::<bevy::text::FontLoader>()
             .init_resource::<GlobalState>()
-            .add_systems(Startup, setup_scene);
+            .init_resource::<scene::Appearance>()
+            .add_systems(Startup, scene::setup_scene);
         app.update();
         let state = app.world().resource::<GlobalState>();
         assert_eq!(state.mode, SimulationMode::Gpu);
@@ -478,12 +498,10 @@ mod tests {
         let count = state.vehicle_count;
         let mut cameras = app
             .world_mut()
-            .query_filtered::<(&Transform, &Projection), With<Camera3d>>();
-        let (transform, projection) = cameras.single(app.world()).unwrap();
-        assert_eq!(
-            transform.translation,
-            Vec3::new(0.0, 140.0, 450.0) * vehicle::world_scale(count)
-        );
+            .query_filtered::<(&Transform, &Projection, &Msaa), With<Camera3d>>();
+        let (transform, projection, msaa) = cameras.single(app.world()).unwrap();
+        assert_eq!(*msaa, Msaa::Sample4);
+        assert!(transform.translation.length() > vehicle::walls(count).length());
         let Projection::Perspective(projection) = projection else {
             panic!("expected perspective camera");
         };
@@ -492,6 +510,104 @@ mod tests {
         assert!(
             (transform.rotation * Vec3::NEG_Z).dot(-transform.translation.normalize()) > 0.99999
         );
+    }
+
+    #[test]
+    fn held_camera_drag_resumes_after_automatic_and_explicit_framing() {
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            for automatic in [true, false] {
+                let mut app = App::new();
+                app.init_resource::<GlobalState>()
+                    .init_resource::<scene::Appearance>()
+                    .init_resource::<ButtonInput<MouseButton>>()
+                    .init_resource::<AccumulatedMouseMotion>()
+                    .init_resource::<AccumulatedMouseScroll>()
+                    .init_resource::<EguiUserTextures>()
+                    .init_resource::<Time<Real>>()
+                    .add_message::<RequestRedraw>()
+                    .add_systems(
+                        Update,
+                        (
+                            camera_input,
+                            PanOrbitCamera::update_camera_positions,
+                            scene::frame_world,
+                        )
+                            .chain(),
+                    );
+                let eye = Vec3::new(0.0, 140.0, 450.0);
+                let projection = PerspectiveProjection {
+                    aspect_ratio: 1280.0 / 720.0,
+                    ..default()
+                };
+                let camera = app
+                    .world_mut()
+                    .spawn((
+                        Camera3d::default(),
+                        Camera {
+                            computed: ComputedCameraValues {
+                                clip_from_view: projection.get_clip_from_view(),
+                                target_info: Some(RenderTargetInfo {
+                                    physical_size: UVec2::new(1280, 720),
+                                    scale_factor: 1.0,
+                                }),
+                                ..default()
+                            },
+                            ..default()
+                        },
+                        Projection::Perspective(projection),
+                        PanOrbitCamera::default().with_initial_anchor_depth(eye.length() as f64),
+                        Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y),
+                    ))
+                    .id();
+                app.update();
+                app.world_mut().resource_mut::<GlobalState>().vehicle_count = 200;
+                app.world_mut()
+                    .resource_mut::<scene::Appearance>()
+                    .auto_frame = automatic;
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(button);
+                app.world_mut()
+                    .resource_mut::<AccumulatedMouseMotion>()
+                    .delta = Vec2::new(50.0, 25.0);
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(16));
+                app.update();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(400));
+                if !automatic {
+                    app.world_mut()
+                        .resource_mut::<scene::Appearance>()
+                        .frame_requested = true;
+                }
+                app.update();
+                assert!(!app
+                    .world()
+                    .get::<PanOrbitCamera>(camera)
+                    .unwrap()
+                    .current_motion
+                    .is_user_controlled());
+                let framed = *app.world().get::<Transform>(camera).unwrap();
+                app.world_mut()
+                    .resource_mut::<Time<Real>>()
+                    .advance_by(Duration::from_millis(16));
+                app.update();
+                let moved = app.world().get::<Transform>(camera).unwrap();
+                if button == MouseButton::Right {
+                    assert!(
+                        moved.rotation.angle_between(framed.rotation) > 0.001,
+                        "held orbit stopped after framing (automatic={automatic})"
+                    );
+                } else {
+                    assert!(
+                        moved.translation.distance(framed.translation) > 0.001,
+                        "held pan stopped after framing (automatic={automatic})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

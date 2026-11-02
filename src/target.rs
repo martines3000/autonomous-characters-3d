@@ -7,10 +7,19 @@ pub struct TargetPlugin;
 
 impl Plugin for TargetPlugin {
     fn build(&self, app: &mut App) {
+        app.init_gizmo_group::<TargetMarker>();
+        let mut store = app.world_mut().resource_mut::<GizmoConfigStore>();
+        let (config, _) = store.config_mut::<TargetMarker>();
+        config.depth_bias = -1.0;
+        config.line.width = 1.5;
         app.add_systems(Startup, spawn_target)
             .add_systems(
                 Update,
                 (input_controls, update_target_color, update_target_scale),
+            )
+            .add_systems(
+                PostUpdate,
+                draw_target_marker.after(crate::scene::frame_world),
             )
             .add_observer(select_target);
     }
@@ -22,9 +31,57 @@ pub struct Target;
 #[derive(Component, Default)]
 pub struct TargetSelection(pub bool);
 
-const IDLE_COLOR: Color = Color::srgba(1.0, 0.0, 0.0, 0.1);
-const FOLLOW_COLOR: Color = Color::srgba(0.1, 1.0, 0.2, 0.35);
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct TargetMarker;
+
+// A screen-readable locator remains visible in a dense following flock. The sphere alone is pickable.
+fn draw_target_marker(
+    mut gizmos: Gizmos<TargetMarker>,
+    targets: Query<(&Transform, &TargetSelection), With<Target>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let (Ok((camera, projection)), Ok(window)) = (cameras.single(), windows.single()) else {
+        return;
+    };
+    let Projection::Perspective(projection) = projection else {
+        return;
+    };
+    for (target, selection) in &targets {
+        let depth = -(camera.rotation.inverse() * (target.translation - camera.translation)).z;
+        if depth <= 0.0 {
+            continue;
+        }
+        let radius = (depth * (projection.fov * 0.5).tan() * 24.0
+            / window.physical_height().max(1) as f32)
+            .max(target.scale.x * 3.0);
+        let color = if selection.0 {
+            FOLLOW_COLOR
+        } else {
+            IDLE_COLOR
+        };
+        gizmos
+            .circle(
+                Isometry3d::new(target.translation, camera.rotation),
+                radius,
+                color,
+            )
+            .resolution(32);
+        for direction in [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y] {
+            let axis = camera.rotation * direction * radius;
+            gizmos.line(
+                target.translation + axis * 1.25,
+                target.translation + axis * 1.6,
+                color,
+            );
+        }
+    }
+}
+
+const IDLE_COLOR: Color = Color::srgb(1.0, 0.18, 0.12);
+const FOLLOW_COLOR: Color = Color::srgb(0.15, 1.0, 0.32);
 const TARGET_SPEED: f32 = 120.0;
+pub(crate) const TARGET_RADIUS: f32 = 2.0;
 
 fn spawn_target(
     mut commands: Commands,
@@ -32,10 +89,11 @@ fn spawn_target(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(2.0).mesh().ico(3).unwrap())),
+        Mesh3d(meshes.add(Sphere::new(TARGET_RADIUS).mesh().ico(3).unwrap())),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: IDLE_COLOR,
-            alpha_mode: AlphaMode::Blend,
+            emissive: IDLE_COLOR.to_linear() * 0.4,
+            perceptual_roughness: 0.35,
             ..default()
         })),
         Transform::default(),
@@ -60,6 +118,7 @@ fn update_target_color(
             } else {
                 IDLE_COLOR
             };
+            material.emissive = material.base_color.to_linear() * 0.4;
         }
     }
 }
@@ -96,7 +155,7 @@ pub(crate) fn input_controls(
     mut target_query: Query<(&mut Transform, &TargetSelection), With<Target>>,
     camera_query: Query<&Transform, (With<Camera3d>, Without<Target>)>,
     mut contexts: EguiContexts,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
 ) {
     if contexts
         .ctx_mut()
@@ -184,7 +243,7 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<EguiUserTextures>()
                 .init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<Time>()
+                .init_resource::<Time<Real>>()
                 .init_resource::<GlobalState>()
                 .add_systems(Update, (input_controls, update_target_scale));
             let target = app
@@ -201,12 +260,12 @@ mod tests {
                 app.world_mut().resource_mut::<GlobalState>().vehicle_count =
                     if step % 2 == 0 { 1_000_000 } else { 200 };
                 app.world_mut()
-                    .resource_mut::<Time>()
+                    .resource_mut::<Time<Real>>()
                     .advance_to(Duration::from_nanos(step * 1_000_000_000 / steps));
                 app.update();
             }
             assert_eq!(
-                app.world().resource::<Time>().elapsed(),
+                app.world().resource::<Time<Real>>().elapsed(),
                 Duration::from_secs(1)
             );
             let position = app.world().get::<Transform>(target).unwrap().translation;
@@ -218,11 +277,45 @@ mod tests {
     }
 
     #[test]
+    fn target_keyboard_uses_real_time_when_paused_or_slowed() {
+        for (paused, speed) in [(true, 1.0), (false, 0.25), (false, 2.0)] {
+            let mut app = crate::presentation::tests::clock_app();
+            app.init_resource::<EguiUserTextures>()
+                .init_resource::<ButtonInput<KeyCode>>()
+                .add_systems(Update, input_controls);
+            {
+                let mut p = app
+                    .world_mut()
+                    .resource_mut::<crate::presentation::Presentation>();
+                p.paused = paused;
+                p.speed = speed;
+            }
+            let target = app
+                .world_mut()
+                .spawn((Target, TargetSelection(true), Transform::default()))
+                .id();
+            app.world_mut()
+                .spawn((Camera3d::default(), Transform::default()));
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyW);
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+            assert_eq!(
+                app.world().get::<Transform>(target).unwrap().translation,
+                Vec3::NEG_Z * 12.0
+            );
+        }
+    }
+
+    #[test]
     fn target_selection_controls_movement_and_color() {
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<Time>()
+            .init_resource::<Time<Real>>()
             .init_resource::<Assets<StandardMaterial>>()
             .add_systems(Update, (input_controls, update_target_color))
             .add_observer(select_target);
@@ -274,7 +367,7 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyW);
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs_f32(1.0 / 60.0));
         app.update();
         assert_eq!(
