@@ -1,8 +1,11 @@
-# Builds the hero swallow (assets/models/swallow.glb): stylized low-poly barn swallow, rigid flap animation.
+# Builds the hero swallow (assets/models/swallow.glb): stylized low-poly barn swallow, articulated flap-flap-glide animation.
 # Run with Blender 4.5: blender --background --factory-startup --python scripts/make_swallow_blender.py -- assets/models/swallow.glb <preview_dir>
 # Blender axes: forward = -Y, up = +Z  ->  glTF +Z forward, +Y up (the repo's model convention).
 import bpy, bmesh, math, sys
 from mathutils import Vector
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from creature_blender import bird_loop, export_model
 
 out, preview = sys.argv[sys.argv.index("--") + 1:][:2]
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -111,36 +114,10 @@ for side, s in (("L", 1.0), ("R", -1.0)):
                 location=(s * 0.58, 0.0, 0.0))
     wings[side] = (inner, outer, s)
 
-# Flap cycle: 24 frames (0.8 s at 30 fps), keyed every 2 frames, exported LINEAR.
-FRAMES = 24
-for f in range(0, FRAMES + 1, 2):
-    t = 2 * math.pi * f / FRAMES
-    down = math.sin(t)
-    for inner, outer, s in wings.values():
-        inner.rotation_euler = (0.0, s * -math.radians(10 + 38 * down), 0.0)
-        outer.rotation_euler = (0.0, s * -math.radians(22 * math.sin(t - 0.9)), 0.0)
-        inner.keyframe_insert("rotation_euler", frame=f)
-        outer.keyframe_insert("rotation_euler", frame=f)
-    body.location = (0.0, 0.0, -0.04 * down)
-    body.keyframe_insert("location", frame=f)
-    tail.rotation_euler = (math.radians(4 * math.sin(t + 1.2)), 0.0, 0.0)
-    tail.keyframe_insert("rotation_euler", frame=f)
-for o in bpy.data.objects:
-    if o.animation_data and o.animation_data.action:
-        for fc in o.animation_data.action.fcurves:
-            for k in fc.keyframe_points:
-                k.interpolation = "LINEAR"
-scene.frame_start, scene.frame_end = 0, FRAMES
-
-bpy.ops.object.select_all(action="SELECT")
-bpy.context.view_layer.objects.active = body
-bpy.ops.export_scene.gltf(filepath=out, export_format="GLB", use_selection=True,
-                          use_active_scene=True, export_animations=True,
-                          export_frame_range=True, export_force_sampling=True,
-                          export_yup=True, export_apply=False, export_texcoords=False,
-                          export_materials="EXPORT")
-tris = sum(len(p.vertices) - 2 for o in bpy.data.objects if o.type == "MESH" for p in o.data.polygons)
-print("PASS exported", out, "triangles", tris)
+# Per-frame eased two-flap/glide loop with coordinated body, tail and wing motion.
+FRAMES = bird_loop(scene, body, tail, wings, 20, 28)
+export_model(out, body, "FlapFlapGlide")
+Path(preview).mkdir(parents=True, exist_ok=True)
 
 # Workbench previews from three angles at two flap phases.
 cam = bpy.data.objects.new("Cam", bpy.data.cameras.new("Cam"))

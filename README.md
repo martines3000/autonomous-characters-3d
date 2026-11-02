@@ -103,10 +103,11 @@ Scenario command: `species <name>`.
 | Reef drift (`reef`) | 3,000 | Slow, scattered, wandering fish |
 | Starling murmuration (`murmuration`) | 40,000 | Huge flowing cloud around two hidden falcons |
 | Swallow hunt (`swallow`) | 1,500 | Very fast, loose, darting birds |
-| Rook roost (`rook`) | 5,000 | Large, heavy birds circling slowly in loose groups |
+| Rook roost (`rook`) | 5,000 | Black rooks with pale beak bases; slow flaps and long glides in loose groups |
 
-At 3816×2110 on the RX 7900 XT every species holds the 60 FPS vsync cap. The detailed
-**Simulation**, **Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
+The earlier species assets held the 60 FPS vsync cap at 3816×2110 on the RX 7900 XT;
+the natural-animation assets await idle-machine GPU measurements. The detailed **Simulation**,
+**Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
 
 ### Showcase presets
 
@@ -724,15 +725,32 @@ Additional generated original assets, under the repository's terms, authored +Z 
   **Flap**: 1 second, 31 frames, 69.75 KiB baked. **Glide**: 2 seconds, 61 frames, 137.25 KiB baked.
 - `assets/models/material-glider.glb` (2,956 bytes): polished gold hull (metallic 1 / roughness 0.12)
   and matte blue wings (0 / 0.95), two primitives and 24 triangles.
-- `assets/models/swallow.glb` (29,228 bytes): low-poly barn swallow hero, 294 triangles, 14
-  primitives, steel-blue/rust/cream factor materials, 0.8-second rigid flap loop. Regenerate with
-  Blender 4.5: `blender --background --factory-startup --python scripts/make_swallow_blender.py -- <out.glb> <preview_dir>`.
-- `assets/models/fish.glb` (26,388 bytes): low-poly schooling fish hero, 282 triangles, 11
-  primitives, teal/silver body with yellow fins, 0.8-second rigid swim loop (head, rear body and tail
-  fin). Regenerate with `scripts/make_fish_blender.py` (same arguments).
-- `assets/models/starling.glb` (27,528 bytes): low-poly starling hero, 270 triangles, 14 primitives,
-  glossy black body, green-sheen throat, yellow beak, triangular wings, square tail, 0.6-second rigid
-  flap loop. Regenerate with `scripts/make_starling_blender.py` (same arguments).
+- `assets/models/swallow.glb`: 294-triangle barn swallow; steel-blue/rust/cream, forked streamers,
+  2.27-second flap-flap-glide loop (20-frame strokes, 28-frame glide).
+- `assets/models/fish.glb`: 270-triangle teal/silver schooling fish with yellow fins; 1-second
+  travelling body wave, lagging tail fin and pectoral flutter.
+- `assets/models/starling.glb`: 270-triangle glossy black starling, green throat, yellow beak,
+  triangular wings and square tail; 1.8-second loop (16-frame strokes, 22-frame glide).
+- `assets/models/rook.glb`: 334-triangle black rook, pale beak base, fingered primaries and wedge
+  tail; 4.27-second loop (32-frame strokes, 64-frame glide). Used by **Rook roost**.
+- `assets/models/shark.glb`: 254-triangle grey shark, white belly, tall dorsal and heterocercal
+  tail; slow 1.8-second powerful swim. Asset only, reserved for future predators.
+- `assets/models/falcon.glb`: 350-triangle peregrine, slate back, pale barred belly and pointed
+  wings; fast 1.4-second loop (12-frame strokes, 18-frame glide). Asset only, reserved for predators.
+
+These six assets each export **one coordinated looping clip**, sampled every frame at 30 Hz with
+LINEAR interpolation. Bird shoulders ease through two flaps, hands fold and pitch on recovery,
+bodies counter-bob and tails trim; the glide holds slight dihedral. Fish and shark use eight-joint
+skins (six spine/tail joints and two pectorals), at most two weights per vertex. The wave grows and
+lags toward the tail. Existing per-instance phases mix strokes and glides throughout the flock.
+Regenerate each with Blender 4.5:
+
+```sh
+blender --background --factory-startup --python scripts/make_<name>_blender.py -- assets/models/<name>.glb <preview_dir>
+```
+
+The generators share `scripts/creature_blender.py` and `scripts/aquatic_blender.py`; all materials
+are single-sided opaque factors. These Blender assets use no external textures.
 
 ```sh
 python3 scripts/make_example_models.py --kind bird
@@ -740,8 +758,8 @@ python3 scripts/make_example_models.py --kind materials
 python3 scripts/test_make_example_models.py
 ```
 
-Generation uses Python's standard library and reproduces the committed bytes. Existing glider and
-`--subdivisions` output are unchanged. Example errors include
+`make_example_models.py` uses Python's standard library and reproduces the committed bytes.
+Existing glider and `--subdivisions` output are unchanged. Example errors include
 `Unsupported CUBICSPLINE at animations[0].samplers[0].interpolation; expected LINEAR or STEP`,
 `Limit exceeded at animations[0]; expected baked data <= 32 MiB`, and
 `Unknown animation clip 'missing' at animations; expected index or clip name`.
