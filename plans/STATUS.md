@@ -2,7 +2,7 @@
 
 ## Current work
 
-- AAA look track on `feat/boid-camera-and-fixes`: motion, environments, shadows, Director, showcase, underwater, motion blur and volumetric light are done. The first hero model (low-poly swallow, branch `feat/aaa-hero-model`, not merged) awaits owner review before LOD or further models.
+- AAA look track on `feat/boid-camera-and-fixes`: motion, environments, shadows, Director, showcase, underwater, motion blur, volumetric light and low-poly hero models are done.
 
 ## Prioritized future tasks
 
@@ -40,6 +40,7 @@ CI (finding F12) is not wanted by the owner.
 
 ## Completed
 
+- [Low-poly hero models](completed/2026-11-02-hero-models.md) (2026-11-02): owner-approved low-poly swallow, plus matching fish and starling, each under 300 triangles with a rigid loop; Swallow/Fish/Starling presets load them asynchronously. 182 release tests pass; seven baseline Clippy warnings.
 - [Volumetric environment lighting](completed/2026-11-02-volumetric-light.md) (2026-11-02): optional environment-tuned shafts, capped flock occlusion, 16–128 ray steps and subtle sun glare; Glow/defaults preserved. 175 release and 15 GPU tests pass; seven baseline Clippy warnings; eight paired captures and exact Off round trip.
 - [Flock motion vectors and blur](completed/2026-11-02-motion-blur.md) (2026-11-02): identity-safe frame-start history, opt-in shutter controls, paused zero vectors and verified 90-frame/30-fps capture; 176 release and 16 GPU tests pass, no new warnings.
 

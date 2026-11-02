@@ -54,6 +54,7 @@ impl Showcase {
     /// Low-poly hero model that replaces the built-in shape once its asynchronous load lands.
     pub fn model(self) -> Option<&'static str> {
         match self {
+            Self::Starling => Some("assets/models/starling.glb"),
             Self::Fish => Some("assets/models/fish.glb"),
             Self::Swallow => Some("assets/models/swallow.glb"),
             _ => None,

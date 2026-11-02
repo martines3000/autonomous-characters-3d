@@ -92,8 +92,10 @@ Open **Showcase** at the top of the menu for live, one-click scenes. Scenario co
 `showcase <name>` accepts `starling`, `fish`, `swallow`, `neon` or `calm` (also the full
 hyphenated names, such as `starling-murmuration`). Camera `preset` commands remain separate.
 
-- **Starling murmuration**: 40,000 banked, flapping Birds, Dusk colors and two orbiting flee
+- **Starling murmuration**: 40,000 banked, flapping starlings and two orbiting flee
   controls standing in for falcons, against the **Sunset** sky. Director opens with a ten-second orbit shot.
+  The preset loads the low-poly hero `assets/models/starling.glb` in model colors; built-in Dusk Birds
+  show until the load finishes. At 3816×2110 on the RX 7900 XT both stay at the 60 FPS vsync cap.
 - **Fish school**: 20,000 swimming fish in two groups, tighter cohesion and one
   orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
   The preset loads the low-poly hero `assets/models/fish.glb` in model colors (the groups keep their
@@ -693,9 +695,12 @@ Additional generated original assets, under the repository's terms, authored +Z 
 - `assets/models/swallow.glb` (29,228 bytes): low-poly barn swallow hero, 294 triangles, 14
   primitives, steel-blue/rust/cream factor materials, 0.8-second rigid flap loop. Regenerate with
   Blender 4.5: `blender --background --factory-startup --python scripts/make_swallow_blender.py -- <out.glb> <preview_dir>`.
-- `assets/models/fish.glb` (24,652 bytes): low-poly schooling fish hero, 282 triangles, 11
+- `assets/models/fish.glb` (26,388 bytes): low-poly schooling fish hero, 282 triangles, 11
   primitives, teal/silver body with yellow fins, 0.8-second rigid swim loop (head, rear body and tail
   fin). Regenerate with `scripts/make_fish_blender.py` (same arguments).
+- `assets/models/starling.glb` (27,528 bytes): low-poly starling hero, 270 triangles, 14 primitives,
+  glossy black body, green-sheen throat, yellow beak, triangular wings, square tail, 0.6-second rigid
+  flap loop. Regenerate with `scripts/make_starling_blender.py` (same arguments).
 
 ```sh
 python3 scripts/make_example_models.py --kind bird
