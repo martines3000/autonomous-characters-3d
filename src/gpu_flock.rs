@@ -334,6 +334,11 @@ fn run_gpu_flock(
     let mut params = (*params).with_scene(&scene);
     let frame = &frames.simulation;
     let motion_history = !frames.motion_views.is_empty();
+    let initialize_history = motion_history
+        && flock
+            .buffers
+            .as_ref()
+            .is_none_or(|buffers| !buffers.history);
     flock.set_scene(&scene);
     flock.set_predators(&frames.predators);
     let device = context.render_device().clone();
@@ -355,6 +360,10 @@ fn run_gpu_flock(
         || flock.scene_dirty
         || flock.predators_dirty
         || (params.formation.x != 0) != flock.formation_enabled
+        || flock
+            .buffers
+            .as_ref()
+            .is_some_and(|buffers| buffers.history != motion_history)
     {
         for index in 0..frame.steps.max(1) {
             if params.formation.x != 0 {
@@ -367,6 +376,10 @@ fn run_gpu_flock(
             params.motion.w = if motion_history { index as f32 } else { -1.0 };
             flock.encode(&device, &queue, context.command_encoder(), &params);
         }
+    }
+    if initialize_history && frame.steps > 0 && params.count > 0 {
+        // The first blurred render uses its final pose as both transforms, even with substeps.
+        flock.reset_history(context.command_encoder());
     }
     if params.track.x != 0 {
         if let Some(buffer) = frames
@@ -384,7 +397,7 @@ fn run_gpu_flock(
                 .buffers
                 .as_ref()
                 .map(|buffers| buffers.instances.clone()),
-            previous: flock.buffers.as_ref().map(|buffers| {
+            previous: flock.buffers.as_ref().filter(|b| b.history).map(|buffers| {
                 (
                     buffers.arena.clone(),
                     buffers.output_offset() as u64 * METADATA_SIZE,
@@ -402,6 +415,7 @@ pub(crate) struct GpuFlock {
     update_groups: ComputePipeline,
     gather_metadata: ComputePipeline,
     compact_metadata: ComputePipeline,
+    initialize_history: ComputePipeline,
     clear_counts: ComputePipeline,
     count_cells: ComputePipeline,
     count_separation: ComputePipeline,
@@ -442,8 +456,10 @@ pub(crate) struct FlockBuffers {
     pub instances: Buffer,
     arena: Buffer,
     bind_group: BindGroup,
+    scratch: [Buffer; 5],
     capacity: u32,
     table_size: u32,
+    history: bool,
 }
 
 impl FlockBuffers {
@@ -455,7 +471,73 @@ impl FlockBuffers {
         self.capacity * 5 / 2 + 24 + PREDATOR_RECORDS as u32
     }
 
-    fn new(device: &RenderDevice, layout: &BindGroupLayout, params: &Buffer, count: u32) -> Self {
+    fn arena_size(capacity: u32, history: bool) -> u64 {
+        capacity as u64 * METADATA_SIZE * (5 + if history { 8 } else { 0 }) / 2
+            + (MAX_OBSTACLES as u64 * 2
+                + crate::swarm::MAX_GROUPS as u64
+                + PREDATOR_RECORDS as u64
+                + 5)
+                * METADATA_SIZE
+    }
+
+    fn arena(device: &RenderDevice, capacity: u32, history: bool) -> Buffer {
+        device.create_buffer(&BufferDescriptor {
+            label: Some("gpu_flock_metadata_arena"),
+            // Metadata/order maps, plus two Vec4s each for frame-start history and sorted output.
+            // Scene data and tracking keep their existing offsets before the history tail.
+            size: Self::arena_size(capacity, history),
+            usage: BufferUsages::STORAGE
+                | BufferUsages::COPY_SRC
+                | BufferUsages::COPY_DST
+                | BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn set_history(
+        &mut self,
+        device: &RenderDevice,
+        layout: &BindGroupLayout,
+        params: &Buffer,
+        encoder: &mut CommandEncoder,
+        history: bool,
+    ) {
+        let arena = Self::arena(device, self.capacity, history);
+        // Off shrinks immediately. Preserve every byte before the optional history tail,
+        // including both order maps, scene records, formation ranges and tracking samples.
+        encoder.copy_buffer_to_buffer(
+            &self.arena,
+            0,
+            &arena,
+            0,
+            Self::arena_size(self.capacity, false),
+        );
+        self.arena = arena;
+        self.bind_group = device.create_bind_group(
+            "gpu_flock",
+            layout,
+            &BindGroupEntries::sequential((
+                params.as_entire_binding(),
+                self.boids.as_entire_binding(),
+                self.scratch[0].as_entire_binding(),
+                self.scratch[1].as_entire_binding(),
+                self.scratch[2].as_entire_binding(),
+                self.scratch[3].as_entire_binding(),
+                self.scratch[4].as_entire_binding(),
+                self.instances.as_entire_binding(),
+                self.arena.as_entire_binding(),
+            )),
+        );
+        self.history = history;
+    }
+
+    fn new(
+        device: &RenderDevice,
+        layout: &BindGroupLayout,
+        params: &Buffer,
+        count: u32,
+        history: bool,
+    ) -> Self {
         let capacity = count.next_power_of_two().max(SCAN_BLOCK);
         // At least two hash slots per boid keeps collisions rare.
         let table_size = capacity * 2;
@@ -502,18 +584,7 @@ impl FlockBuffers {
             capacity as u64 * size_of::<crate::instancing::InstanceData>() as u64,
             BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         );
-        let arena = buffer(
-            "gpu_flock_metadata_arena",
-            // Metadata/order maps, plus two Vec4s each for frame-start history and sorted output.
-            // Scene data and tracking keep their existing offsets before the history tail.
-            capacity as u64 * METADATA_SIZE * (5 + 8) / 2
-                + (MAX_OBSTACLES as u64 * 2
-                    + crate::swarm::MAX_GROUPS as u64
-                    + PREDATOR_RECORDS as u64
-                    + 5)
-                    * METADATA_SIZE,
-            BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
-        );
+        let arena = Self::arena(device, capacity, history);
         let bind_group = device.create_bind_group(
             "gpu_flock",
             layout,
@@ -534,8 +605,10 @@ impl FlockBuffers {
             instances,
             arena,
             bind_group,
+            scratch: [sorted, slots, counts, starts, block_sums],
             capacity,
             table_size,
+            history,
         }
     }
 }
@@ -595,6 +668,7 @@ impl GpuFlock {
             update_groups: pipeline("update_groups", 0.0, 0.0, 0.0, 0.0),
             gather_metadata: pipeline("gather_metadata", 0.0, 0.0, 0.0, 0.0),
             compact_metadata: pipeline("compact_metadata", 0.0, 0.0, 0.0, 0.0),
+            initialize_history: pipeline("initialize_history", 0.0, 0.0, 0.0, 0.0),
             clear_counts: pipeline("clear_counts", 0.0, 0.0, 0.0, 0.0),
             count_cells: pipeline("count", 0.0, 0.0, 0.0, 0.0),
             count_separation: pipeline("count_separation", 0.0, 0.0, 0.0, 0.0),
@@ -656,6 +730,17 @@ impl GpuFlock {
         }
     }
 
+    pub(crate) fn reset_history(&self, encoder: &mut CommandEncoder) {
+        let buffers = self.buffers.as_ref().unwrap();
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("gpu_flock_initialize_history"),
+            timestamp_writes: None,
+        });
+        pass.set_bind_group(0, &*buffers.bind_group, &[]);
+        pass.set_pipeline(&self.initialize_history);
+        pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP), 1, 1);
+    }
+
     pub fn encode(
         &mut self,
         device: &RenderDevice,
@@ -665,6 +750,16 @@ impl GpuFlock {
     ) {
         let count = params.count;
         let formation = params.formation.x != 0;
+        let history = params.motion.w >= 0.0;
+        let mut initialize_history = false;
+        let mut arena_copied = false;
+        if let Some(buffers) = &mut self.buffers {
+            if buffers.capacity >= count && buffers.history != history {
+                buffers.set_history(device, &self.layout, &self.params, encoder, history);
+                initialize_history = history;
+                arena_copied = true;
+            }
+        }
         if count == 0 {
             self.count = 0;
             self.next_id = 0;
@@ -682,6 +777,7 @@ impl GpuFlock {
             && !self.predators_dirty
             && formation == self.formation_enabled
             && params.track.x == 0
+            && !initialize_history
         {
             self.count = count;
             return;
@@ -691,7 +787,7 @@ impl GpuFlock {
             .as_ref()
             .is_none_or(|buffers| buffers.capacity < count)
         {
-            let grown = FlockBuffers::new(device, &self.layout, &self.params, count);
+            let grown = FlockBuffers::new(device, &self.layout, &self.params, count, history);
             if let Some(old) = &self.buffers {
                 if self.count > 0 {
                     encoder.copy_buffer_to_buffer(
@@ -728,8 +824,29 @@ impl GpuFlock {
             self.scene_dirty = true;
             self.predators_dirty = true;
             self.order_base = 0;
+            initialize_history = history;
         }
         let buffers = self.buffers.as_ref().unwrap();
+        let write_arena = |encoder: &mut CommandEncoder, offset, bytes: &[u8]| {
+            if arena_copied {
+                // Queue writes precede encoder copies. A simultaneous scene edit must
+                // follow the preserved prefix instead of being overwritten by it.
+                let upload = device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: Some("gpu_flock_arena_upload"),
+                    contents: bytes,
+                    usage: BufferUsages::COPY_SRC,
+                });
+                encoder.copy_buffer_to_buffer(
+                    &upload,
+                    0,
+                    &buffers.arena,
+                    offset,
+                    bytes.len() as u64,
+                );
+            } else {
+                queue.write_buffer(&buffers.arena, offset, bytes);
+            }
+        };
         if self.scene_dirty {
             if !self.obstacles.is_empty() {
                 let scene = SwarmScene {
@@ -741,8 +858,8 @@ impl GpuFlock {
                     .iter()
                     .flat_map(|v| v.to_array().into_iter().flat_map(f32::to_le_bytes))
                     .collect();
-                queue.write_buffer(
-                    &buffers.arena,
+                write_arena(
+                    encoder,
                     buffers.capacity as u64 * 5 / 2 * METADATA_SIZE,
                     &bytes,
                 );
@@ -760,8 +877,8 @@ impl GpuFlock {
                     .iter()
                     .flat_map(|v| v.to_array().into_iter().flat_map(u32::to_le_bytes))
                     .collect();
-                queue.write_buffer(
-                    &buffers.arena,
+                write_arena(
+                    encoder,
                     (buffers.capacity as u64 * 5 / 2 + 24) * METADATA_SIZE,
                     &bytes,
                 );
@@ -866,6 +983,11 @@ impl GpuFlock {
             .expect("GPU spawn ID exhausted");
         self.group_count = params.groups.x;
         if !params.simulates() {
+            if initialize_history {
+                // A paused toggle has no steering dispatch to initialize the new tail.
+                pass.set_pipeline(&self.initialize_history);
+                pass.dispatch_workgroups(groups(count), 1, 1);
+            }
             if params.track.x != 0 {
                 pass.set_pipeline(&self.track);
                 pass.dispatch_workgroups(groups(count), 1, 1);
@@ -957,7 +1079,13 @@ impl GpuFlock {
             .as_ref()
             .is_none_or(|buffers| buffers.capacity < count)
         {
-            self.buffers = Some(FlockBuffers::new(device, &self.layout, &self.params, count));
+            self.buffers = Some(FlockBuffers::new(
+                device,
+                &self.layout,
+                &self.params,
+                count,
+                false,
+            ));
             self.scene_dirty = true;
             self.predators_dirty = true;
         }
@@ -1121,6 +1249,19 @@ impl GpuFlock {
         (
             self.read_arena(device, queue, offset, PREDATOR_RECORDS as u64),
             self.predator_uploads,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn read_arena_prefix(
+        &self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+    ) -> (u64, Vec<UVec4>) {
+        let buffers = self.buffers.as_ref().unwrap();
+        (
+            buffers.arena.size(),
+            self.read_arena(device, queue, 0, (buffers.track_offset() + 5) as u64),
         )
     }
 
