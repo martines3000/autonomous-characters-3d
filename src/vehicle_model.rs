@@ -2133,10 +2133,35 @@ mod tests {
         for path in crate::showcase::Showcase::ALL
             .into_iter()
             .filter_map(|showcase| showcase.model())
+            .chain(
+                crate::species::Species::FISH
+                    .into_iter()
+                    .chain(crate::species::Species::BIRDS)
+                    .map(|species| species.behavior().model),
+            )
+            .chain(["assets/models/shark.glb", "assets/models/falcon.glb"])
         {
             let model = load(&root().join(path), default()).unwrap();
             assert!(model.triangles <= 400, "{path}: {}", model.triangles);
-            assert!(model.animation.is_some(), "{path}");
+            let animation = model.animation.as_ref().expect(path);
+            assert!(animation.frame_count > 2, "{path}");
+            let document = gltf::Gltf::open(root().join(path)).unwrap();
+            assert_eq!(document.animations().count(), 1, "{path}: coordinated clip");
+            let first = &animation.data[..animation.vertices];
+            let last = &animation.data[animation.data.len() - animation.vertices..];
+            for (start, end) in first.iter().zip(last) {
+                assert!((start[0] - end[0]).length() < 1e-5, "{path}: loop position");
+                assert!((start[1] - end[1]).length() < 1e-5, "{path}: loop normal");
+            }
+            assert!(
+                animation.data.chunks(animation.vertices).any(|frame| {
+                    frame
+                        .iter()
+                        .zip(first)
+                        .any(|(sample, rest)| (sample[0] - rest[0]).length() > 0.01)
+                }),
+                "{path}: visible motion"
+            );
         }
     }
 }

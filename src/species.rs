@@ -187,7 +187,7 @@ impl Species {
                 predator_strength: 0.0,
                 shape: VehicleShape::Bird,
                 visual_size: 2.6,
-                model: STARLING,
+                model: "assets/models/rook.glb",
             },
         }
     }
