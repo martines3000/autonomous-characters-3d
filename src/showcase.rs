@@ -51,6 +51,15 @@ impl Showcase {
         }
     }
 
+    /// Low-poly hero model that replaces the built-in shape once its asynchronous load lands.
+    pub fn model(self) -> Option<&'static str> {
+        match self {
+            Self::Fish => Some("assets/models/fish.glb"),
+            Self::Swallow => Some("assets/models/swallow.glb"),
+            _ => None,
+        }
+    }
+
     pub fn parse(name: &str) -> Result<Self, String> {
         match name.to_ascii_lowercase().as_str() {
             "starling" | "murmuration" | "starling-murmuration" => Ok(Self::Starling),
@@ -187,10 +196,9 @@ pub(crate) fn apply(world: &mut World, showcase: Showcase) {
         .restart_after(&world.resource::<Presentation>().follow);
     if let Some(mut models) = world.get_resource_mut::<crate::vehicle_model::VehicleModels>() {
         models.cancel();
-        // The hero swallow replaces the built-in Bird once its asynchronous load lands.
-        if showcase == Showcase::Swallow {
+        if let Some(path) = showcase.model() {
             models.settings = default();
-            models.request("assets/models/swallow.glb".into());
+            models.request(path.into());
         }
     }
     for mut selection in world
@@ -385,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn swallow_requests_the_hero_model_and_other_presets_cancel_it() {
+    fn hero_presets_request_their_models_and_other_presets_cancel_them() {
         bevy::tasks::IoTaskPool::get_or_init(bevy::tasks::TaskPool::new);
         let mut world = world();
         world.insert_resource(crate::vehicle_model::VehicleModels::default());
@@ -398,6 +406,13 @@ mod tests {
         assert_eq!(models.path_input, "assets/models/swallow.glb");
         assert!(models.status.starts_with("Loading"));
         assert_eq!(models.settings.scale, 1.0);
+        apply(&mut world, Showcase::Fish);
+        assert_eq!(
+            world
+                .resource::<crate::vehicle_model::VehicleModels>()
+                .path_input,
+            "assets/models/fish.glb"
+        );
         apply(&mut world, Showcase::Calm);
         assert!(world
             .resource::<crate::vehicle_model::VehicleModels>()

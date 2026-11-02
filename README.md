@@ -94,8 +94,10 @@ hyphenated names, such as `starling-murmuration`). Camera `preset` commands rema
 
 - **Starling murmuration**: 40,000 banked, flapping Birds, Dusk colors and two orbiting flee
   controls standing in for falcons, against the **Sunset** sky. Director opens with a ten-second orbit shot.
-- **Fish school**: 20,000 swimming Fish in two ocean-colored groups, tighter cohesion and one
+- **Fish school**: 20,000 swimming fish in two groups, tighter cohesion and one
   orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
+  The preset loads the low-poly hero `assets/models/fish.glb` in model colors (the groups keep their
+  separate behavior); built-in ocean-colored Fish show until the load finishes.
 - **Swallow formation**: 8,000 swallows morph from Sphere toward Helix over 12.5 simulated seconds,
   with a slowly orbiting camera under the **Midday** sky. The preset loads the low-poly hero
   `assets/models/swallow.glb` in model colors; built-in Birds show until the load finishes.
@@ -691,6 +693,9 @@ Additional generated original assets, under the repository's terms, authored +Z 
 - `assets/models/swallow.glb` (29,228 bytes): low-poly barn swallow hero, 294 triangles, 14
   primitives, steel-blue/rust/cream factor materials, 0.8-second rigid flap loop. Regenerate with
   Blender 4.5: `blender --background --factory-startup --python scripts/make_swallow_blender.py -- <out.glb> <preview_dir>`.
+- `assets/models/fish.glb` (24,652 bytes): low-poly schooling fish hero, 282 triangles, 11
+  primitives, teal/silver body with yellow fins, 0.8-second rigid swim loop (head, rear body and tail
+  fin). Regenerate with `scripts/make_fish_blender.py` (same arguments).
 
 ```sh
 python3 scripts/make_example_models.py --kind bird
