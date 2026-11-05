@@ -172,7 +172,7 @@ fn select_target(
     if click.button != PointerButton::Primary
         || contexts
             .ctx_mut()
-            .is_ok_and(|ctx| ctx.egui_wants_pointer_input())
+            .is_ok_and(|ctx| crate::ui_blocks_pointer(ctx))
     {
         return;
     }

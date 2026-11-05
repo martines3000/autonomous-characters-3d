@@ -272,13 +272,15 @@ fn presentation_input(
     scroll: Res<AccumulatedMouseScroll>,
     mut contexts: EguiContexts,
     mut presentation: ResMut<Presentation>,
+    mut gesture: Local<crate::PointerGesture>,
 ) {
     let (keyboard, pointer) = contexts.ctx_mut().map_or((false, false), |ctx| {
         (
             ctx.egui_wants_keyboard_input(),
-            ctx.egui_wants_pointer_input(),
+            crate::ui_blocks_pointer(ctx),
         )
     });
+    let pointer = gesture.blocks_world(pointer, &buttons);
     presentation.manual_camera = !pointer
         && (buttons.pressed(MouseButton::Right)
             || buttons.pressed(MouseButton::Middle)
