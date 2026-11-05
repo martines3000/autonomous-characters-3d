@@ -43,15 +43,21 @@ Use the following prompt together with this ExecPlan:
 - [x] (2026-11-05 21:47Z) Inspected repository guidance, current source, completed plans, and remote household deployment conventions.
 - [x] (2026-11-05 21:50Z) Prepared the development prompt, staged PR sequence, proposed defaults, acceptance criteria, and release boundaries.
 - [x] (2026-11-05 22:40Z) A0: Captured startup and all fourteen original presets, recorded three motion clips including 24 seconds of Shark, repeated native rendered timings, and documented dispositions/art target in `plans/evidence/2026-11-05-showcase-baseline.md`.
-- [ ] A1: Prove the browser path and document capabilities and limitations.
-- [ ] A2–A5: Iterate on coherent scenes, visitor UI, visuals, and readable animal behavior.
+- [ ] A1 (partial, 2026-11-05 23:00Z): Warning-free WASM compilation and actual headed AMD WebGPU rendering pass with animated fish, three hunter draws, caustic sand, sky/IBL/shadows and egui. Linux Chromium requires recorded feature flags; flagless has a clear unsupported state. Final committed-source input/capability matrix remains with A6.
+- [x] (2026-11-05 23:00Z) A2: Complete three-scene contract, scene-specific tiers, stale-model cancellation and explicit public restarts. Integrated A2/A3: 214 release tests pass, warning-free build and focused paused GPU restart regression pass.
+- [x] (2026-11-05 23:00Z) A3: Compact visitor HUD, Help/H/P, Scenic/Ride/Free, reduced camera motion and Lab gates implemented; native captures inspected. Existing experimental controls and CPU references remain in Lab.
+- [ ] A4: Replace world-fit views with animal-volume framing and warm sunset composition; native before/after iteration underway.
+- [ ] A5: Complete motion/readability acceptance and any justified public hunt tuning. The fourteen-choice audit is complete; a closer 25-second hunt recording now exposes scatter and recovery, with final role readability still under review.
 - [ ] A6–A7: Finish the browser experience and reproducible web/image release tooling.
-- [ ] C1/I1: Prepare linked cluster and public-routing PRs with accurate readiness status.
+- [x] (2026-11-05 23:00Z) C1/I1: Prepared and pushed linked draft PRs: household-cluster#1 and household-infra#1. Offline render/policy checks pass; authoritative DNS returned NXDOMAIN for the proposed hostname. Real published image and internal workload health remain explicit post-merge prerequisites, not fabricated readiness.
 - [ ] Complete the application verification gate and assemble the morning review index.
 
 Post-merge public verification and recording the deployed digest are deferred to a separately authorized release follow-up. They are not completion requirements for this review-preparation goal.
 
 ## Surprises & Discoveries
+
+- A1: Headless Chromium reports a ready WebGPU app while CDP captures black; headed capture proves the real rendered scene. The Arch `/usr/bin/chromium` wrapper overrides feature flags, so tested Linux runs use `/usr/lib/chromium/chromium` with recorded flags. Other browser/device combinations remain untested.
+- A2: Continuity after Neon 200k → Reef Low retains positions in a domain about 7.4 times larger. Public scene/tier selection now explicitly restarts resident GPU animals. A prepared revision travels with matching GPU uniforms so late HUD changes cannot restart into the previous domain. The paused restart regression verifies fresh bounded positions, cleared panic/hunters, matching motion history, and reused buffers.
 
 - A0: Native baseline passes 204 tests (22 ignored), fmt and warning-free release build. World-fit framing makes species and hunters tiny; the legacy Close-up clip also fails visual encounter readability. Existing low-poly assets do not yet warrant Blender changes. Two measured 30k Shark runs differ materially (3.684/2.508 ms means), so report both rather than claiming a fixed cost.
 
@@ -64,6 +70,13 @@ Post-merge public verification and recording the deployed digest are deferred to
 - CRONA uses K3s/Flux with an internal Traefik ingress. Public HTTPS exposure follows the existing Cloudflare Tunnel and DNS configuration owned by household-infra.
 
 ## Decision Log
+
+- Decision: Public scene and population selection restart the flock; Reset view changes only the camera. Lab count/mode edits retain existing continuity.
+  Rationale: Scene coherence and an immediate subject outweigh preserving positions from an incompatible world. This is an explicit public behavior change, not a side effect of UI work.
+  Date: 2026-11-05.
+- Decision: Use animal-volume framing and face the sunset light instead of adding another rendering effect or replacing assets.
+  Rationale: Matched native captures show recognizable layered birds and underwater roles with the existing low-poly assets and effects.
+  Date: 2026-11-05.
 
 - Decision: Start with three public scenes, preserve other presets as labeled Lab experiments, and fix composition before changing steering.
   Rationale: All fourteen captures show a presentation/consistency gap; existing close-up animal detail and hunt mechanics are usable.
@@ -106,6 +119,8 @@ Post-merge public verification and recording the deployed digest are deferred to
 - **Production access:** Read-only repository inspection does not establish permission or ability to run production workflows. Prepare the concrete PRs, plans, validation, and runbook first. Identify unavailable credentials or required owner actions precisely.
 
 ## Outcomes & Retrospective
+
+A1–A3 interim outcome: real headed browser rendering is feasible; native visitor state/HUD and public restarts are implemented and tested. Browser visitor-flow validation and art/performance acceptance remain open. C1/I1 draft preparation is complete with truthful publication/health blockers.
 
 A0 delivered: complete fourteen-preset disposition audit, native startup/scene captures, fixed-step motion clips, repeat timings, and a three-scene art target. Native baseline checks pass; browser implementation is in progress.
 
@@ -278,3 +293,5 @@ Revision notes:
 
 - 2026-11-05: Initial planning-only goal and PR sequence, grounded in current application code and household deployment guides.
 - 2026-11-05: Recorded approval for a fresh-session execution goal, autonomous work and useful subagents, small review PRs, and an explicit stop before merges or production changes. Moved post-release verification outside this goal so review preparation has a reachable completion condition.
+
+- 2026-11-05: Split execution progress into A2/A3/A4/A5, recorded the observed continuity/domain problem and explicit public restart decision, and linked completed deployment draft preparation.
