@@ -62,6 +62,25 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 `cargo run` supplies the asset root. To start the binary directly:
 `CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d`.
 
+### Visitor scenes
+
+Startup opens **Sunset murmuration**. The public scene selector also offers **Reef drift** and
+**Shark hunt**. Each choice restores its own environment, animal model and animation, behavior,
+hunters, population and camera. Public scenes use GPU simulation and have no invisible flee fields.
+
+| Scene | Low | Medium (default) | High |
+| --- | ---: | ---: | ---: |
+| Sunset murmuration | 8,000 | 20,000 | 40,000 |
+| Reef drift | 500 | 1,500 | 3,000 |
+| Shark hunt | 5,000 | 12,000 | 20,000 |
+
+Counts are scene-specific flock sizes, not rendering-quality levels. Shark hunters are additional.
+Selecting a scene or flock size starts a freshly scattered flock, including while paused. This avoids
+carrying animals from a larger scene outside a smaller scene's view. It does not promise a seeded replay.
+Pause, UI visibility and reduced camera motion survive scene selection. **Reset view** changes the
+camera only. Detailed simulation defaults and the CPU Naive/Octree reference modes remain available
+in **Lab**; their ordinary count edits keep the existing continuity rules.
+
 ### Controls
 
 | Input | Action |
@@ -88,9 +107,9 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
 
-### Species behaviors
+### Species behaviors (Lab)
 
-**Species**, under Showcase, swaps how the flock moves with one click and loads that species' low-poly
+**Lab → Species** swaps how the flock moves with one click and loads that species' low-poly
 model. It sets count, mass, speeds, separation/alignment/cohesion, wander, wall avoidance, motion and
 hidden orbiting predators; every other steering setting returns to its default. Environment, camera,
 Director, groups, obstacles and the simulation mode stay as they are; CPU modes cap the count.
@@ -109,9 +128,9 @@ The earlier species assets held the 60 FPS vsync cap at 3816×2110 on the RX 790
 the natural-animation assets await idle-machine GPU measurements. The detailed **Simulation**,
 **Swarm** and **Vehicles** sections start collapsed; expand them to fine-tune.
 
-### Hunters and prey
+### Hunters and prey (Lab examples)
 
-Choose **Shark attack** (30,000 sardines, three sharks), **Falcon strike** (40,000 starlings,
+Inside **Lab**, choose **Shark attack** (30,000 sardines, three sharks), **Falcon strike** (40,000 starlings,
 two falcons), or **Tuna raid** (30,000 sardines, twelve tuna) next to Species. Existing presets keep
 their original behavior. These examples replace groups and remove the invisible orbiting flee fields; environment and camera remain yours.
 Shark attack and Tuna raid give prey a shared target at the origin to gather the school.
@@ -134,9 +153,9 @@ Scenarios: `species shark-attack`, `species falcon-strike`, `species tuna-raid`,
 `group_size 1 5`, `group_speed 1 1.3`, `hunter_count 1 3`, `hunter_model 1 shark` (or `falcon` / `tuna`). Enable groups first
 with `set groups 2`; `group_role 1 prey` or `set groups off` removes hunters.
 
-### Showcase presets
+### Showcase presets (Lab experiments)
 
-Open **Showcase** at the top of the menu for live, one-click scenes. Scenario command
+Open **Lab → Showcase** for live, one-click scenes. Scenario command
 `showcase <name>` accepts `starling`, `fish`, `swallow`, `neon` or `calm` (also the full
 hyphenated names, such as `starling-murmuration`). Camera `preset` commands remain separate.
 
@@ -148,11 +167,11 @@ hyphenated names, such as `starling-murmuration`). Camera `preset` commands rema
   orbiting flee control standing in for a shark, **Underwater** with shadows on the sand. Director opens in close chase.
   The preset loads the low-poly hero `assets/models/fish.glb` in model colors (the groups keep their
   separate behavior); built-in ocean-colored Fish show until the load finishes.
-- **Swallow formation**: 8,000 swallows morph from Sphere toward Helix over 12.5 simulated seconds,
+- **Swallow formation** (artistic Sphere/Helix study): 8,000 swallows morph from Sphere toward Helix over 12.5 simulated seconds,
   with a slowly orbiting camera under the **Midday** sky. The preset loads the low-poly hero
   `assets/models/swallow.glb` in model colors; built-in Birds show until the load finishes.
 - **Neon swarm**: 200,000 Darts, Aurora colors, Glow and speed streaks; cursor attraction is off.
-- **Calm**: exact current simulation, appearance and presentation defaults. Startup remains unchanged.
+- **Calm**: exact current simulation, appearance and presentation defaults. Startup uses the curated Murmuration scene; Calm remains the internal reference bundle.
 
 Each choice replaces the settings bundle, clears global target selection, cancels pending model
 loads and resets camera composition. Retained vehicles keep their positions; count/backend changes
