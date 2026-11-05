@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Real headed browser acceptance. Run without a competing build, app or benchmark.
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -57,22 +58,76 @@ async function checkUnsupported(label, script) {
   await context.close();
 }
 
+async function realVisibilityAndRecovery() {
+  // A normal persistent context has real tab visibility and a disk cache. Playwright's ordinary
+  // contexts force focus through their primary CDP session, which a second session cannot undo.
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'flock-browser-'));
+  const processArgs = [...args, '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  const processHandle = spawn(report.executable, processArgs, { stdio: 'ignore' });
+  const exited = new Promise(resolve => processHandle.once('exit', resolve));
+  let instance;
+  try {
+    let port;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { port = (await readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; break; }
+      catch { await new Promise(resolve => setTimeout(resolve, 100)); }
+    }
+    assert(port, 'Disposable Chromium did not open its local DevTools endpoint');
+    instance = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true });
+    const context = instance.contexts()[0];
+    const page = context.pages()[0];
+    const entry = attach(page, 'real-tab-visibility-cache-device-loss');
+    entry.args = processArgs.filter(arg => !arg.startsWith('--user-data-dir='));
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+    await waitState(page);
+    const snapshot = () => page.evaluate(() => ({ readyMs: window.flockReport.readyMs, resources: performance.getEntriesByType('resource').map(({ name, transferSize, encodedBodySize, decodedBodySize }) => ({ name, transferSize, encodedBodySize, decodedBodySize })) }));
+    entry.coldLoad = await snapshot();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitState(page);
+    entry.warmLoad = await snapshot();
+    const background = await context.newPage();
+    await background.goto('about:blank');
+    await background.bringToFront();
+    await page.waitForFunction(() => document.hidden, undefined, { timeout: 10_000 });
+    await page.waitForTimeout(600);
+    const before = await page.evaluate(() => window.flockReport.scene.simulationSeconds);
+    await page.waitForTimeout(1000);
+    const after = await page.evaluate(() => window.flockReport.scene.simulationSeconds);
+    assert.equal(before, after, 'A real background tab must pause simulation');
+    await page.bringToFront();
+    await page.waitForFunction(() => !document.hidden && !window.flockReport.scene.paused);
+    entry.visibility = { hiddenClockBefore: before, hiddenClockAfter: after, resumed: true };
+    await background.close();
+    assert.deepEqual(entry.pageErrors, []);
+    assert.deepEqual(entry.responses, []);
+    assert.deepEqual(entry.failedRequests, []);
+    assert.deepEqual(entry.console.filter(message => message.type === 'error'), []);
+    const control = await instance.newBrowserCDPSession();
+    await control.send('Browser.crashGpuProcess');
+    await waitState(page, 'error');
+    assert.match(await page.locator('#message').innerText(), /graphics device/i);
+    await page.screenshot({ path: path.join(output, 'device-loss.png') });
+    entry.deviceLoss = await page.evaluate(() => window.flockReport.events.at(-1));
+    await page.waitForTimeout(1000);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitState(page);
+    entry.recovered = await page.evaluate(() => window.flockReport.scene);
+    await page.screenshot({ path: path.join(output, 'device-loss-recovered.png') });
+  } finally {
+    await instance?.close();
+    processHandle.kill('SIGTERM');
+    await exited;
+    await rm(profile, { recursive: true });
+  }
+}
+
 try {
   await checkUnsupported('unsupported-no-webgpu', () => Object.defineProperty(navigator, 'gpu', { value: undefined }));
   await checkUnsupported('unsupported-no-adapter', () => Object.defineProperty(navigator, 'gpu', { value: { requestAdapter: async () => null } }));
   await checkUnsupported('unsupported-limits', () => Object.defineProperty(navigator, 'gpu', { value: { requestAdapter: async () => ({ limits: { maxStorageBuffersPerShaderStage: 4, maxComputeInvocationsPerWorkgroup: 256, maxComputeWorkgroupSizeX: 256, maxComputeWorkgroupStorageSize: 16384 }, info: {} }) } }));
 
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
-  await context.addInitScript(() => {
-    // Capture the actual application device for an intentional, final device-loss acceptance check.
-    if (!globalThis.GPUAdapter) return;
-    const original = GPUAdapter.prototype.requestDevice;
-    GPUAdapter.prototype.requestDevice = async function (...options) {
-      const device = await original.apply(this, options);
-      window.__flockTestDevice = device;
-      return device;
-    };
-  });
   const page = await context.newPage();
   const main = attach(page, 'visitor-flow');
   const cdp = await browser.newBrowserCDPSession();
@@ -156,23 +211,6 @@ try {
   await page.keyboard.press('p');
   await page.waitForFunction(() => !window.flockReport.scene.paused);
 
-  // Playwright otherwise forces every page to remain visible, even when another tab is active.
-  const pageCdp = await context.newCDPSession(page);
-  await pageCdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-  const background = await context.newPage();
-  await background.goto('about:blank');
-  await background.bringToFront();
-  await page.waitForFunction(() => document.hidden, undefined, { timeout: 10_000 });
-  await page.waitForTimeout(500);
-  const clockBefore = await page.evaluate(() => window.flockReport.scene.simulationSeconds);
-  await page.waitForTimeout(1000);
-  const clockAfter = await page.evaluate(() => window.flockReport.scene.simulationSeconds);
-  assert.equal(clockBefore, clockAfter, 'Background tabs must pause simulation');
-  await page.bringToFront();
-  await page.waitForFunction(() => !document.hidden && !window.flockReport.scene.paused, undefined, { timeout: 10_000 });
-  await background.close();
-  await pageCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-
   await page.setViewportSize({ width: 900, height: 900 });
   await page.waitForFunction(() => document.querySelector('canvas').width === 900);
   await page.screenshot({ path: path.join(output, 'visitor-square.png') });
@@ -186,11 +224,6 @@ try {
   assert.deepEqual(main.failedRequests, []);
   assert.deepEqual(main.console.filter(message => message.type === 'error'), []);
 
-  await page.evaluate(() => window.__flockTestDevice.destroy());
-  await waitState(page, 'error');
-  assert.match(await page.locator('#message').innerText(), /graphics device/i);
-  await page.screenshot({ path: path.join(output, 'device-loss.png') });
-  main.deviceLoss = await page.evaluate(() => window.flockReport.events.at(-1));
   await context.close();
 
   const retina = await browser.newContext({ viewport: { width: 960, height: 540 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
@@ -221,6 +254,7 @@ try {
     await failedPage.screenshot({ path: path.join(output, `${label}.png`) });
     await failed.close();
   }
+  await realVisibilityAndRecovery();
   report.result = 'PASS';
 } catch (error) {
   report.result = 'FAIL';
