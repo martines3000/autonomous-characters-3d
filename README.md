@@ -62,6 +62,24 @@ CARGO_BUILD_JOBS=4 cargo run --release --locked
 `cargo run` supplies the asset root. To start the binary directly:
 `CARGO_MANIFEST_DIR="$PWD" ./target/release/autonomous-characters-3d`.
 
+### Browser preview
+
+The optional browser target uses the shared Rust/WebGPU simulation and visitor scenes. On Linux
+x86_64 with the native build prerequisites installed:
+
+```sh
+./scripts/setup-web-tools.sh
+export PATH="$PWD/target/web-tools/bin:$PATH"
+CARGO_BUILD_JOBS=4 ./scripts/build-web.sh
+python3 -m http.server 8080 --bind 127.0.0.1 --directory dist
+```
+
+Use desktop WebGPU over HTTPS or localhost. Unsupported devices get a clear explanation. Browser
+Lab uses bundled animals; arbitrary local model imports remain native-only. The browser fetches
+packaged lighting from the native headless baker instead of blocking input with a CPU bake.
+`?scene=shark&population=low` selects the same scene/tier contract as the HUD.
+See [browser feasibility](docs/browser-feasibility.md) for the exact tested configuration and limits.
+
 ### Visitor scenes
 
 Startup opens **Sunset murmuration**. The public scene selector also offers **Reef drift** and

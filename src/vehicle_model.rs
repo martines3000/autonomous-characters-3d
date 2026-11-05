@@ -1,11 +1,11 @@
 //! Bounded static and baked glTF import. Background jobs never mutate the running simulation.
 use std::{
     collections::HashMap,
-    fs::File,
-    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs::File, io::Read};
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -350,6 +350,7 @@ fn preflight(value: &Value) -> Result<(), String> {
     walk(value, "", 0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_file(path: &Path, remaining: &mut usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
@@ -363,6 +364,29 @@ fn read_file(path: &Path, remaining: &mut usize) -> Result<Vec<u8>, String> {
     }
     *remaining -= bytes.len();
     Ok(bytes)
+}
+
+/// The browser ships only this small, audited model catalog. Importing local paths remains native-only.
+#[cfg(target_arch = "wasm32")]
+fn read_file(path: &Path, remaining: &mut usize) -> Result<Vec<u8>, String> {
+    let bytes: &[u8] = match path.to_str() {
+        Some("assets/models/bird.glb") => include_bytes!("../assets/models/bird.glb"),
+        Some("assets/models/falcon.glb") => include_bytes!("../assets/models/falcon.glb"),
+        Some("assets/models/fish.glb") => include_bytes!("../assets/models/fish.glb"),
+        Some("assets/models/glider.glb") => include_bytes!("../assets/models/glider.glb"),
+        Some("assets/models/material-glider.glb") => include_bytes!("../assets/models/material-glider.glb"),
+        Some("assets/models/rook.glb") => include_bytes!("../assets/models/rook.glb"),
+        Some("assets/models/shark.glb") => include_bytes!("../assets/models/shark.glb"),
+        Some("assets/models/starling.glb") => include_bytes!("../assets/models/starling.glb"),
+        Some("assets/models/swallow.glb") => include_bytes!("../assets/models/swallow.glb"),
+        Some("assets/models/tuna.glb") => include_bytes!("../assets/models/tuna.glb"),
+        _ => return Err("Browser builds support bundled animals only; local model imports require the native Lab".into()),
+    };
+    if bytes.len() > *remaining {
+        return Err("Limit exceeded at bundled model; expected total input <= 64 MiB".into());
+    }
+    *remaining -= bytes.len();
+    Ok(bytes.to_vec())
 }
 
 #[derive(Debug)]
@@ -883,12 +907,21 @@ impl Default for VehicleModels {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn root() -> PathBuf {
     PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").into()),
     )
 }
+#[cfg(target_arch = "wasm32")]
+fn root() -> PathBuf {
+    PathBuf::new()
+}
 impl VehicleModels {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
     pub fn request(&mut self, path: PathBuf) {
         self.generation = self.generation.wrapping_add(1);
         self.path_input = path.display().to_string();
@@ -930,29 +963,53 @@ impl VehicleModels {
         }
     }
     fn rescan(&mut self) {
-        self.scan_status = "Scanning assets/models/…".into();
-        self.scan = Some(IoTaskPool::get().spawn(async {
-            let directory = root().join("assets/models");
-            let entries = match std::fs::read_dir(directory) {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(e) => return Err(format!("Cannot scan assets/models/: {e}")),
-            };
-            let mut paths = Vec::new();
-            for entry in entries {
-                let entry = entry.map_err(|e| format!("Cannot scan assets/models/: {e}"))?;
-                let path = entry.path();
-                if path.is_file()
-                    && path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                        e.eq_ignore_ascii_case("glb") || e.eq_ignore_ascii_case("gltf")
-                    })
-                {
-                    paths.push(path);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.paths = [
+                "bird",
+                "falcon",
+                "fish",
+                "glider",
+                "material-glider",
+                "rook",
+                "shark",
+                "starling",
+                "swallow",
+                "tuna",
+            ]
+            .map(|name| PathBuf::from(format!("assets/models/{name}.glb")))
+            .to_vec();
+            self.scan_status = format!(
+                "{} bundled models; local imports require native Lab",
+                self.paths.len()
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.scan_status = "Scanning assets/models/…".into();
+            self.scan = Some(IoTaskPool::get().spawn(async {
+                let directory = root().join("assets/models");
+                let entries = match std::fs::read_dir(directory) {
+                    Ok(entries) => entries,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                    Err(e) => return Err(format!("Cannot scan assets/models/: {e}")),
+                };
+                let mut paths = Vec::new();
+                for entry in entries {
+                    let entry = entry.map_err(|e| format!("Cannot scan assets/models/: {e}"))?;
+                    let path = entry.path();
+                    if path.is_file()
+                        && path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                            e.eq_ignore_ascii_case("glb") || e.eq_ignore_ascii_case("gltf")
+                        })
+                    {
+                        paths.push(path);
+                    }
                 }
-            }
-            paths.sort();
-            Ok(paths)
-        }));
+                paths.sort();
+                Ok(paths)
+            }));
+        }
     }
     fn finish(
         &mut self,

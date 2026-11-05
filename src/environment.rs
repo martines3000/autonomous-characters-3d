@@ -1,15 +1,16 @@
 //! Optional HDR skies and cached, CPU-prefiltered image-based lighting.
 //! Cubemap storage follows WebGPU's face convention; Bevy flips Z when sampling it.
+use std::str::FromStr;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     f32::consts::{PI, TAU},
-    str::FromStr,
     sync::Arc,
 };
 
 use bevy::{
-    asset::{LoadState, RenderAssetUsages},
+    asset::RenderAssetUsages,
     camera::{Exposure, Hdr},
-    image::{HdrTextureLoaderSettings, ImageSampler},
+    image::ImageSampler,
     light::{EnvironmentMapLight, Skybox},
     prelude::*,
     render::{
@@ -25,6 +26,9 @@ use bevy::{
     tasks::{futures::check_ready, AsyncComputeTaskPool, Task},
     transform::TransformSystems,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::{asset::LoadState, image::HdrTextureLoaderSettings};
 
 use crate::{
     scene::{Appearance, FillLight, KeyLight, SceneStyle},
@@ -49,6 +53,7 @@ impl Environment {
             Self::Underwater => "Underwater",
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn source(self) -> Option<&'static str> {
         match self {
             Self::Off | Self::Underwater => None,
@@ -92,12 +97,15 @@ impl FromStr for Environment {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const FACE_SIZE: u32 = 512;
 const ENV_EXPOSURE: Exposure = Exposure { ev100: 10.0 };
 
 struct CachedEnvironment {
     kind: Environment,
+    #[cfg(not(target_arch = "wasm32"))]
     source: Option<Handle<Image>>,
+    #[cfg(not(target_arch = "wasm32"))]
     input: Option<Arc<Image>>,
     ready: Option<PreparedEnvironment>,
     failed: bool,
@@ -133,6 +141,152 @@ impl BakedEnvironment {
             horizon: self.horizon,
         }
     }
+}
+
+const WEB_ENV_MAGIC: &[u8; 8] = b"AC3DENV1";
+
+/// Export the same half-float cubemaps native rendering uses. No GPU or desktop is needed.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn export_web_assets(directory: &std::path::Path) -> Result<(), String> {
+    use bevy::image::{CompressedImageFormats, ImageType};
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let root = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").into());
+    for kind in [
+        Environment::Sunset,
+        Environment::Midday,
+        Environment::Underwater,
+    ] {
+        let baked = if let Some(source) = kind.source() {
+            let bytes = std::fs::read(root.join("assets").join(source))
+                .map_err(|error| format!("{source}: {error}"))?;
+            let image = Image::from_buffer(
+                &bytes,
+                ImageType::Extension("hdr"),
+                CompressedImageFormats::NONE,
+                false,
+                ImageSampler::linear(),
+                RenderAssetUsages::MAIN_WORLD,
+            )
+            .map_err(|error| error.to_string())?;
+            prepare_panorama(kind, &image).map_err(str::to_string)?
+        } else {
+            prepare_underwater()
+        };
+        let bytes = encode_web_environment(&baked);
+        let path = directory.join(format!("{}.flockenv", kind.name().to_ascii_lowercase()));
+        std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+        println!("Exported {} ({} bytes)", path.display(), bytes.len());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_web_environment(baked: &BakedEnvironment) -> Vec<u8> {
+    let mut bytes = WEB_ENV_MAGIC.to_vec();
+    for vector in [
+        baked.sun,
+        baked.sun_color.to_linear().to_vec4().truncate(),
+        baked.horizon.to_linear().to_vec4().truncate(),
+    ] {
+        for value in vector.to_array() {
+            bytes.extend(value.to_le_bytes());
+        }
+    }
+    for image in [&baked.sky, &baked.diffuse, &baked.specular] {
+        let data = image.data.as_ref().expect("baked image has CPU bytes");
+        for value in [
+            image.width(),
+            image.texture_descriptor.mip_level_count,
+            data.len() as u32,
+        ] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(data);
+    }
+    bytes
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn decode_web_environment(mut bytes: &[u8]) -> Result<BakedEnvironment, &'static str> {
+    fn take<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], &'static str> {
+        let (value, rest) = bytes
+            .split_at_checked(count)
+            .ok_or("Truncated environment bundle")?;
+        *bytes = rest;
+        Ok(value)
+    }
+    fn vector(bytes: &mut &[u8]) -> Result<Vec3, &'static str> {
+        let mut values = [0.0; 3];
+        for value in &mut values {
+            *value = f32::from_le_bytes(take(bytes, 4)?.try_into().unwrap());
+            if !value.is_finite() {
+                return Err("Nonfinite environment metadata");
+            }
+        }
+        Ok(Vec3::from_array(values))
+    }
+    fn image(bytes: &mut &[u8]) -> Result<Image, &'static str> {
+        let size = u32::from_le_bytes(take(bytes, 4)?.try_into().unwrap());
+        let mips = u32::from_le_bytes(take(bytes, 4)?.try_into().unwrap());
+        let length = u32::from_le_bytes(take(bytes, 4)?.try_into().unwrap()) as usize;
+        if size == 0
+            || size > 512
+            || !size.is_power_of_two()
+            || mips == 0
+            || mips > size.ilog2() + 1
+        {
+            return Err("Unsupported environment dimensions");
+        }
+        let expected: usize = (0..mips)
+            .map(|mip| ((size >> mip) as usize).pow(2) * 6 * 8)
+            .sum();
+        if length != expected {
+            return Err("Invalid environment image length");
+        }
+        let data = take(bytes, length)?.to_vec();
+        let mut image = Image::new_uninit(
+            Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 6,
+            },
+            TextureDimension::D2,
+            TextureFormat::Rgba16Float,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        image.data = Some(data);
+        image.data_order = TextureDataOrder::MipMajor;
+        image.texture_descriptor.mip_level_count = mips;
+        image.texture_view_descriptor = Some(TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::Cube),
+            ..default()
+        });
+        image.sampler = ImageSampler::linear();
+        Ok(image)
+    }
+    if take(&mut bytes, 8)? != WEB_ENV_MAGIC {
+        return Err("Unsupported environment bundle version");
+    }
+    let sun = vector(&mut bytes)?;
+    if !(0.99..=1.01).contains(&sun.length_squared()) {
+        return Err("Invalid environment sun direction");
+    }
+    let sun_color = vector(&mut bytes)?;
+    let horizon = vector(&mut bytes)?;
+    let baked = BakedEnvironment {
+        sky: image(&mut bytes)?,
+        diffuse: image(&mut bytes)?,
+        specular: image(&mut bytes)?,
+        sun,
+        sun_color: Color::linear_rgb(sun_color.x, sun_color.y, sun_color.z),
+        horizon: Color::linear_rgb(horizon.x, horizon.y, horizon.z),
+    };
+    if !bytes.is_empty() {
+        return Err("Unexpected trailing environment data");
+    }
+    Ok(baked)
 }
 struct EnvironmentBake {
     kind: Environment,
@@ -197,7 +351,7 @@ fn sync_environment_render_ready(
 /// Runs before scene/instance consumers so every part of the look switches together.
 fn prepare_environment(
     mut appearance: ResMut<Appearance>,
-    server: Res<AssetServer>,
+    _server: Res<AssetServer>,
     mut images: ResMut<Assets<Image>>,
     mut cache: ResMut<EnvironmentCache>,
 ) {
@@ -221,14 +375,16 @@ fn prepare_environment(
     if !cache.entries.iter().any(|entry| entry.kind == kind) {
         cache.entries.push(CachedEnvironment {
             kind,
+            #[cfg(not(target_arch = "wasm32"))]
             source: kind.source().map(|path| {
-                server
+                _server
                     .load_builder()
                     .with_settings(|settings: &mut HdrTextureLoaderSettings| {
                         settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
                     })
                     .load(path)
             }),
+            #[cfg(not(target_arch = "wasm32"))]
             input: None,
             ready: None,
             failed: false,
@@ -242,31 +398,51 @@ fn prepare_environment(
             .find(|entry| entry.kind == kind)
             .unwrap();
         if entry.ready.is_none() && !entry.failed {
-            if let Some(source) = &entry.source {
-                if entry.input.is_none() {
-                    // Move the HDR buffer; cloning a 4K image here would itself hitch.
-                    if let Some(image) = images.remove(source.id()) {
-                        entry.input = Some(Arc::new(image));
-                    } else if matches!(
-                        server.get_load_state(source.id()),
-                        Some(LoadState::Failed(_))
-                    ) {
-                        error!("Cannot load environment {:?}", kind.source());
-                        entry.failed = true;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(source) = &entry.source {
+                    if entry.input.is_none() {
+                        // Move the HDR buffer; cloning a 4K image here would itself hitch.
+                        if let Some(image) = images.remove(source.id()) {
+                            entry.input = Some(Arc::new(image));
+                        } else if matches!(
+                            _server.get_load_state(source.id()),
+                            Some(LoadState::Failed(_))
+                        ) {
+                            error!("Cannot load environment {:?}", kind.source());
+                            entry.failed = true;
+                        }
                     }
                 }
+                if kind == Environment::Underwater || entry.input.is_some() {
+                    let input = entry.input.clone();
+                    cache.pending = Some(EnvironmentBake {
+                        kind,
+                        generation,
+                        task: AsyncComputeTaskPool::get().spawn(async move {
+                            if kind == Environment::Underwater {
+                                Ok(prepare_underwater())
+                            } else {
+                                prepare_panorama(kind, input.as_ref().unwrap())
+                            }
+                        }),
+                    });
+                }
             }
-            if kind == Environment::Underwater || entry.input.is_some() {
-                let input = entry.input.clone();
+            #[cfg(target_arch = "wasm32")]
+            {
+                // A browser task pool runs on the main thread. Fetch the exact native bake
+                // prepared during packaging instead of blocking input for a CPU convolution.
                 cache.pending = Some(EnvironmentBake {
                     kind,
                     generation,
                     task: AsyncComputeTaskPool::get().spawn(async move {
-                        if kind == Environment::Underwater {
-                            Ok(prepare_underwater())
-                        } else {
-                            prepare_panorama(kind, input.as_ref().unwrap())
-                        }
+                        let bytes = crate::browser::fetch_bytes(&format!(
+                            "assets/environment/{}.flockenv",
+                            kind.name().to_ascii_lowercase()
+                        ))
+                        .await?;
+                        decode_web_environment(&bytes)
                     }),
                 });
             }
@@ -297,8 +473,11 @@ fn prepare_environment(
                     entry.failed = true;
                 }
             }
-            entry.input = None;
-            entry.source = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                entry.input = None;
+                entry.source = None;
+            }
         }
     }
     if cache
@@ -311,6 +490,7 @@ fn prepare_environment(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn prepare_panorama(kind: Environment, image: &Image) -> Result<BakedEnvironment, &'static str> {
     let panorama = Panorama::from_image(image)?;
     let (sun, sun_color) = panorama.sun();
@@ -494,6 +674,7 @@ fn update_environment(
 
 /// Smooth water-column radiance, with a broad refracted patch of light overhead.
 /// Direction-only detail keeps the six faces continuous and needs no downloaded assets.
+#[cfg(not(target_arch = "wasm32"))]
 fn water_radiance(n: Vec3) -> Vec3 {
     let deep = Vec3::new(0.0005, 0.003, 0.025);
     let horizon = Vec3::new(0.006, 0.075, 0.19);
@@ -510,6 +691,7 @@ fn water_radiance(n: Vec3) -> Vec3 {
     gradient + Vec3::new(0.65, 2.1, 1.5) * light * (0.85 + 0.15 * ripple)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn prepare_underwater() -> BakedEnvironment {
     // A low-frequency analytic sky needs only 128px; broad IBL lobes need even less.
     let sky = cubemap(128, 1, |n, _| water_radiance(n));
@@ -544,14 +726,17 @@ fn prepare_underwater() -> BakedEnvironment {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Panorama {
     width: u32,
     height: u32,
     pixels: Vec<Vec3>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn luminance(rgb: Vec3) -> f32 {
     rgb.dot(Vec3::new(0.2126, 0.7152, 0.0722))
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn panorama_direction(u: f32, v: f32) -> Vec3 {
     let latitude = (0.5 - v) * PI;
     let longitude = (u - 0.5) * TAU;
@@ -561,6 +746,7 @@ fn panorama_direction(u: f32, v: f32) -> Vec3 {
         latitude.cos() * longitude.sin(),
     )
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Panorama {
     fn from_image(image: &Image) -> Result<Self, &'static str> {
         if image.texture_descriptor.format != TextureFormat::Rgba32Float {
@@ -663,6 +849,7 @@ impl Panorama {
 }
 
 /// WebGPU +X, -X, +Y, -Y, +Z, -Z faces, converted to Bevy world directions.
+#[cfg(not(target_arch = "wasm32"))]
 fn cube_direction(face: u32, u: f32, v: f32) -> Vec3 {
     let n = match face {
         0 => Vec3::new(1.0, -v, -u),
@@ -675,6 +862,7 @@ fn cube_direction(face: u32, u: f32, v: f32) -> Vec3 {
     };
     (n * Vec3::new(1.0, 1.0, -1.0)).normalize()
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn cubemap(size: u32, mips: u32, sample: impl Fn(Vec3, f32) -> Vec3) -> Image {
     let mut data = Vec::new();
     for mip in 0..mips {
@@ -730,6 +918,7 @@ fn cubemap(size: u32, mips: u32, sample: impl Fn(Vec3, f32) -> Vec3) -> Image {
 }
 
 /// Deterministic cosine-weighted irradiance and split-sum GGX specular convolution.
+#[cfg(not(target_arch = "wasm32"))]
 fn convolve(panorama: &Panorama, n: Vec3, roughness: f32, diffuse: bool) -> Vec3 {
     let up = if n.y.abs() < 0.99 { Vec3::Y } else { Vec3::X };
     let tangent = up.cross(n).normalize();
@@ -765,6 +954,48 @@ fn convolve(panorama: &Panorama, n: Vec3, roughness: f32, diffuse: bool) -> Vec3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_environment_round_trip_preserves_half_float_images_and_lighting() {
+        let baked = small_bake();
+        let restored = decode_web_environment(&encode_web_environment(&baked)).unwrap();
+        assert_eq!(baked.sun, restored.sun);
+        assert_eq!(baked.sun_color.to_linear(), restored.sun_color.to_linear());
+        assert_eq!(baked.horizon.to_linear(), restored.horizon.to_linear());
+        for (before, after) in [baked.sky, baked.diffuse, baked.specular].into_iter().zip([
+            restored.sky,
+            restored.diffuse,
+            restored.specular,
+        ]) {
+            assert_eq!(before.data, after.data);
+            assert_eq!(before.texture_descriptor, after.texture_descriptor);
+            assert_eq!(
+                before.texture_view_descriptor,
+                after.texture_view_descriptor
+            );
+            assert_eq!(before.data_order, after.data_order);
+        }
+    }
+
+    #[test]
+    fn malformed_web_environment_is_rejected_before_allocating_images() {
+        let valid = encode_web_environment(&small_bake());
+        for length in [0, 7, 8, 43, valid.len() - 1] {
+            assert!(decode_web_environment(&valid[..length]).is_err());
+        }
+        let mut invalid = valid.clone();
+        invalid[0] = 0;
+        assert!(decode_web_environment(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(decode_web_environment(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid[44..48].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(decode_web_environment(&invalid).is_err());
+        let mut invalid = valid;
+        invalid.push(0);
+        assert!(decode_web_environment(&invalid).is_err());
+    }
 
     fn bake_test_app() -> (App, Entity, Entity) {
         use bevy::asset::AssetPlugin;

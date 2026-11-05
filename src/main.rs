@@ -1,3 +1,4 @@
+mod browser;
 mod capture;
 mod director;
 mod environment;
@@ -34,7 +35,11 @@ use bevy::{
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 fn main() {
+    if browser::export_assets_if_requested() {
+        return;
+    }
     App::new()
+        .add_plugins(browser::BrowserAssetsPlugin)
         .insert_resource(ClearColor(
             scene::SceneStyle::default().settings().background,
         ))
@@ -89,6 +94,7 @@ fn main() {
         ))
         .add_plugins(hunter::HunterPlugin)
         .add_plugins(visitor::VisitorPlugin)
+        .add_plugins(browser::BrowserPlugin)
         .add_systems(
             PreUpdate,
             camera_input
