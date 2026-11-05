@@ -283,7 +283,7 @@ pub(crate) fn ui(
     let ctx = contexts.ctx_mut()?;
     let width = (ctx.content_rect().width() - 56.0).clamp(200.0, 292.0);
     let frame = egui::Frame::window(&ctx.global_style())
-        .fill(egui::Color32::from_rgba_unmultiplied(10, 24, 28, 232))
+        .fill(egui::Color32::from_rgb(10, 24, 28))
         .stroke(egui::Stroke::new(
             1.0,
             egui::Color32::from_rgb(73, 100, 101),
