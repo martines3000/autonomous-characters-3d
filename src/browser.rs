@@ -39,6 +39,7 @@ impl Plugin for BrowserPlugin {
             let world = _app.world_mut();
             for mut window in world.query::<&mut Window>().iter_mut(world) {
                 window.canvas = Some("#flock".into());
+                window.title = "Flock — A small world in motion".into();
                 window.fit_canvas_to_parent = true;
                 window.prevent_default_event_handling = true;
             }
@@ -135,7 +136,7 @@ mod web {
             .dyn_into::<web_sys::Response>()
             .map_err(|_| "Environment server returned an invalid response")?;
         if !response.ok() {
-            return Err("Environment asset is missing; reload or choose another scene");
+            return Err("Environment asset is missing; reload to retry");
         }
         let buffer = response
             .array_buffer()
@@ -247,10 +248,7 @@ mod web {
             }
         }
         if environments.failed(appearance.environment) {
-            status(
-                "error",
-                "This scene could not load. Choose another scene or reload to retry.",
-            );
+            status("error", "This scene could not load. Reload to try again.");
             return;
         }
         let ready = !models.pending()

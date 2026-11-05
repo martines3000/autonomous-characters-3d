@@ -34,7 +34,7 @@ def package(staging: Path, output: Path):
         target = release / path.relative_to(staging)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
-        if target.suffix in {".wasm", ".js", ".wgsl", ".flockenv", ".json", ".md", ".ttf"}:
+        if target.suffix in {".wasm", ".js", ".wgsl", ".wesl", ".flockenv", ".json", ".md", ".ttf"}:
             target.with_name(target.name + ".gz").write_bytes(gzip.compress(target.read_bytes(), compresslevel=9, mtime=0))
     html = (root / "web/index.html").read_text().replace("__RELEASE_BASE__", f"./releases/{content}/")
     (output / "index.html").write_text(html)

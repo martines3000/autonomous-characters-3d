@@ -68,8 +68,8 @@ async function start() {
   const missing = Object.entries(required).filter(([name, value]) => adapter.limits[name] < value);
   window.flockReport.adapter = { info: { vendor: adapter.info?.vendor, architecture: adapter.info?.architecture, description: adapter.info?.description }, limits: Object.fromEntries(Object.keys(required).map(name => [name, adapter.limits[name]])) };
   if (missing.length) {
+    window.flockReport.unsupportedLimits = missing.map(([name]) => name);
     window.flockStatus('unsupported', 'This graphics device does not support the flock simulation. Try another desktop device.');
-    detail.textContent = `Unavailable graphics limits: ${missing.map(([name]) => name).join(', ')}.`;
     return;
   }
   window.flockStatus('loading', 'Opening a small world…');
