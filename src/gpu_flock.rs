@@ -1790,13 +1790,18 @@ mod tests {
             .init_resource::<PredatorFrame>()
             .init_resource::<FormationFrame>()
             .add_systems(Update, update_gpu_params)
-            .add_systems(PostUpdate, |mut state: ResMut<GlobalState>, mut restart: ResMut<FlockRestart>, mut changed: Local<bool>| {
-                if !*changed {
-                    state.vehicle_count = 500;
-                    restart.requested += 1;
-                    *changed = true;
-                }
-            });
+            .add_systems(
+                PostUpdate,
+                |mut state: ResMut<GlobalState>,
+                 mut restart: ResMut<FlockRestart>,
+                 mut changed: Local<bool>| {
+                    if !*changed {
+                        state.vehicle_count = 500;
+                        restart.requested += 1;
+                        *changed = true;
+                    }
+                },
+            );
         app.update();
         assert_eq!(app.world().resource::<GpuParams>().count, 20_000);
         let restart = app.world().resource::<FlockRestart>();
@@ -1811,21 +1816,34 @@ mod tests {
     #[ignore = "needs a GPU"]
     fn gpu_public_restart_replaces_large_world_while_paused_and_clears_old_hunters() {
         use bevy::render::settings::{Backends, RenderResources, WgpuSettings};
-        let RenderResources(device, queue, ..) = bevy::tasks::block_on(
-            bevy::render::renderer::initialize_renderer(Backends::PRIMARY, None, &WgpuSettings::default()),
-        );
+        let RenderResources(device, queue, ..) =
+            bevy::tasks::block_on(bevy::render::renderer::initialize_renderer(
+                Backends::PRIMARY,
+                None,
+                &WgpuSettings::default(),
+            ));
         let mut flock = GpuFlock::new(&device);
         let step = |flock: &mut GpuFlock, params: &GpuParams| {
             let mut encoder = device.create_command_encoder(&default());
             flock.encode(&device, &queue, &mut encoder, params);
             queue.submit([encoder.finish()]);
         };
-        let old: Vec<BoidData> = (0..512).map(|id| BoidData {
-            state: [Vec3::new(10_000.0 + id as f32, 0.0, 0.0).extend(0.0), Vec4::X, Vec4::W, Vec4::ZERO],
-            metadata: UVec4::new(id + 1000, 0, 0, 0.5_f32.to_bits()),
-        }).collect();
+        let old: Vec<BoidData> = (0..512)
+            .map(|id| BoidData {
+                state: [
+                    Vec3::new(10_000.0 + id as f32, 0.0, 0.0).extend(0.0),
+                    Vec4::X,
+                    Vec4::W,
+                    Vec4::ZERO,
+                ],
+                metadata: UVec4::new(id + 1000, 0, 0, 0.5_f32.to_bits()),
+            })
+            .collect();
         flock.upload(&device, &queue, &old);
-        let mut state = GlobalState { vehicle_count: 512, ..default() };
+        let mut state = GlobalState {
+            vehicle_count: 512,
+            ..default()
+        };
         state.groups.count = 2;
         state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
         state.groups.table[1].hunter_count = 3;
@@ -1833,16 +1851,25 @@ mod tests {
         params.motion.w = 0.0;
         step(&mut flock, &params);
         assert_eq!(flock.read_hunters(&device, &queue).len(), 3);
-        assert!(flock.read_boids(&device, &queue).iter().all(|boid| boid[0].x >= 10_000.0));
+        assert!(flock
+            .read_boids(&device, &queue)
+            .iter()
+            .all(|boid| boid[0].x >= 10_000.0));
         let boid_buffer = flock.buffers.as_ref().unwrap().boids.id();
         let instance_buffer = flock.buffers.as_ref().unwrap().instances.id();
         flock.restart_if_requested(1);
-        state = GlobalState { vehicle_count: 32, ..default() };
+        state = GlobalState {
+            vehicle_count: 32,
+            ..default()
+        };
         params = gpu_params(&state, Vec3::ZERO, false, 0.0);
         params.motion.w = 0.0;
         step(&mut flock, &params);
         assert_eq!(flock.buffers.as_ref().unwrap().boids.id(), boid_buffer);
-        assert_eq!(flock.buffers.as_ref().unwrap().instances.id(), instance_buffer);
+        assert_eq!(
+            flock.buffers.as_ref().unwrap().instances.id(),
+            instance_buffer
+        );
         assert!(flock.hunter_storage_is_off());
         assert!(flock.read_hunters(&device, &queue).is_empty());
         let boids = flock.read_boids(&device, &queue);
@@ -1852,7 +1879,10 @@ mod tests {
         for (id, boid) in boids.iter().enumerate() {
             assert!(boid[0].truncate().abs().max_element() <= vehicle::spawn_size(32) * 0.5);
             assert!(boid[0].is_finite());
-            assert_eq!(boid.metadata, UVec4::new(id as u32, 0, 0, 0));
+            assert_eq!(
+                boid.metadata,
+                UVec4::new(id as u32, state.groups.spawn_group(id as u32), 0, 0)
+            );
             assert_eq!(instances[id][0].truncate(), boid[0].truncate());
             assert_eq!(previous[id][0].truncate(), boid[0].truncate());
             assert_eq!(previous[id][1], boid[2]);
