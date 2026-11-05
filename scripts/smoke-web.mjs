@@ -102,6 +102,18 @@ try {
 
   await page.keyboard.press('p');
   await page.waitForFunction(() => window.flockReport.scene.paused);
+  // Egui renders into the canvas; these bounded clicks exercise the real HUD at scale factor 1.
+  await page.mouse.click(48, 228);
+  await page.waitForFunction(() => window.flockReport.scene.help);
+  await page.screenshot({ path: path.join(output, 'visitor-help.png') });
+  await page.mouse.click(48, 228);
+  await page.waitForFunction(() => !window.flockReport.scene.help);
+  await page.mouse.click(149, 228);
+  await page.waitForFunction(() => window.flockReport.scene.lab);
+  await page.screenshot({ path: path.join(output, 'lab.png') });
+  await page.mouse.click(135, 92);
+  await page.waitForFunction(() => !window.flockReport.scene.lab);
+  await waitScene(page, 'Sunset murmuration');
   await page.keyboard.press('h');
   await page.waitForFunction(() => !window.flockReport.scene.uiVisible);
   await page.screenshot({ path: path.join(output, 'ui-hidden.png') });
