@@ -15,7 +15,12 @@ impl Plugin for TargetPlugin {
         app.add_systems(Startup, spawn_target)
             .add_systems(
                 Update,
-                (input_controls, update_target_color, update_target_scale),
+                (
+                    input_controls,
+                    update_target_color,
+                    update_target_scale,
+                    sync_visibility,
+                ),
             )
             .add_systems(
                 PostUpdate,
@@ -40,7 +45,11 @@ fn draw_target_marker(
     targets: Query<(&Transform, &TargetSelection), With<Target>>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    visitor: Option<Res<crate::visitor::Visitor>>,
 ) {
+    if visitor.is_some_and(|visitor| !visitor.lab) {
+        return;
+    }
     let (Ok((camera, projection)), Ok(window)) = (cameras.single(), windows.single()) else {
         return;
     };
@@ -104,6 +113,25 @@ fn spawn_target(
     ));
 }
 
+fn sync_visibility(
+    visitor: Option<Res<crate::visitor::Visitor>>,
+    mut targets: Query<(&mut Visibility, &mut Pickable), With<Target>>,
+) {
+    let visible = visitor.is_none_or(|visitor| visitor.lab);
+    for (mut visibility, mut pickable) in &mut targets {
+        *visibility = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        *pickable = if visible {
+            Pickable::default()
+        } else {
+            Pickable::IGNORE
+        };
+    }
+}
+
 fn update_target_color(
     targets: Query<
         (&TargetSelection, &MeshMaterial3d<StandardMaterial>),
@@ -136,7 +164,11 @@ fn select_target(
     click: On<PointerClick>,
     mut targets: Query<(Entity, &mut TargetSelection), With<Target>>,
     mut contexts: EguiContexts,
+    visitor: Option<Res<crate::visitor::Visitor>>,
 ) {
+    if visitor.is_some_and(|visitor| !visitor.lab) {
+        return;
+    }
     if click.button != PointerButton::Primary
         || contexts
             .ctx_mut()
@@ -156,7 +188,11 @@ pub(crate) fn input_controls(
     camera_query: Query<&Transform, (With<Camera3d>, Without<Target>)>,
     mut contexts: EguiContexts,
     time: Res<Time<Real>>,
+    visitor: Option<Res<crate::visitor::Visitor>>,
 ) {
+    if visitor.is_some_and(|visitor| !visitor.lab) {
+        return;
+    }
     if contexts
         .ctx_mut()
         .is_ok_and(|ctx| ctx.egui_wants_keyboard_input())
@@ -201,6 +237,43 @@ mod tests {
     };
     use bevy_egui::EguiUserTextures;
     use std::time::Duration;
+
+    #[test]
+    fn public_scene_hides_target_and_lab_restores_picking() {
+        let mut app = App::new();
+        app.init_resource::<crate::visitor::Visitor>()
+            .add_systems(Update, sync_visibility);
+        let target = app
+            .world_mut()
+            .spawn((Target, Visibility::Inherited, Pickable::default()))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(target),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(app.world().get::<Pickable>(target), Some(&Pickable::IGNORE));
+        app.world_mut()
+            .resource_mut::<crate::visitor::Visitor>()
+            .lab = true;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(target),
+            Some(&Visibility::Inherited)
+        );
+        assert_eq!(
+            app.world().get::<Pickable>(target),
+            Some(&Pickable::default())
+        );
+        app.world_mut()
+            .resource_mut::<crate::visitor::Visitor>()
+            .lab = false;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(target),
+            Some(&Visibility::Hidden)
+        );
+    }
 
     #[test]
     fn target_visual_and_pick_mesh_scale_with_live_vehicle_count() {

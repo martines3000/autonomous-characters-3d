@@ -96,17 +96,18 @@ fn main() {
                 .before(PanOrbitCamera::update_camera_positions),
         )
         .add_systems(Update, (fps_update_system, sync_ui_visibility))
-        .add_systems(EguiPrimaryContextPass, ui)
+        .add_systems(EguiPrimaryContextPass, (visitor::ui, ui).chain())
         .run();
 }
 
 fn sync_ui_visibility(
     presentation: Res<presentation::Presentation>,
+    visitor: Res<visitor::Visitor>,
     mut roots: Query<&mut Visibility, With<Text>>,
 ) {
-    if presentation.is_changed() {
+    if presentation.is_changed() || visitor.is_changed() {
         for mut visibility in &mut roots {
-            *visibility = if presentation.ui_visible {
+            *visibility = if presentation.ui_visible && visitor.lab {
                 Visibility::Inherited
             } else {
                 Visibility::Hidden
@@ -259,13 +260,15 @@ fn ui(
     mut models: ResMut<vehicle_model::VehicleModels>,
     mut presentation: ResMut<presentation::Presentation>,
     mut swarm_ui: swarm::SwarmUi,
+    visitor: Res<visitor::Visitor>,
 ) -> Result {
     appearance.count_editing = false;
-    if !presentation.ui_visible {
+    if !presentation.ui_visible || !visitor.lab {
         return Ok(());
     }
     let ctx = egui_context.ctx_mut()?;
-    egui::Window::new("Menu")
+    egui::Window::new("Lab")
+        .default_pos([360.0, 16.0])
         .default_size([340.0, 640.0])
         .vscroll(true)
         .max_height(ctx.content_rect().height() - 24.0)
@@ -273,7 +276,7 @@ fn ui(
             egui::CollapsingHeader::new("Showcase").default_open(true).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for showcase in showcase::Showcase::ALL {
-                        if ui.button(showcase.name()).clicked() {
+                        if ui.button(if showcase == showcase::Showcase::Swallow { "Swallow sphere / helix · art study" } else { showcase.name() }).clicked() {
                             swarm_ui.commands.queue(move |world: &mut World| showcase::apply(world, showcase));
                         }
                     }
@@ -284,7 +287,7 @@ fn ui(
                     ui.horizontal_wrapped(|ui| {
                         ui.label(label);
                         for species in group {
-                            if ui.button(species.name()).on_hover_text(species.description()).clicked() {
+                            if ui.button(if species == species::Species::TunaStream { "Fast fish stream · tuning study" } else { species.name() }).on_hover_text(species.description()).clicked() {
                                 swarm_ui.commands.queue(move |world: &mut World| species::apply(world, species));
                             }
                         }
