@@ -2,7 +2,8 @@
 
 ## Current work
 
-- No work is in progress. The AAA look track is merged.
+- Polished nature showcase execution is active. The AAA look track is merged.
+- [Polished nature showcase and web release](planned/2026-11-05-polished-flock-web-showcase.md) (active, 2026-11-05): autonomous development with useful subagents and small review PRs for visitor UI, visuals, animal behavior, browser delivery, and CRONA hosting preparation. Stop at the morning review handoff; do not merge or deploy. Baseline capture and early browser feasibility are the first parallel lanes. The active goal ends at the review handoff.
 
 ## Prioritized future tasks
 
