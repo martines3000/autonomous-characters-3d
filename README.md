@@ -79,6 +79,9 @@ Lab uses bundled animals; arbitrary local model imports remain native-only. The 
 packaged lighting from the native headless baker instead of blocking input with a CPU bake.
 `?scene=shark&population=low` selects the same scene/tier contract as the HUD.
 See [browser feasibility](docs/browser-feasibility.md) for the exact tested configuration and limits.
+For the static Docker image, cache/MIME headers, pinned browser smoke runner and owner-controlled
+manual image publication, follow [web delivery](docs/web-delivery.md). The publication workflow runs
+only when manually dispatched from `master`; preparing it does not publish or deploy anything.
 
 ### Visitor scenes
 
