@@ -258,6 +258,7 @@ impl Default for GlobalState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ui(
     mut egui_context: EguiContexts,
     mut state: ResMut<GlobalState>,

@@ -48,7 +48,7 @@ impl Plugin for BrowserPlugin {
                     web::render_error,
                 ))
                 .add_systems(First, web::commands)
-                .add_systems(Update, web::lifecycle);
+                .add_systems(Update, (web::asset_failures, web::lifecycle).chain());
         }
     }
 }
@@ -222,6 +222,23 @@ mod web {
         }
     }
 
+    pub(super) fn asset_failures(
+        mut failures: MessageReader<bevy::asset::UntypedAssetLoadFailedEvent>,
+        mut lifecycle: ResMut<Lifecycle>,
+        mut presentation: ResMut<crate::presentation::Presentation>,
+    ) {
+        for failure in failures.read() {
+            error!("Browser asset failed: {}: {}", failure.path, failure.error);
+            lifecycle.failed = true;
+            presentation.paused = true;
+            status(
+                "error",
+                "A scene asset could not load. Check your connection, then reload.",
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn lifecycle(
         mut lifecycle: ResMut<Lifecycle>,
         mut presentation: ResMut<crate::presentation::Presentation>,

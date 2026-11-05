@@ -199,7 +199,13 @@ try {
   await retinaPage.screenshot({ path: path.join(output, 'visitor-high-dpi.png') });
   await retina.close();
 
-  for (const [label, pattern] of [['missing-environment', '**/*.flockenv'], ['missing-wasm', '**/flock_bg.wasm']]) {
+  for (const [label, pattern] of [
+    ['missing-environment', '**/*.flockenv'],
+    ['missing-wasm', '**/flock_bg.wasm'],
+    ['missing-shader', '**/vehicle_instancing.wesl'],
+    ['missing-font', '**/FiraSans-Bold.ttf'],
+    ['missing-catalog', '**/asset-list.json'],
+  ]) {
     const failed = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     await failed.route(pattern, route => route.fulfill({ status: 404, body: 'intentional smoke fixture' }));
     const failedPage = await failed.newPage();
