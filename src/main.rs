@@ -21,6 +21,7 @@ mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;
 mod volumetric;
+mod visitor;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
@@ -87,6 +88,7 @@ fn main() {
             swarm::SwarmPlugin,
         ))
         .add_plugins(hunter::HunterPlugin)
+        .add_plugins(visitor::VisitorPlugin)
         .add_systems(
             PreUpdate,
             camera_input
