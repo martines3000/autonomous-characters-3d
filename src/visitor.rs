@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::{
     environment::Environment,
     presentation::Presentation,
-    scene::{self, Appearance, HeadingPalette},
+    scene::{Appearance, HeadingPalette},
     showcase::{self, Showcase},
     species::{self, Species},
     swarm::SwarmScene,
@@ -195,10 +195,11 @@ pub(crate) fn reset_view(world: &mut World) {
     let state = world.resource::<GlobalState>();
     let count = state.vehicle_count;
     let scene = world.resource::<Visitor>().scene;
-    let (yaw, pitch, fraction): (f32, f32, f32) = match scene {
-        VisitorScene::Murmuration => (18.0, 8.0, 0.48),
-        VisitorScene::ReefDrift => (15.0, 9.0, 0.32),
-        VisitorScene::SharkHunt => (20.0, 12.0, 0.38),
+    let (yaw, pitch, spawn_distance): (f32, f32, f32) = match scene {
+        // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
+        VisitorScene::Murmuration => (225.0, -3.0, 0.65),
+        VisitorScene::ReefDrift => (20.0, 3.0, 0.95),
+        VisitorScene::SharkHunt => (15.0, 3.0, 0.5),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
     for (mut transform, mut orbit, projection) in world
@@ -208,13 +209,10 @@ pub(crate) fn reset_view(world: &mut World) {
         let Projection::Perspective(projection) = projection else {
             continue;
         };
-        let distance = scene::frame_distance(
-            vehicle::walls(count),
-            rotation,
-            Vec3::ZERO,
-            projection.aspect_ratio,
-            PerspectiveProjection::default().fov,
-        ) * fraction;
+        // Compose around the animal volume, rather than the much larger containment walls.
+        // Narrow windows pull back enough to retain a useful horizontal view of the encounter.
+        let portrait_compensation = (1.1 / projection.aspect_ratio.max(0.3)).clamp(1.0, 2.0);
+        let distance = vehicle::spawn_size(count) * spawn_distance * portrait_compensation;
         *transform =
             Transform::from_translation(rotation * Vec3::Z * distance).with_rotation(rotation);
         orbit.current_motion = default();
