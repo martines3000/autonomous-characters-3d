@@ -48,6 +48,10 @@ fn main() {
             require_markers: true,
             ..default()
         })
+        .configure_sets(
+            PreUpdate,
+            PickingSystems::ProcessInput.after(bevy_egui::EguiPreUpdateSet::BeginPass),
+        )
         .add_plugins(
             DefaultPlugins
                 .set(TaskPoolPlugin {
@@ -122,6 +126,45 @@ fn sync_ui_visibility(
     }
 }
 
+pub(crate) fn ui_blocks_pointer(ctx: &egui::Context) -> bool {
+    ctx.egui_wants_pointer_input() || ctx.is_pointer_over_egui()
+}
+
+#[derive(Default)]
+pub(crate) struct PointerGesture {
+    dragging: bool,
+    started_over_ui: bool,
+}
+
+impl PointerGesture {
+    pub(crate) fn blocks_world(
+        &mut self,
+        over_ui: bool,
+        buttons: &ButtonInput<MouseButton>,
+    ) -> bool {
+        let dragging = buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle);
+        if dragging
+            && (!self.dragging
+                || buttons.just_pressed(MouseButton::Right)
+                || buttons.just_pressed(MouseButton::Middle))
+        {
+            self.started_over_ui = over_ui;
+        }
+        self.dragging = dragging;
+        if dragging {
+            self.started_over_ui
+        } else {
+            over_ui
+        }
+    }
+}
+
+#[derive(Default)]
+struct CameraInputState {
+    previous_mode: u8,
+    gesture: PointerGesture,
+}
+
 // The built-in controller deliberately leaves input mapping to the application.
 fn camera_input(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -129,12 +172,11 @@ fn camera_input(
     scroll: Res<AccumulatedMouseScroll>,
     mut contexts: EguiContexts,
     mut cameras: Query<&mut PanOrbitCamera>,
-    mut previous_mode: Local<u8>,
+    mut input: Local<CameraInputState>,
     presentation: Option<Res<presentation::Presentation>>,
 ) {
-    let blocked = contexts
-        .ctx_mut()
-        .is_ok_and(|ctx| ctx.egui_wants_pointer_input());
+    let blocked = contexts.ctx_mut().is_ok_and(|ctx| ui_blocks_pointer(ctx));
+    let blocked = input.gesture.blocks_world(blocked, &buttons);
     let following = presentation.is_some_and(|p| p.follow.enabled() && !p.director.enabled);
     let mode = if blocked {
         0
@@ -149,7 +191,8 @@ fn camera_input(
     };
     for mut camera in &mut cameras {
         // Framing resets the controller while a drag can still be held.
-        if mode != *previous_mode || (mode != 0 && !camera.current_motion.is_user_controlled()) {
+        if mode != input.previous_mode || (mode != 0 && !camera.current_motion.is_user_controlled())
+        {
             camera.end_move();
             match mode {
                 1 => camera.start_orbit(None),
@@ -170,7 +213,7 @@ fn camera_input(
             camera.send_zoom_input(scroll.delta.y * scale);
         }
     }
-    *previous_mode = mode;
+    input.previous_mode = mode;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -716,6 +759,109 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn camera_gesture_keeps_its_starting_surface_until_release() {
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            let mut buttons = ButtonInput::default();
+            let mut gesture = PointerGesture::default();
+            buttons.press(button);
+            assert!(!gesture.blocks_world(false, &buttons));
+            buttons.clear();
+            assert!(
+                !gesture.blocks_world(true, &buttons),
+                "World drag stopped over HUD"
+            );
+            buttons.release(button);
+            assert!(gesture.blocks_world(true, &buttons));
+            buttons.clear();
+            buttons.press(button);
+            assert!(gesture.blocks_world(true, &buttons));
+            buttons.clear();
+            assert!(
+                gesture.blocks_world(false, &buttons),
+                "HUD drag escaped into world"
+            );
+            buttons.release(button);
+            assert!(!gesture.blocks_world(false, &buttons));
+        }
+    }
+
+    #[test]
+    fn hud_blocks_camera_drag_even_when_egui_does_not_claim_it() {
+        let mut context = bevy_egui::EguiContext::default();
+        let draw = |root: &mut egui::Ui| {
+            egui::Window::new("HUD")
+                .fixed_pos([20.0, 20.0])
+                .fixed_size([280.0, 200.0])
+                .show(root.ctx(), |ui| {
+                    ui.label("Scene controls");
+                });
+        };
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..default()
+        };
+        let ctx = context.get_mut();
+        let _ = ctx.run_ui(input(Vec::new()), draw);
+        let _ = ctx.run_ui(
+            input(vec![
+                egui::Event::PointerMoved(egui::pos2(700.0, 500.0)),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(700.0, 500.0),
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: default(),
+                },
+            ]),
+            draw,
+        );
+        let _ = ctx.run_ui(
+            input(vec![egui::Event::PointerMoved(egui::pos2(80.0, 80.0))]),
+            draw,
+        );
+        // Egui deliberately does not claim a drag that began outside its panel.
+        // The application still reserves the HUD's hit area for its controls.
+        assert!(ctx.is_pointer_over_egui());
+        assert!(!ctx.egui_wants_pointer_input());
+
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<EguiUserTextures>()
+            .add_systems(Update, camera_input);
+        app.world_mut()
+            .spawn((context, bevy_egui::PrimaryEguiContext));
+        let camera = app.world_mut().spawn(PanOrbitCamera::default()).id();
+        for button in [Some(MouseButton::Right), Some(MouseButton::Middle), None] {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.reset_all();
+            if let Some(button) = button {
+                buttons.press(button);
+            }
+            app.world_mut()
+                .resource_mut::<AccumulatedMouseMotion>()
+                .delta = Vec2::new(50.0, 25.0);
+            app.world_mut()
+                .resource_mut::<AccumulatedMouseScroll>()
+                .delta
+                .y = 1.0;
+            app.update();
+            assert!(
+                !app.world()
+                    .get::<PanOrbitCamera>(camera)
+                    .unwrap()
+                    .current_motion
+                    .is_user_controlled(),
+                "HUD leaked {button:?}"
+            );
         }
     }
 
