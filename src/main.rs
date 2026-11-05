@@ -20,8 +20,8 @@ mod underwater;
 mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;
-mod volumetric;
 mod visitor;
+mod volumetric;
 
 use bevy::{
     app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},

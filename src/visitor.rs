@@ -96,7 +96,12 @@ fn startup(world: &mut World) {
     // Log the exact public tier contract; these counts are scene-specific, not quality settings.
     for scene in VisitorScene::ALL {
         for tier in PopulationTier::ALL {
-            debug!("{} / {}: {} animals", scene.name(), tier.name(), scene.population(tier));
+            debug!(
+                "{} / {}: {} animals",
+                scene.name(),
+                tier.name(),
+                scene.population(tier)
+            );
         }
     }
     apply(world, VisitorScene::default(), PopulationTier::default());
@@ -180,17 +185,22 @@ pub(crate) fn reset_view(world: &mut World) {
             projection.aspect_ratio,
             PerspectiveProjection::default().fov,
         ) * fraction;
-        *transform = Transform::from_translation(rotation * Vec3::Z * distance).with_rotation(rotation);
+        *transform =
+            Transform::from_translation(rotation * Vec3::Z * distance).with_rotation(rotation);
         orbit.current_motion = default();
         orbit.last_anchor_depth = -(distance as f64);
     }
-    world.resource_mut::<Presentation>().cancel_camera_transition();
+    world
+        .resource_mut::<Presentation>()
+        .cancel_camera_transition();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{formation::FormationMode, predator::PredatorPath, swarm::GroupRole, SimulationMode};
+    use crate::{
+        formation::FormationMode, predator::PredatorPath, swarm::GroupRole, SimulationMode,
+    };
 
     fn world() -> World {
         let mut world = World::new();
@@ -242,7 +252,11 @@ mod tests {
                 apply(&mut world, scene, PopulationTier::Medium);
                 assert_scene(&world, scene, PopulationTier::Medium);
             }
-            for lab in Species::FISH.into_iter().chain(Species::BIRDS).chain(Species::HUNTS) {
+            for lab in Species::FISH
+                .into_iter()
+                .chain(Species::BIRDS)
+                .chain(Species::HUNTS)
+            {
                 let mut world = world();
                 species::apply(&mut world, lab);
                 apply(&mut world, scene, PopulationTier::Medium);
@@ -292,16 +306,35 @@ mod tests {
     #[test]
     fn scene_and_tier_changes_restart_but_camera_reset_does_not() {
         let mut world = world();
-        apply(&mut world, VisitorScene::Murmuration, PopulationTier::Medium);
-        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 1);
+        apply(
+            &mut world,
+            VisitorScene::Murmuration,
+            PopulationTier::Medium,
+        );
+        assert_eq!(
+            world.resource::<crate::gpu_flock::FlockRestart>().requested,
+            1
+        );
         reset_view(&mut world);
-        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 1);
+        assert_eq!(
+            world.resource::<crate::gpu_flock::FlockRestart>().requested,
+            1
+        );
         apply(&mut world, VisitorScene::Murmuration, PopulationTier::High);
-        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 2);
+        assert_eq!(
+            world.resource::<crate::gpu_flock::FlockRestart>().requested,
+            2
+        );
         apply(&mut world, VisitorScene::Murmuration, PopulationTier::High);
-        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 3);
+        assert_eq!(
+            world.resource::<crate::gpu_flock::FlockRestart>().requested,
+            3
+        );
         apply(&mut world, VisitorScene::ReefDrift, PopulationTier::Low);
-        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 4);
+        assert_eq!(
+            world.resource::<crate::gpu_flock::FlockRestart>().requested,
+            4
+        );
     }
 
     #[test]
