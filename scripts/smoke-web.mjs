@@ -157,6 +157,15 @@ try {
 
   await page.keyboard.press('p');
   await page.waitForFunction(() => window.flockReport.scene.paused);
+  const worldClip = { x: 600, y: 150, width: 800, height: 650 };
+  await page.waitForTimeout(300);
+  const beforeHudDrag = await page.screenshot({ clip: worldClip });
+  await page.mouse.move(160, 165);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(250, 180, { steps: 8 });
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(300);
+  assert(beforeHudDrag.equals(await page.screenshot({ clip: worldClip })), 'Dragging the HUD must not move the world camera');
   // Egui renders into the canvas; these bounded clicks exercise the real HUD at scale factor 1.
   await page.mouse.click(48, 228);
   await page.waitForFunction(() => window.flockReport.scene.help);
@@ -226,15 +235,21 @@ try {
 
   await context.close();
 
-  const retina = await browser.newContext({ viewport: { width: 960, height: 540 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
-  const retinaPage = await retina.newPage();
-  const dpi = attach(retinaPage, 'high-dpi');
-  await retinaPage.goto(url.href, { waitUntil: 'domcontentloaded' });
-  await waitState(retinaPage);
-  await retinaPage.waitForFunction(() => document.querySelector('canvas').width === 1920);
-  dpi.report = await retinaPage.evaluate(() => window.flockReport);
-  await retinaPage.screenshot({ path: path.join(output, 'visitor-high-dpi.png') });
-  await retina.close();
+  // Chromium's device-pixel ResizeObserver does not follow a context-only DPR override.
+  // Force the browser display factor too, so winit receives a consistent 2x pixel extent.
+  const retinaArgs = [...args, '--force-device-scale-factor=2'];
+  const retinaBrowser = await chromium.launch({ executablePath: report.executable, headless: false, args: retinaArgs });
+  try {
+    const retina = await retinaBrowser.newContext({ viewport: { width: 960, height: 540 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
+    const retinaPage = await retina.newPage();
+    const dpi = attach(retinaPage, 'high-dpi');
+    dpi.args = retinaArgs;
+    await retinaPage.goto(url.href, { waitUntil: 'domcontentloaded' });
+    await waitState(retinaPage);
+    await retinaPage.waitForFunction(() => document.querySelector('canvas').width === 1920);
+    dpi.report = await retinaPage.evaluate(() => window.flockReport);
+    await retinaPage.screenshot({ path: path.join(output, 'visitor-high-dpi.png') });
+  } finally { await retinaBrowser.close(); }
 
   for (const [label, pattern] of [
     ['missing-environment', '**/*.flockenv'],
