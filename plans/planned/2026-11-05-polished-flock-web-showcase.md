@@ -42,7 +42,7 @@ Use the following prompt together with this ExecPlan:
 
 - [x] (2026-11-05 21:47Z) Inspected repository guidance, current source, completed plans, and remote household deployment conventions.
 - [x] (2026-11-05 21:50Z) Prepared the development prompt, staged PR sequence, proposed defaults, acceptance criteria, and release boundaries.
-- [ ] A0: Record the baseline, audit every preset, and establish the first visual target.
+- [x] (2026-11-05 22:40Z) A0: Captured startup and all fourteen original presets, recorded three motion clips including 24 seconds of Shark, repeated native rendered timings, and documented dispositions/art target in `plans/evidence/2026-11-05-showcase-baseline.md`.
 - [ ] A1: Prove the browser path and document capabilities and limitations.
 - [ ] A2–A5: Iterate on coherent scenes, visitor UI, visuals, and readable animal behavior.
 - [ ] A6–A7: Finish the browser experience and reproducible web/image release tooling.
@@ -53,6 +53,8 @@ Post-merge public verification and recording the deployed digest are deferred to
 
 ## Surprises & Discoveries
 
+- A0: Native baseline passes 204 tests (22 ignored), fmt and warning-free release build. World-fit framing makes species and hunters tiny; a close view reveals working pursuit/scatter. Existing low-poly assets do not yet warrant Blender changes. Two measured 30k Shark runs differ materially (3.684/2.508 ms means), so report both rather than claiming a fixed cost.
+
 - This is already a substantial visual application. It has animated fish and birds, shark/falcon/tuna hunters, HDR environments, underwater caustics, shadows, volumetrics, motion blur, depth of field, and cinematic cameras. Adding effects is not the initial problem.
 - Showcase applies a full scene, while Species preserves environment, camera, backend, and some surrounding state. Similar-looking controls therefore have different consequences (`src/showcase.rs` and `src/species.rs`).
 - Several older fish and murmuration presets use invisible orbiting flee fields. The explicit hunt examples use visible animals, but preserve the previous environment and camera.
@@ -62,6 +64,10 @@ Post-merge public verification and recording the deployed digest are deferred to
 - CRONA uses K3s/Flux with an internal Traefik ingress. Public HTTPS exposure follows the existing Cloudflare Tunnel and DNS configuration owned by household-infra.
 
 ## Decision Log
+
+- Decision: Start with three public scenes, preserve other presets as labeled Lab experiments, and fix composition before changing steering.
+  Rationale: All fourteen captures show a presentation/consistency gap; existing close-up animal detail and hunt mechanics are usable.
+  Date: 2026-11-05.
 
 - Decision: Plan first; do not start implementation during this preparation pass.
   Rationale: The owner explicitly selected preparation of the goal and PR plan.
@@ -100,6 +106,8 @@ Post-merge public verification and recording the deployed digest are deferred to
 - **Production access:** Read-only repository inspection does not establish permission or ability to run production workflows. Prepare the concrete PRs, plans, validation, and runbook first. Identify unavailable credentials or required owner actions precisely.
 
 ## Outcomes & Retrospective
+
+A0 delivered: complete fourteen-preset disposition audit, native startup/scene captures, fixed-step motion clips, repeat timings, and a three-scene art target. Native baseline checks pass; browser implementation is in progress.
 
 Planning delivered: a reusable development prompt, repository-backed gap analysis, staged PR plan, observable acceptance criteria, and household release ordering. No runtime quality or browser-performance claims have been verified in this planning pass.
 
