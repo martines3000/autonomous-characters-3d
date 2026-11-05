@@ -26,7 +26,7 @@ impl Plugin for BrowserAssetsPlugin {
             };
             _app.register_asset_source(
                 AssetSourceId::Default,
-                AssetSourceBuilder::new().with_reader(|| Box::new(web::CatalogReader::new())),
+                AssetSourceBuilder::new(|| Box::new(web::CatalogReader::new())),
             );
         }
     }
@@ -118,7 +118,7 @@ mod web {
             &'a self,
             _path: &'a std::path::Path,
         ) -> Result<Box<bevy::asset::io::PathStream>, bevy::asset::io::AssetReaderError> {
-            Ok(Box::new(bevy::asset::io::EmptyPathStream))
+            Ok(Box::new(bevy::tasks::futures_lite::stream::empty()))
         }
         async fn is_directory<'a>(
             &'a self,
