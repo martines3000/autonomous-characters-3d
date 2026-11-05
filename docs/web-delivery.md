@@ -31,7 +31,9 @@ requires GNU `realpath`, `flock` and `pgrep` and has only been tested on Linux.
 The build script holds `/tmp/ac3d-heavy.lock`, rejects another Cargo process, and limits Cargo to four
 jobs. Coordinate desktop sessions and performance measurements with other workers as described in
 `AGENTS.md`. `CARGO_TARGET_DIR`, `AC3D_BUILD_LOCK` and `AC3D_WEB_OUTPUT` can override the build
-directory, shared lock and output directory. Use the same shared lock across worktrees.
+directory, shared lock and output directory. `AC3D_NATIVE_TARGET_DIR` can reuse a separate native
+cache for the exporter. That cache's release binary is replaced by this source build. Rebuild the
+other checkout before launching its binary. Use the same shared lock across worktrees.
 
 The script first builds the native release binary and invokes its headless
 `AC3D_EXPORT_WEB_ASSETS` entry point. It exports the exact native half-float sky, irradiance and GGX

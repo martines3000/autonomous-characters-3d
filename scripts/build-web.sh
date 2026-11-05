@@ -22,14 +22,15 @@ fi
 
 task_target=${CARGO_TARGET_DIR:-target}
 task_target=$(realpath -m -- "$task_target")
+task_native_target=$(realpath -m -- "${AC3D_NATIVE_TARGET_DIR:-$task_target}")
 task_output=${AC3D_WEB_OUTPUT:-dist}
 task_output=$(realpath -m -- "$task_output")
 task_staging=$(mktemp -d)
 trap 'python3 -c "import shutil, sys; shutil.rmtree(sys.argv[1])" "$task_staging"' EXIT
 
-cargo build --release --locked
+CARGO_TARGET_DIR="$task_native_target" cargo build --release --locked
 AC3D_EXPORT_WEB_ASSETS="$task_staging/assets/environment" CARGO_MANIFEST_DIR="$PWD" \
-  "$task_target/release/autonomous-characters-3d"
+  "$task_native_target/release/autonomous-characters-3d"
 cargo build --profile web-release --locked --target wasm32-unknown-unknown
 wasm-bindgen --target web --no-typescript --remove-name-section --remove-producers-section \
   --out-name flock --out-dir "$task_staging" \
