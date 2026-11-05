@@ -568,11 +568,9 @@ fn cursor_point(
     contexts: &mut EguiContexts,
     mode: AttractorMode,
 ) -> Option<Vec3> {
-    let blocked = contexts.ctx_mut().is_ok_and(|ctx| {
-        ctx.egui_wants_keyboard_input()
-            || ctx.egui_wants_pointer_input()
-            || ctx.is_pointer_over_egui()
-    });
+    let blocked = contexts
+        .ctx_mut()
+        .is_ok_and(|ctx| ctx.egui_wants_keyboard_input() || crate::ui_blocks_pointer(ctx));
     if blocked || !keys.pressed(KeyCode::KeyF) || mode == AttractorMode::Off {
         return None;
     }
