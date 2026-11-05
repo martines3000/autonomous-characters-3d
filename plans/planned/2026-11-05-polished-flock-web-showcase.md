@@ -53,7 +53,7 @@ Post-merge public verification and recording the deployed digest are deferred to
 
 ## Surprises & Discoveries
 
-- A0: Native baseline passes 204 tests (22 ignored), fmt and warning-free release build. World-fit framing makes species and hunters tiny; a close view reveals working pursuit/scatter. Existing low-poly assets do not yet warrant Blender changes. Two measured 30k Shark runs differ materially (3.684/2.508 ms means), so report both rather than claiming a fixed cost.
+- A0: Native baseline passes 204 tests (22 ignored), fmt and warning-free release build. World-fit framing makes species and hunters tiny; the legacy Close-up clip also fails visual encounter readability. Existing low-poly assets do not yet warrant Blender changes. Two measured 30k Shark runs differ materially (3.684/2.508 ms means), so report both rather than claiming a fixed cost.
 
 - This is already a substantial visual application. It has animated fish and birds, shark/falcon/tuna hunters, HDR environments, underwater caustics, shadows, volumetrics, motion blur, depth of field, and cinematic cameras. Adding effects is not the initial problem.
 - Showcase applies a full scene, while Species preserves environment, camera, backend, and some surrounding state. Similar-looking controls therefore have different consequences (`src/showcase.rs` and `src/species.rs`).
