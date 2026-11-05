@@ -87,6 +87,7 @@ mod web {
             help: bool,
             name: &str,
             simulation_seconds: f64,
+            camera: &str,
         );
     }
 
@@ -291,6 +292,13 @@ mod web {
                 visitor.help,
                 visitor.scene.name(),
                 clock.0.elapsed_secs_f64(),
+                if presentation.follow.enabled() || presentation.director.enabled {
+                    "ride"
+                } else if presentation.orbit {
+                    "scenic"
+                } else {
+                    "free"
+                },
             );
         }
     }
