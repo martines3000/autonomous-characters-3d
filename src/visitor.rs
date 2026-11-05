@@ -153,6 +153,13 @@ pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier
     }
     species::apply(world, scene.species());
     world.resource_mut::<GlobalState>().vehicle_count = scene.population(tier);
+    if scene == VisitorScene::SharkHunt {
+        let mut state = world.resource_mut::<GlobalState>();
+        // Give wide shots a clear predator silhouette and time to read each committed pass.
+        // The shared pursuit, lunge, panic and recovery rules remain the existing CPU/GPU contract.
+        state.groups.table[1].size_scale = 8.0;
+        state.groups.table[1].speed_scale = 1.0;
+    }
     world.init_resource::<crate::gpu_flock::FlockRestart>();
     {
         let mut restart = world.resource_mut::<crate::gpu_flock::FlockRestart>();
