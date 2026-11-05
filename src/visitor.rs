@@ -102,8 +102,8 @@ fn startup(world: &mut World) {
     apply(world, VisitorScene::default(), PopulationTier::default());
 }
 
-/// Scene selection restores the complete scene while retaining surviving vehicle identities.
-/// It does not reseed the simulation. Pause, UI visibility and reduced camera motion survive.
+/// Scene and population selection restart a scattered flock inside the selected scene domain.
+/// Pause, UI visibility, reduced camera motion and help survive; Lab edits keep their own continuity.
 /// Model cancellation renews its generation so a previous scene cannot complete over this one.
 pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier) {
     let (paused, ui_visible) = {
@@ -120,6 +120,11 @@ pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier
     }
     species::apply(world, scene.species());
     world.resource_mut::<GlobalState>().vehicle_count = scene.population(tier);
+    world.init_resource::<crate::gpu_flock::FlockRestart>();
+    {
+        let mut restart = world.resource_mut::<crate::gpu_flock::FlockRestart>();
+        restart.requested = restart.requested.wrapping_add(1);
+    }
     // Public scenes never use an invisible threat or an artistic formation.
     world.resource_mut::<SwarmScene>().predators = default();
     {
@@ -282,6 +287,21 @@ mod tests {
         let appearance = world.resource::<Appearance>();
         assert_eq!(appearance.active_environment(), Environment::Sunset);
         assert!(!appearance.environment_ready());
+    }
+
+    #[test]
+    fn scene_and_tier_changes_restart_but_camera_reset_does_not() {
+        let mut world = world();
+        apply(&mut world, VisitorScene::Murmuration, PopulationTier::Medium);
+        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 1);
+        reset_view(&mut world);
+        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 1);
+        apply(&mut world, VisitorScene::Murmuration, PopulationTier::High);
+        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 2);
+        apply(&mut world, VisitorScene::Murmuration, PopulationTier::High);
+        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 3);
+        apply(&mut world, VisitorScene::ReefDrift, PopulationTier::Low);
+        assert_eq!(world.resource::<crate::gpu_flock::FlockRestart>().requested, 4);
     }
 
     #[test]
