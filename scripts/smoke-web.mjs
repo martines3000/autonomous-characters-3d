@@ -87,7 +87,7 @@ try {
   const first = await page.screenshot({ path: path.join(output, 'visitor-start-1080p.png') });
   assert(first.length > 32_000, 'Presented screenshot looks blank; inspect the artifact and browser GPU/compositor support');
 
-  for (let run = 1; run <= 2; run++) {
+  for (let run = 1; run <= (process.env.AC3D_SKIP_PERFORMANCE === '1' ? 0 : 2); run++) {
     if (run === 2) {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitState(page);
@@ -156,6 +156,9 @@ try {
   await page.keyboard.press('p');
   await page.waitForFunction(() => !window.flockReport.scene.paused);
 
+  // Playwright otherwise forces every page to remain visible, even when another tab is active.
+  const pageCdp = await context.newCDPSession(page);
+  await pageCdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
   const background = await context.newPage();
   await background.goto('about:blank');
   await background.bringToFront();
@@ -168,6 +171,7 @@ try {
   await page.bringToFront();
   await page.waitForFunction(() => !document.hidden && !window.flockReport.scene.paused, undefined, { timeout: 10_000 });
   await background.close();
+  await pageCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
 
   await page.setViewportSize({ width: 900, height: 900 });
   await page.waitForFunction(() => document.querySelector('canvas').width === 900);
