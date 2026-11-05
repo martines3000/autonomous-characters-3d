@@ -89,6 +89,8 @@ The compact **FLOCK** panel exposes Scene, Flock size, Pause, Scenic/Ride/Free c
 Help and Reduced camera motion. Scenic uses a slow orbit; Ride follows one animal; Free stops
 automatic movement. Reduced camera motion keeps the composed view still. **H** hides/restores the
 interface and **P** pauses animals. Camera drag, pan and scroll remain available over the world.
+Drags keep the surface where they begin until release: HUD drags stay in the HUD, while world drags
+continue across it. With no active world drag, scrolling over the HUD keeps the world camera still.
 
 **Lab** opens the original menus, backend selection, imports, numeric settings and FPS/target
 diagnostics. **Back to showcase** restores the last complete public scene and restarts its flock.
