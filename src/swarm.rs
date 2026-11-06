@@ -148,14 +148,16 @@ impl SchoolGuide {
             return Vec3::ZERO;
         }
         let distance = offset.length();
+        let mut flow_delta = delta;
         let correction = if distance > self.radius {
-            -offset / distance
-                * max_speed
-                * ((distance - self.radius) / self.radius).clamp(0.0, 1.0)
+            let outward = offset / distance;
+            // Outside fish inherit the nearest capsule flow, not an ever faster orbit.
+            flow_delta = delta - offset + outward * self.radius;
+            -outward * max_speed * ((distance - self.radius) / self.radius).clamp(0.0, 1.0)
         } else {
             Vec3::ZERO
         };
-        let flow = self.velocity + self.angular_velocity.cross(delta);
+        let flow = self.velocity + self.angular_velocity.cross(flow_delta);
         if !flow.is_finite() {
             return Vec3::ZERO;
         }
@@ -824,6 +826,42 @@ mod tests {
             overflowing.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 40.0, 2.0),
             Vec3::ZERO
         );
+    }
+
+    #[test]
+    fn rotating_school_guide_bounds_far_outside_flow_and_recovers_both_ends() {
+        let guide = SchoolGuide {
+            center: Vec3::new(100.0, -20.0, 50.0),
+            velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::Y * 0.25,
+            half_length: 20.0,
+            radius: 5.0,
+        };
+        for (outward, boundary) in [
+            (Vec3::X, Vec3::X * 25.0),
+            (Vec3::NEG_X, Vec3::NEG_X * 25.0),
+            (Vec3::Z, Vec3::Z * 5.0),
+            (Vec3::NEG_Z, Vec3::NEG_Z * 5.0),
+        ] {
+            let expected = crate::hunter::limit(
+                guide.velocity + guide.angular_velocity.cross(boundary) - outward * 40.0,
+                40.0,
+            ) - guide.velocity;
+            for distance in [1_000.0, 1_000_000.0] {
+                let force = guide.force(
+                    guide.center + outward * distance,
+                    guide.velocity,
+                    40.0,
+                    2.0,
+                );
+                assert!((force - expected).length() < 1e-5);
+                assert!(force.dot(outward) < 0.0);
+                assert!((force + guide.velocity).length() <= 40.0 + 1e-5);
+            }
+        }
+        let front = guide.force(guide.center + Vec3::X * 1_000.0, guide.velocity, 40.0, 2.0);
+        let rear = guide.force(guide.center - Vec3::X * 1_000.0, guide.velocity, 40.0, 2.0);
+        assert!(front.z < 0.0 && rear.z > 0.0);
     }
 
     #[test]

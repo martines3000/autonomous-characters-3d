@@ -247,10 +247,14 @@ fn school_guide_force(position: vec3<f32>, velocity: vec3<f32>, guide: vec4<f32>
     let distance = length(offset);
     let radius = -guide.w;
     var correction = vec3<f32>(0.0);
+    var flow_delta = delta;
     if distance > radius {
-        correction = -normalize_or_zero(offset) * max_speed * clamp((distance - radius) / radius, 0.0, 1.0);
+        let outward = normalize_or_zero(offset);
+        // Match the capsule boundary flow while preserving inward recovery.
+        flow_delta = delta - offset + outward * radius;
+        correction = -outward * max_speed * clamp((distance - radius) / radius, 0.0, 1.0);
     }
-    let local_flow = flow.xyz + cross(turn, delta);
+    let local_flow = flow.xyz + cross(turn, flow_delta);
     // Match Rust's finite-flow guard before clamping an overflowing cross product.
     if !all(abs(local_flow) <= vec3<f32>(3.402823466e38)) { return vec3<f32>(0.0); }
     let desired = limit(local_flow + correction, max_speed);
