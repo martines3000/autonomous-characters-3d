@@ -18,8 +18,9 @@ Merge each application PR into `master` in the order below. Current PR bases poi
 | 6 | [#17](https://github.com/martines3000/autonomous-characters-3d/pull/17) | autonomous-characters-3d | Ready | A1/A6 shared WebGPU runtime, assets, loading/errors, input and recovery. After #16. |
 | 7 | [#18](https://github.com/martines3000/autonomous-characters-3d/pull/18) | autonomous-characters-3d | Ready | A7 reproducible web/static Docker tooling and manual publication. After #17. |
 | 8 | [#19](https://github.com/martines3000/autonomous-characters-3d/pull/19) | autonomous-characters-3d | Ready | This review index and completed plan. Documentation only, after #18. |
-| 9 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires merged application, real published registry digest and pull proof. |
-| 10 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
+| 9 | [#20](https://github.com/martines3000/autonomous-characters-3d/pull/20) | autonomous-characters-3d | Ready | Owner-review follow-up: visible Another animal control in Ride. Native/browser checks pass; [follow-up evidence](2026-11-06-owner-feedback.md). After #19. |
+| 10 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires merged application, real published registry digest and pull proof. |
+| 11 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
 
 The deployment gaps are deliberate review boundaries, not completed production tests. Perform publication and rollout only in the separately authorized release session.
 
@@ -43,6 +44,7 @@ git push --force-with-lease origin <child-branch>
 | #18 `codex/showcase-web-release` | `da99886929c2e1944db7c3cd171286bd15313291` |
 
 The handoff child is `codex/showcase-morning-review` (#19), with recorded parent tip `34d3e5dad6bea1be2e9ac797a65564d9248c4697`.
+The owner-review follow-up is `codex/showcase-ride-switch` (#20), with recorded parent tip `64d7022d57da50bbe3715b7ccb5d1c676c8820bc`. Rebase and retarget it after #19, before publishing the final application image. Its native/browser runtime validation is recorded separately in the [follow-up evidence](2026-11-06-owner-feedback.md); the original measurements below retain their original source commits.
 
 The eventual published source commit will differ from these feature tips after squash/rebase. Build and record that actual merged source; do not copy a review SHA into deployment provenance.
 
