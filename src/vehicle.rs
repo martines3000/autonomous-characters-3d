@@ -856,6 +856,8 @@ mod tests {
     use rand::{rngs::StdRng, SeedableRng};
     use std::time::{Duration, Instant};
 
+    include!("schooling_metrics.rs");
+
     #[test]
     #[ignore = "headless performance measurement; run in release with --nocapture --test-threads=1"]
     fn flocking_benchmark() {
