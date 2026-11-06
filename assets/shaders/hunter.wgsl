@@ -115,7 +115,7 @@ fn hunt(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invocation_index) l
     hunters[output+2u] = rotation;
     let flee = u32(params.attractor_strength.z)+i*2u;
     arena[flee] = bitcast<vec4<u32>>(vec4<f32>(position,24.0*scale));
-    arena[flee+1u] = vec4<u32>(255u,0u,0u,0u);
+    arena[flee+1u] = vec4<u32>(255u,bitcast<vec3<u32>>(velocity));
     let packed = 0x3f800000u | u32(floor(clamp(length(velocity)/max(params.max_speed,1.1920929e-7),0.0,1.0)*65535.0+0.5)) | (group<<16u);
     instances[i*3u] = vec4<f32>(position,bitcast<f32>(packed));
     instances[i*3u+1u] = rotation;
