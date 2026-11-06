@@ -122,6 +122,13 @@ pub(crate) fn prepare_frame(
     }
 }
 
+pub(crate) fn encounter_focus(state: &GlobalState) -> Option<Vec3> {
+    let guide = state.groups.guide(0)?;
+    // Aligned fish travel toward the leading end of the corridor. Frame that activity,
+    // rather than leaving the guide's largely empty rear half in the center of the shot.
+    Some(guide.center + guide.velocity.normalize_or_zero() * guide.half_length)
+}
+
 /// Scenic follows the encounter's soft envelope; Free, Ride and reduced motion own their views.
 pub(crate) fn track_encounter(
     motion: Option<Res<SchoolMotion>>,
@@ -140,14 +147,14 @@ pub(crate) fn track_encounter(
     {
         return;
     }
-    let Some(guide) = state.groups.guide(0) else {
+    let Some(center) = encounter_focus(&state) else {
         return;
     };
     let blend = 1.0 - (-presentation.camera_dt(&real) * 2.0).exp();
     for (mut transform, orbit) in &mut cameras {
         let focus =
             transform.translation + transform.forward() * orbit.last_anchor_depth().abs() as f32;
-        transform.translation += (guide.center - focus) * blend;
+        transform.translation += (center - focus) * blend;
     }
 }
 

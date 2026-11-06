@@ -205,10 +205,7 @@ pub(crate) fn reset_view(world: &mut World) {
     let scene = world.resource::<Visitor>().scene;
     let reduced_motion = world.resource::<Visitor>().reduced_motion;
     let focus = if scene == VisitorScene::SharkHunt && !reduced_motion {
-        state
-            .groups
-            .guide(0)
-            .map_or(Vec3::ZERO, |guide| guide.center)
+        crate::schooling::encounter_focus(state).unwrap_or(Vec3::ZERO)
     } else {
         Vec3::ZERO
     };
@@ -216,7 +213,7 @@ pub(crate) fn reset_view(world: &mut World) {
         // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
         VisitorScene::Murmuration => (225.0, -3.0, 0.65),
         VisitorScene::ReefDrift => (20.0, 3.0, 1.10),
-        VisitorScene::SharkHunt => (15.0, 3.0, if reduced_motion { 1.15 } else { 0.80 }),
+        VisitorScene::SharkHunt => (15.0, 3.0, if reduced_motion { 1.15 } else { 0.90 }),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
     for (mut transform, mut orbit, projection) in world
