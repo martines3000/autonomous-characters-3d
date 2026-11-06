@@ -127,7 +127,7 @@ Post-merge public verification and recording the deployed digest are deferred to
 
 Execution complete at review handoff. The application stack delivers three coherent GPU scenes, a compact visitor HUD/Lab, explicit safe restarts, composed first views, readable public shark tuning, shared native/WebGPU runtime and reproducible static release tooling. Native 219 tests and 20 GPU regressions pass; both Clippy targets retain seven baseline warnings. All nine browser tiers pass repeated 1080p measurements near 60 Hz. Two builds reproduce 32 identical files. Cluster/routing PRs are validated drafts. See the morning index for PR links, merge order, immutable evidence, device/payload/capture limitations and exact release prerequisites. No production action or human taste approval is claimed.
 
-A1–A3 interim outcome: real headed browser rendering is feasible; native visitor state/HUD and public restarts are implemented and tested. Browser visitor-flow validation and art/performance acceptance remain open. C1/I1 draft preparation is complete with truthful publication/health blockers.
+Earlier A1–A3 interim outcome: real headed browser rendering was feasible and native visitor state/HUD and public restarts were tested. Browser flow and art/performance acceptance were still open at that milestone; they are complete in the final outcome above. C1/I1 retain their explicit release prerequisites.
 
 A0 delivered: complete fourteen-preset disposition audit, native startup/scene captures, fixed-step motion clips, repeat timings, and a three-scene art target. Native baseline checks pass; browser implementation is in progress.
 
