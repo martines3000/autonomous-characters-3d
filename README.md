@@ -23,7 +23,7 @@ Open **Lab** for simulation settings, CPU reference modes, custom models and up 
 
 - Right-drag to orbit, middle-drag to pan, scroll to zoom.
 - **P** pauses; **H** hides the interface.
-- **B** cycles Chase, First person and Off; **N** picks another animal.
+- **Ride** follows one animal; **B** cycles Chase, First person and Off; **N** picks another.
 - In Shark hunt, **Ride with → Fish / Shark** chooses your subject.
 
 ## More

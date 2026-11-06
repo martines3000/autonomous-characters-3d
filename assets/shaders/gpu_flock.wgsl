@@ -91,7 +91,19 @@ struct Instance {
 // Group/slot/ID/reserved values stay in the table; z is the input order-map base, w capacity.
 // Scene records begin at 5*capacity/2 and share this eighth binding.
 // Spheres use two float-bitcast records: center/radius, clearance/reserved.
-@group(0) @binding(8) var<storage, read_write> arena: array<vec4<u32>>;
+// Four scalar fields preserve the 16-byte record without Metal vector stores
+// racing between invocations that own adjacent packed order entries.
+struct ArenaRecord { x: u32, y: u32, z: u32, w: u32 }
+@group(0) @binding(8) var<storage, read_write> arena: array<ArenaRecord>;
+
+fn arena_value(index: u32) -> vec4<u32> {
+    let record = arena[index];
+    return vec4<u32>(record.x, record.y, record.z, record.w);
+}
+
+fn store_arena(index: u32, value: vec4<u32>) {
+    arena[index] = ArenaRecord(value.x, value.y, value.z, value.w);
+}
 
 override GROUPS_ENABLED: bool = false;
 override OBSTACLES_ENABLED: bool = false;
@@ -117,11 +129,17 @@ fn prey_group(id: u32) -> u32 {
 }
 
 fn read_order(base: u32, index: u32) -> u32 {
-    return arena[2u * params.groups.w + base + index / 4u][index % 4u];
+    return arena_value(2u * params.groups.w + base + index / 4u)[index % 4u];
 }
 
 fn write_order(base: u32, index: u32, record: u32) {
-    arena[2u * params.groups.w + base + index / 4u][index % 4u] = record;
+    let slot = 2u * params.groups.w + base + index / 4u;
+    switch index % 4u {
+        case 0u: { arena[slot].x = record; }
+        case 1u: { arena[slot].y = record; }
+        case 2u: { arena[slot].z = record; }
+        default: { arena[slot].w = record; }
+    }
 }
 
 // Maintenance uses current record order, not sorted identity. counts/starts are spare until
@@ -151,7 +169,7 @@ fn formation_scan(@builtin(local_invocation_index) group: u32) {
     workgroupBarrier();
     var base = 0u;
     for (var other = 0u; other < group; other += 1u) { base += formation_totals[other]; }
-    arena[params.formation.w + group] = vec4<u32>(base, total, arena[params.formation.w + group].zw);
+    store_arena(params.formation.w + group, vec4<u32>(base, total, arena_value(params.formation.w + group).zw));
     for (var block = 0u; block < params.formation.z; block += 1u) {
         starts[block * 8u + group] = base;
         base += atomicLoad(&counts[block * 8u + group]);
@@ -168,7 +186,7 @@ fn formation_assign(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 fn formation_target(slot: u32, group: u32) -> vec3<f32> {
-    let range = arena[params.formation.w + group].xy;
+    let range = arena_value(params.formation.w + group).xy;
     let local_slot = slot - range.x;
     let u = (f32(local_slot) + 0.5) / f32(max(range.y, 1u));
     let y = 1.0 - 2.0 * u;
@@ -396,7 +414,7 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     boids[index] = Boid(position, 0.0, velocity, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
     if params.motion.y == 0.0 { boids[index].rotation = upright_target(heading_rotation(direction),direction,vec3<f32>(0.0)); }
-    arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
+    store_arena(index, vec4<u32>(spawn_id, group, 0u, 0u));
     write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
     instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f800000u | speed_bits | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
@@ -404,8 +422,8 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     if params.motion.w >= 0.0 {
         let history = params.obstacles.z + index * 2u;
         let output = params.obstacles.w + index * 2u;
-        arena[history] = bitcast<vec4<u32>>(vec4<f32>(position, 0.0));
-        arena[history + 1u] = bitcast<vec4<u32>>(boids[index].rotation);
+        store_arena(history, bitcast<vec4<u32>>(vec4<f32>(position, 0.0)));
+        store_arena(history + 1u, bitcast<vec4<u32>>(boids[index].rotation));
         arena[output] = arena[history];
         arena[output + 1u] = arena[history + 1u];
     }
@@ -587,7 +605,7 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     var max_speed = params.max_speed;
     var speed_scale = 1.0;
     if GROUPS_ENABLED && SCALES_ENABLED {
-        let scales = bitcast<vec2<f32>>(arena[params.formation.w + group].zw);
+        let scales = bitcast<vec2<f32>>(arena_value(params.formation.w + group).zw);
         if scales.y > 0.0 { speed_scale = scales.y; max_speed *= speed_scale; }
     }
     var panic = 0.0;
@@ -696,8 +714,8 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         let length_squared = dot(segment, segment);
         var avoidance = vec3<f32>(0.0);
         for (var i = 0u; i < params.obstacles.y; i += 1u) {
-            let sphere = bitcast<vec4<f32>>(arena[params.obstacles.x + i * 2u]);
-            let clearance = bitcast<vec4<f32>>(arena[params.obstacles.x + i * 2u + 1u]).x * params.obstacle_settings.z;
+            let sphere = bitcast<vec4<f32>>(arena_value(params.obstacles.x + i * 2u));
+            let clearance = bitcast<vec4<f32>>(arena_value(params.obstacles.x + i * 2u + 1u)).x * params.obstacle_settings.z;
             var t = 0.0;
             if length_squared > 0.0 { t = clamp(dot(sphere.xyz - position, segment) / length_squared, 0.0, 1.0); }
             let offset = position + segment * t - sphere.xyz;
@@ -719,7 +737,7 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     if PREDATORS_ENABLED {
         var flee = vec3<f32>(0.0);
         for (var i = 0u; i < params.predators.y; i += 1u) {
-            let predator = bitcast<vec4<f32>>(arena[params.predators.x + i * 2u]);
+            let predator = bitcast<vec4<f32>>(arena_value(params.predators.x + i * 2u));
             let mask = arena[params.predators.x + i * 2u + 1u].x;
             if (mask & (1u << group)) == 0u { continue; }
             let offset = position - predator.xyz;
@@ -736,7 +754,7 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         panic = max(0.0, clamp(bitcast<f32>(arena[record].w),0.0,0.65) - params.dt);
         var flee = vec3<f32>(0.0);
         for (var i = 0u; i < u32(params.attractor_strength.y); i += 1u) {
-            let hunter = bitcast<vec4<f32>>(arena[u32(params.attractor_strength.z) + i*2u]);
+            let hunter = bitcast<vec4<f32>>(arena_value(u32(params.attractor_strength.z) + i*2u));
             let offset = position-hunter.xyz;
             let distance = length(offset);
             let weight = 1.0-clamp(distance/hunter.w,0.0,1.0);
@@ -815,8 +833,8 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
         let record = read_order(stepped_order_base(), index);
         let history = params.obstacles.z + record * 2u;
         if params.motion.w == 0.0 {
-            arena[history] = bitcast<vec4<u32>>(vec4<f32>(me.position, 0.0));
-            arena[history + 1u] = bitcast<vec4<u32>>(me.rotation);
+            store_arena(history, bitcast<vec4<u32>>(vec4<f32>(me.position, 0.0)));
+            store_arena(history + 1u, bitcast<vec4<u32>>(me.rotation));
         }
         let output = params.obstacles.w + index * 2u;
         arena[output] = arena[history];
@@ -836,8 +854,8 @@ fn initialize_history(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let record = read_order(base, i);
     let history = params.obstacles.z + record * 2u;
     let output = params.obstacles.w + i * 2u;
-    arena[history] = bitcast<vec4<u32>>(vec4<f32>(boid.position, 0.0));
-    arena[history + 1u] = bitcast<vec4<u32>>(boid.rotation);
+    store_arena(history, bitcast<vec4<u32>>(vec4<f32>(boid.position, 0.0)));
+    store_arena(history + 1u, bitcast<vec4<u32>>(boid.rotation));
     arena[output] = arena[history];
     arena[output + 1u] = arena[history + 1u];
 }
@@ -850,19 +868,19 @@ fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if params.track.x == 3u {
         if i != 0u || params.track.y >= u32(params.attractor_strength.y) { return; }
         let record = u32(params.attractor_strength.z) + params.track.y * 2u;
-        let position = bitcast<vec4<f32>>(arena[record]).xyz;
-        let velocity = bitcast<vec3<f32>>(arena[record + 1u].yzw);
+        let position = bitcast<vec4<f32>>(arena_value(record)).xyz;
+        let velocity = bitcast<vec3<f32>>(arena_value(record + 1u).yzw);
         var rotation = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         if length(velocity) > EPSILON {
             let direction = normalize(velocity);
             rotation = upright_target(heading_rotation(direction), direction, vec3<f32>(0.0));
         }
         let output = params.track.w;
-        arena[output] = bitcast<vec4<u32>>(vec4<f32>(position, 0.0));
-        arena[output + 1u] = bitcast<vec4<u32>>(vec4<f32>(velocity, 0.0));
-        arena[output + 2u] = bitcast<vec4<u32>>(rotation);
-        arena[output + 3u] = vec4<u32>(0u);
-        arena[output + 4u] = vec4<u32>(params.track.y, params.track.z, 1u, 1u);
+        store_arena(output, bitcast<vec4<u32>>(vec4<f32>(position, 0.0)));
+        store_arena(output + 1u, bitcast<vec4<u32>>(vec4<f32>(velocity, 0.0)));
+        store_arena(output + 2u, bitcast<vec4<u32>>(rotation));
+        store_arena(output + 3u, vec4<u32>(0u));
+        store_arena(output + 4u, vec4<u32>(params.track.y, params.track.z, 1u, 1u));
         return;
     }
     if i >= params.count { return; }
@@ -873,10 +891,10 @@ fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
        (params.track.x == 2u && i == params.track.y) {
         let boid = boids[i];
         let output = params.track.w;
-        arena[output] = bitcast<vec4<u32>>(vec4<f32>(boid.position, boid.wander_theta));
-        arena[output + 1u] = bitcast<vec4<u32>>(vec4<f32>(boid.velocity, boid.wander_phi));
-        arena[output + 2u] = bitcast<vec4<u32>>(boid.rotation);
-        arena[output + 3u] = bitcast<vec4<u32>>(boid.separation);
-        arena[output + 4u] = vec4<u32>(spawn_id, params.track.z, 1u, 0u);
+        store_arena(output, bitcast<vec4<u32>>(vec4<f32>(boid.position, boid.wander_theta)));
+        store_arena(output + 1u, bitcast<vec4<u32>>(vec4<f32>(boid.velocity, boid.wander_phi)));
+        store_arena(output + 2u, bitcast<vec4<u32>>(boid.rotation));
+        store_arena(output + 3u, bitcast<vec4<u32>>(boid.separation));
+        store_arena(output + 4u, vec4<u32>(spawn_id, params.track.z, 1u, 0u));
     }
 }

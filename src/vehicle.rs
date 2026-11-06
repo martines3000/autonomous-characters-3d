@@ -2906,7 +2906,11 @@ mod tests {
             &queue,
             &gpu_params(&state, Vec3::ZERO, false, 0.0),
         );
-        let id = flock.read_boids(&device, &queue)[13].metadata.x;
+        let initial = flock.read_boids(&device, &queue);
+        let mut ids: Vec<_> = initial.iter().map(|boid| boid.metadata.x).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..257).collect::<Vec<_>>(), "spawn lost identities");
+        let id = initial[13].metadata.x;
         for frame in 0..12 {
             if frame == 3 {
                 state.vehicle_count = 777;
@@ -2918,11 +2922,15 @@ mod tests {
             }
             params.track = UVec4::new(1, id, (frame as f32 / 60.0).to_bits(), 0);
             gpu_step(&mut flock, &device, &queue, &params);
-            let actual = flock
-                .read_boids(&device, &queue)
-                .into_iter()
-                .find(|b| b.metadata.x == id)
-                .unwrap();
+            let boids = flock.read_boids(&device, &queue);
+            let mut ids: Vec<_> = boids.iter().map(|boid| boid.metadata.x).collect();
+            ids.sort_unstable();
+            assert_eq!(
+                ids,
+                (0..state.vehicle_count as u32).collect::<Vec<_>>(),
+                "sort lost or duplicated identities at frame {frame}"
+            );
+            let actual = boids.into_iter().find(|b| b.metadata.x == id).unwrap();
             let tracked = flock.read_track(&device, &queue);
             assert_eq!(tracked[4], UVec4::new(id, params.track.z, 1, 0));
             for (record, expected) in tracked[..4].iter().zip(actual.state) {

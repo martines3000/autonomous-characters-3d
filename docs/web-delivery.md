@@ -7,7 +7,8 @@ graphics device, database or persistent volume.
 The first release targets desktop WebGPU. Native development and the CPU reference modes remain
 available. WebGL cannot run this compute simulation. Mobile interaction, Safari, Firefox and other
 GPUs require device-specific verification. The recorded browser checks use desktop Chromium on
-Linux with an AMD RDNA 3 adapter; they do not establish support for other configurations.
+Linux with an AMD RDNA 3 adapter. Ride tracking is also checked in macOS Chrome with an Apple
+Metal adapter. Other configurations still need their own checks.
 
 ## Build on Linux x86_64
 
