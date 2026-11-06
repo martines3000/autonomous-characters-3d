@@ -1,6 +1,6 @@
 # Reef shoals, travelling shark school and shark riding
 
-This ExecPlan is maintained according to `PLANS.md`. The owner authorized implementation on 2026-11-06 after manual review of the showcase and PR #20. It is a new follow-up; the original review-preparation goal remains complete. Prepare small tested PRs after #20. Do not merge, publish registry images, deploy, apply infrastructure, change DNS or trigger production workflows.
+This ExecPlan is maintained according to `PLANS.md`. The owner authorized fish-school and shark-riding implementation on 2026-11-06 after manual review of the showcase and PR #20, then added improved web loading/progress and a reveal animation. It is a new follow-up; the original review-preparation goal remains complete. Prepare small tested PRs after #20. Do not merge, publish registry images, deploy, apply infrastructure, change DNS or trigger production workflows.
 
 ## Purpose
 
@@ -13,6 +13,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
 - [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence.
 - [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
+- [ ] Prepare fourth PR with truthful web download/preparation progress and an accessible reveal after the first ready scene.
 - [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.
 - [ ] Archive plan and update README, STATUS and morning review index.
 
@@ -25,6 +26,9 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 ## Decision Log
 
+- Decision: Add the owner-requested web loader/reveal as a fourth independent PR after the simulation/camera slices. Show actual bytes or determinate progress only when a trustworthy total exists; use named preparation stages otherwise. Prefer a short fade/subtle canvas reveal and respect reduced motion.
+  Rationale: This improves the cold-load experience without inventing a global percentage or fighting the 3D camera. Loading/error/retry and device-loss states must remain readable.
+  Date: 2026-11-06.
 - Decision: Replace Shark's point seek with an explicitly enabled soft capsule-shaped flow guide, shared by CPU/GPU, and follow the moving encounter in Scenic view while respecting Free/Ride/reduced motion.
   Rationale: Inside the corridor there is no force toward a central point; local alignment, separation, cohesion and predator responses determine the school structure. A soft boundary restores stragglers without assigning rigid positions. Existing Lab targets and Reef's validated guides retain their original paths.
   Date: 2026-11-06.
@@ -61,6 +65,7 @@ In progress. No new behavior, camera feature or measurement is claimed complete 
 3. Extend that controller to Shark hunt using a soft moving flow corridor, preserving three hunters and existing pursuit/panic rules while removing point convergence and adjusting local school structure. Add CPU/GPU guide-force parity and ABI tests. Measure travel, local spacing, school elongation and all public-tier cost without hiding remaining limitations. Keep Scenic composition centered on the moving encounter; Free/Ride/reduced motion retain their ownership.
 4. Integrate the independent shark Ride lane: actual CPU/GPU hunter samples, type-preserving random selection, correctly scaled cameras, stale-readback/lifecycle tests, visible Fish/Shark choice and scripted/browser controls.
 5. Run the final gates once for the integrated result, publish immutable evidence, push PRs with exact dependencies, update review handoff and archive this plan.
+6. In the independent web lane, improve the existing HTML/bootstrap loader, use real network/preparation signals, and reveal the actual ready scene with reduced-motion support. Integrate this fourth PR and include loading, failure, retry and reveal in the final headed-browser gate.
 
 ## Concrete Steps
 
@@ -83,6 +88,7 @@ Run native captures and repeated timings using README's scenario/record/measure 
 - Shark prey visibly travel rather than stay around the origin, split near hunters, and reform while moving. Before/after video supports the claim; an isolated still or a moving target alone does not.
 - School guide phase uses simulation time, freezes during Pause, resets on public scene/tier application and stops owning Lab presets. Public scene/group roles, hunters and finite steering remain correct.
 - Fish/Shark Ride selection works in Chase and First person, including N/Another animal, Pause, empty hunters and scene/backend/count changes. GPU samples reflect current hunter motion; stale samples cannot overwrite a new subject.
+- Cold and warm browser loads show truthful progress or named stages, then reveal a rendered scene. Known byte totals produce bounded percentages; unknown/compressed lengths remain indeterminate with a byte count. Reduced motion skips spatial animation; failures/unsupported devices and Retry remain accessible and visible.
 - Native/GPU tests and headed browser acceptance pass. Record real source, hardware/configuration, resolution, population, warmup and repeated timing distributions. Make no claim for untested devices or biological accuracy.
 - Small PRs include images/videos, validation, measured cost, exact dependencies and remaining limits. No production action occurs.
 
@@ -106,3 +112,4 @@ Revision notes:
 
 - 2026-11-06: Initial owner-authorized follow-up plan after manual review and the tested Another animal control.
 - 2026-11-06: Rejected the first Shark point-guide trial after native frames retained a compact ball and cropped the moving school. Extended only the explicitly enabled public Shark behavior to a shared soft flow corridor, with force/ABI parity tests and camera ownership checks.
+- 2026-11-06: Added the owner's web loading/progress and reveal request as a fourth small PR. Existing school/riding work remains active; no production scope was added.
