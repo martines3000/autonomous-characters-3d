@@ -2,6 +2,7 @@
 
 ## Current work
 
+- [Reef shoals, travelling shark school and shark riding](planned/2026-11-06-fish-schools-and-shark-riding.md) is authorized and in progress after #20. Three small PRs will add public-scene schooling and actual CPU/GPU hunter camera subjects, with native/browser behavior evidence and serialized verification.
 - The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application PRs 12–20, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
 - The [approved review-preparation plan](completed/2026-11-05-polished-flock-web-showcase.md) is complete at its review handoff. Deployment publication/health and later public verification remain a separate, explicitly authorized release session.
 - Owner manual review on 2026-11-06 praised the improved presentation and riding camera, and questioned sparse Reef drift grouping and the persistent Shark hunt ball. [PR #20](https://github.com/martines3000/autonomous-characters-3d/pull/20) adds **Another animal · N**, tested in native and headed WebGPU builds, after #19. See the [follow-up evidence](evidence/2026-11-06-owner-feedback.md). Proposed fish-motion work is recorded below and does not reopen the completed review-preparation goal.
