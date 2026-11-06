@@ -397,6 +397,15 @@ pub(crate) fn ui(
             {
                 presentation.follow.next();
             }
+            if presentation.follow.enabled() && visitor.scene == VisitorScene::SharkHunt {
+                ui.horizontal(|ui| {
+                    ui.label("Ride with");
+                    let mut subject = presentation.follow.subject();
+                    ui.selectable_value(&mut subject, crate::follow::FollowSubject::Prey, "Fish");
+                    ui.selectable_value(&mut subject, crate::follow::FollowSubject::Hunter, "Shark");
+                    presentation.follow.set_subject(subject);
+                });
+            }
             if ui
                 .checkbox(&mut visitor.reduced_motion, "Reduce camera motion")
                 .changed()
@@ -430,7 +439,7 @@ pub(crate) fn ui(
             if visitor.help {
                 ui.small("Right-drag to orbit · scroll to zoom · middle-drag to pan.");
                 ui.small(
-                    "Ride follows one animal. Another animal or N picks a new subject. Reset view returns to the scene.",
+                    "Ride follows one animal. In Shark hunt, choose Fish or Shark. Another animal or N keeps that choice. B cycles Chase and First person.",
                 );
                 ui.small("P pauses animals. H hides or restores the interface.");
                 ui.small(

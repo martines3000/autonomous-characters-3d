@@ -146,6 +146,11 @@ automatic movement. Reduced camera motion keeps the composed view still. **H** h
 interface and **P** pauses animals. Camera drag, pan and scroll remain available over the world.
 While riding, **Another animal · N** picks a random animal without leaving Chase or First person;
 the **N** shortcut also works with the interface hidden.
+In **Shark hunt**, **Ride with → Fish / Shark** chooses which side of the encounter to follow.
+Another animal stays with that choice and picks a different shark when more than one is present.
+**B** cycles Chase, First person and Off. Scene changes restore the default fish/bird subject;
+removing every hunter falls back to prey. CPU reference modes and WebGPU sample the actual hunter
+pose; changing viewpoint does not reset the school, population or Pause.
 Drags keep the surface where they begin until release: HUD drags stay in the HUD, while world drags
 continue across it. With no active world drag, scrolling over the HUD keeps the world camera still.
 
@@ -1129,6 +1134,7 @@ pgrep -a autonomous   # no process should remain after exit
 | `follow on`, `follow off` | Select / clear the target sphere for target seeking |
 | `boidcam chase`, `boidcam first`, `boidcam off` | Boid chase camera, first-person camera, or exit |
 | `boidcam next` | Pick a random living boid; retains camera mode |
+| `boidcam shark`, `boidcam fish` | Choose hunter/prey; start Chase if Off, otherwise retain mode and Pause |
 | `boidcam id` | Stable spawn ID, integer 0–4,294,967,295; retains camera mode; missing IDs auto-repick |
 | `set groups` | `off` (default) or integer `2`–`8`; membership changes distribute prey across Prey groups |
 | `group_target` | `group x y z` sets a target, or `group off` clears it; group index 0–7, world coordinates within ±10,000,000 |

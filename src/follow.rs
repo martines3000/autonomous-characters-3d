@@ -200,22 +200,33 @@ fn prepare_tracking(
     let hunter_count = if gpu {
         configs.len()
     } else {
-        hunters.as_ref().map_or(0, |hunters| hunters.boids.len().min(configs.len()))
+        hunters
+            .as_ref()
+            .map_or(0, |hunters| hunters.boids.len().min(configs.len()))
     };
     if follow.subject == FollowSubject::Hunter && hunter_count == 0 {
         follow.set_subject(FollowSubject::Prey);
     }
-    let layout: Vec<_> = configs.iter().map(|(group, settings)| (*group, settings.hunter_model)).collect();
+    let layout: Vec<_> = configs
+        .iter()
+        .map(|(group, settings)| (*group, settings.hunter_model))
+        .collect();
     let backend_changed = runtime.gpu.is_some_and(|previous| previous != gpu);
-    let hunters_changed = follow.subject == FollowSubject::Hunter && runtime.hunter_layout != layout;
+    let hunters_changed =
+        follow.subject == FollowSubject::Hunter && runtime.hunter_layout != layout;
     if ((backend_changed || hunters_changed) && runtime.revision == follow.revision)
-        || (follow.subject == FollowSubject::Hunter && follow.id.is_some_and(|id| id as usize >= hunter_count))
+        || (follow.subject == FollowSubject::Hunter
+            && follow.id.is_some_and(|id| id as usize >= hunter_count))
     {
         follow.next();
     }
     runtime.gpu = Some(gpu);
     runtime.hunter_layout = layout;
-    let count = if follow.subject == FollowSubject::Hunter { hunter_count } else { state.vehicle_count };
+    let count = if follow.subject == FollowSubject::Hunter {
+        hunter_count
+    } else {
+        state.vehicle_count
+    };
     if !follow.enabled() || count == 0 {
         if let Some(entity) = runtime.readback.take() {
             commands.entity(entity).despawn();
@@ -245,7 +256,9 @@ fn prepare_tracking(
     }
     if !gpu {
         if follow.subject == FollowSubject::Hunter {
-            let id = follow.id.unwrap_or_else(|| random_hunter(hunter_count, follow.previous_id));
+            let id = follow
+                .id
+                .unwrap_or_else(|| random_hunter(hunter_count, follow.previous_id));
             let hunter = hunters.as_ref().unwrap().boids[id as usize];
             follow.id = Some(id);
             runtime.sample = Some(Sample {
@@ -288,7 +301,12 @@ fn prepare_tracking(
             commands.entity(entity).despawn();
         }
         let selector = if follow.subject == FollowSubject::Hunter {
-            UVec2::new(3, follow.id.unwrap_or_else(|| random_hunter(hunter_count, follow.previous_id)))
+            UVec2::new(
+                3,
+                follow
+                    .id
+                    .unwrap_or_else(|| random_hunter(hunter_count, follow.previous_id)),
+            )
         } else {
             follow.id.map_or_else(
                 || UVec2::new(2, rand::rng().random_range(0..state.vehicle_count as u32)),
@@ -310,7 +328,16 @@ fn prepare_tracking(
         params.track = UVec4::new(selector.x, selector.y, elapsed.to_bits(), 0);
     } else if let Some(tracking) = tracking {
         // After resolving a random index, match its stable spawn ID on subsequent frames.
-        let selector = follow.id.map_or(tracking.selector, |id| UVec2::new(if follow.subject == FollowSubject::Hunter { 3 } else { 1 }, id));
+        let selector = follow.id.map_or(tracking.selector, |id| {
+            UVec2::new(
+                if follow.subject == FollowSubject::Hunter {
+                    3
+                } else {
+                    1
+                },
+                id,
+            )
+        });
         params.track = UVec4::new(selector.x, selector.y, elapsed.to_bits(), 0);
     }
 }
@@ -502,7 +529,9 @@ fn follow_camera(
         vehicle::world_scale(state.vehicle_count)
     };
     let heading = runtime.heading;
-    let body_scale = if presentation.follow.subject != FollowSubject::Hunter && appearance.style == crate::scene::SceneStyle::Glow {
+    let body_scale = if presentation.follow.subject != FollowSubject::Hunter
+        && appearance.style == crate::scene::SceneStyle::Glow
+    {
         let speed01 = sample.velocity.length() / state.vehicle_max_speed.max(f32::EPSILON);
         appearance.vehicles.visual_size
             * appearance.vehicles.length
@@ -638,12 +667,18 @@ mod tests {
             .init_resource::<GpuParams>()
             .init_resource::<Assets<ShaderBuffer>>()
             .init_resource::<crate::hunter::Hunters>()
-            .add_systems(Update, prepare_tracking.after(crate::presentation::prepare_simulation));
+            .add_systems(
+                Update,
+                prepare_tracking.after(crate::presentation::prepare_simulation),
+            );
         app
     }
 
     fn hunter_groups() -> crate::swarm::Groups {
-        let mut groups = crate::swarm::Groups { count: 2, ..default() };
+        let mut groups = crate::swarm::Groups {
+            count: 2,
+            ..default()
+        };
         groups.table[1].role = crate::swarm::GroupRole::Hunter;
         groups.table[1].hunter_count = 3;
         groups.table[1].size_scale = 8.0;
@@ -657,12 +692,19 @@ mod tests {
             UVec4::new(0, 0, 0, 1.0_f32.to_bits()),
             UVec4::ZERO,
             UVec4::new(id, 0.0_f32.to_bits(), 1, subject as u32),
-        ].into_iter().flat_map(|record| record.to_array()).flat_map(u32::to_le_bytes).collect()
+        ]
+        .into_iter()
+        .flat_map(|record| record.to_array())
+        .flat_map(u32::to_le_bytes)
+        .collect()
     }
 
     #[test]
     fn subject_selection_preserves_camera_and_next_stays_with_hunters() {
-        let mut follow = Follow { mode: FollowMode::FirstPerson, ..default() };
+        let mut follow = Follow {
+            mode: FollowMode::FirstPerson,
+            ..default()
+        };
         follow.set_subject(FollowSubject::Hunter);
         follow.select(1);
         let revision = follow.revision;
@@ -711,33 +753,65 @@ mod tests {
         assert_eq!(sample.velocity, expected.velocity);
         assert_eq!(sample.rotation, expected.rotation);
         assert!(app.world().resource::<FollowRuntime>().readback.is_none());
-        app.world_mut().resource_mut::<crate::hunter::Hunters>().boids[1].position += Vec3::X * 7.0;
+        app.world_mut()
+            .resource_mut::<crate::hunter::Hunters>()
+            .boids[1]
+            .position += Vec3::X * 7.0;
         app.update();
-        assert_eq!(app.world().resource::<FollowRuntime>().sample.unwrap().position, expected.position + Vec3::X * 7.0);
+        assert_eq!(
+            app.world()
+                .resource::<FollowRuntime>()
+                .sample
+                .unwrap()
+                .position,
+            expected.position + Vec3::X * 7.0
+        );
         app.world_mut().resource_mut::<Presentation>().follow.next();
         app.update();
         assert_ne!(app.world().resource::<Presentation>().follow.id, Some(1));
-        assert_eq!(app.world().resource::<Presentation>().follow.subject(), FollowSubject::Hunter);
-        assert_eq!(app.world().resource::<Presentation>().follow.mode, FollowMode::FirstPerson);
+        assert_eq!(
+            app.world().resource::<Presentation>().follow.subject(),
+            FollowSubject::Hunter
+        );
+        assert_eq!(
+            app.world().resource::<Presentation>().follow.mode,
+            FollowMode::FirstPerson
+        );
         assert!(app.world().resource::<Presentation>().paused);
         app.world_mut().resource_mut::<GlobalState>().groups.table[1].hunter_count = 1;
-        app.world_mut().resource_mut::<crate::hunter::Hunters>().boids.truncate(1);
+        app.world_mut()
+            .resource_mut::<crate::hunter::Hunters>()
+            .boids
+            .truncate(1);
         app.update();
         assert_eq!(app.world().resource::<Presentation>().follow.id, Some(0));
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Gpu;
         app.update();
-        assert_eq!(app.world().resource::<GpuParams>().track.truncate().truncate(), UVec2::new(3, 0));
+        assert_eq!(
+            app.world()
+                .resource::<GpuParams>()
+                .track
+                .truncate()
+                .truncate(),
+            UVec2::new(3, 0)
+        );
         assert!(app.world().resource::<FollowRuntime>().readback.is_some());
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Octree;
         app.update();
-        assert_eq!(app.world().resource::<Presentation>().follow.subject(), FollowSubject::Hunter);
+        assert_eq!(
+            app.world().resource::<Presentation>().follow.subject(),
+            FollowSubject::Hunter
+        );
         assert_eq!(app.world().resource::<Presentation>().follow.id, Some(0));
         assert!(app.world().resource::<FollowRuntime>().sample.is_some());
         assert!(app.world().resource::<FollowRuntime>().readback.is_none());
         app.world_mut().resource_mut::<GlobalState>().mode = SimulationMode::Gpu;
         app.world_mut().resource_mut::<GlobalState>().groups.table[1].hunter_count = 0;
         app.update();
-        assert_eq!(app.world().resource::<Presentation>().follow.subject(), FollowSubject::Prey);
+        assert_eq!(
+            app.world().resource::<Presentation>().follow.subject(),
+            FollowSubject::Prey
+        );
         assert_eq!(app.world().resource::<GpuParams>().track.x, 2);
         app.world_mut().resource_mut::<GlobalState>().vehicle_count = 0;
         app.update();
@@ -754,7 +828,12 @@ mod tests {
             state.mode = SimulationMode::Octree;
             state.groups = hunter_groups();
         }
-        app.world_mut().spawn((Vehicle, Transform::from_xyz(4.0, 5.0, 6.0), VehicleVelocity(Vec3::X.into()), VehicleMetadata(UVec4::new(42, 0, 0, 0))));
+        app.world_mut().spawn((
+            Vehicle,
+            Transform::from_xyz(4.0, 5.0, 6.0),
+            VehicleVelocity(Vec3::X.into()),
+            VehicleMetadata(UVec4::new(42, 0, 0, 0)),
+        ));
         {
             let mut presentation = app.world_mut().resource_mut::<Presentation>();
             presentation.paused = true;
@@ -767,7 +846,14 @@ mod tests {
         assert_eq!(presentation.follow.id, Some(42));
         assert_eq!(presentation.follow.mode, FollowMode::Chase);
         assert!(presentation.paused);
-        assert_eq!(app.world().resource::<FollowRuntime>().sample.unwrap().position, Vec3::new(4.0, 5.0, 6.0));
+        assert_eq!(
+            app.world()
+                .resource::<FollowRuntime>()
+                .sample
+                .unwrap()
+                .position,
+            Vec3::new(4.0, 5.0, 6.0)
+        );
     }
 
     #[test]
@@ -781,25 +867,43 @@ mod tests {
         }
         app.update();
         let prey_entity = app.world().resource::<FollowRuntime>().readback.unwrap();
-        app.world_mut().resource_mut::<Presentation>().follow.set_subject(FollowSubject::Hunter);
+        app.world_mut()
+            .resource_mut::<Presentation>()
+            .follow
+            .set_subject(FollowSubject::Hunter);
         app.update();
         let hunter_entity = app.world().resource::<FollowRuntime>().readback.unwrap();
         assert_ne!(hunter_entity, prey_entity);
         for entity in [prey_entity, hunter_entity] {
-            app.world_mut().trigger(ReadbackComplete { entity, data: sample_bytes(1, FollowSubject::Prey) });
+            app.world_mut().trigger(ReadbackComplete {
+                entity,
+                data: sample_bytes(1, FollowSubject::Prey),
+            });
             assert!(app.world().resource::<FollowRuntime>().sample.is_none());
         }
-        app.world_mut().trigger(ReadbackComplete { entity: hunter_entity, data: sample_bytes(1, FollowSubject::Hunter) });
+        app.world_mut().trigger(ReadbackComplete {
+            entity: hunter_entity,
+            data: sample_bytes(1, FollowSubject::Hunter),
+        });
         assert_eq!(app.world().resource::<Presentation>().follow.id, Some(1));
         assert!(app.world().resource::<FollowRuntime>().sample.is_some());
-        app.world_mut().resource_mut::<Presentation>().follow.set_subject(FollowSubject::Prey);
+        app.world_mut()
+            .resource_mut::<Presentation>()
+            .follow
+            .set_subject(FollowSubject::Prey);
         app.update();
         let new_prey_entity = app.world().resource::<FollowRuntime>().readback.unwrap();
         for entity in [hunter_entity, new_prey_entity] {
-            app.world_mut().trigger(ReadbackComplete { entity, data: sample_bytes(1, FollowSubject::Hunter) });
+            app.world_mut().trigger(ReadbackComplete {
+                entity,
+                data: sample_bytes(1, FollowSubject::Hunter),
+            });
             assert!(app.world().resource::<FollowRuntime>().sample.is_none());
         }
-        app.world_mut().trigger(ReadbackComplete { entity: new_prey_entity, data: sample_bytes(1, FollowSubject::Prey) });
+        app.world_mut().trigger(ReadbackComplete {
+            entity: new_prey_entity,
+            data: sample_bytes(1, FollowSubject::Prey),
+        });
         assert!(app.world().resource::<FollowRuntime>().sample.is_some());
     }
 
@@ -809,7 +913,10 @@ mod tests {
         app.init_resource::<FollowRuntime>()
             .init_resource::<GlobalState>()
             .init_resource::<crate::scene::Appearance>()
-            .add_systems(Update, follow_camera.after(crate::presentation::prepare_simulation));
+            .add_systems(
+                Update,
+                follow_camera.after(crate::presentation::prepare_simulation),
+            );
         app.world_mut().resource_mut::<GlobalState>().groups = hunter_groups();
         {
             let mut appearance = app.world_mut().resource_mut::<crate::scene::Appearance>();
@@ -824,30 +931,57 @@ mod tests {
             presentation.follow.select(0);
         }
         let revision = app.world().resource::<Presentation>().follow.revision;
-        let sample = Sample { position: Vec3::ZERO, velocity: Vec3::Z * 40.0, rotation: crate::motion::initial(Vec3::Z * 40.0), stamp: 0.0 };
+        let sample = Sample {
+            position: Vec3::ZERO,
+            velocity: Vec3::Z * 40.0,
+            rotation: crate::motion::initial(Vec3::Z * 40.0),
+            stamp: 0.0,
+        };
         {
             let mut runtime = app.world_mut().resource_mut::<FollowRuntime>();
             runtime.revision = revision;
             runtime.sample = Some(sample);
         }
-        let camera = app.world_mut().spawn((Camera3d::default(), Transform::from_xyz(0.0, 0.0, -100.0), Projection::default(), PanOrbitCamera::default())).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(0.0, 0.0, -100.0),
+                Projection::default(),
+                PanOrbitCamera::default(),
+            ))
+            .id();
         for _ in 0..6 {
-            app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_millis(200));
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(200));
             app.update();
         }
         let unit = 1.5 * 8.0 * 1.2;
         let eye = app.world().get::<Transform>(camera).unwrap().translation;
         assert!((eye.z - 2.0 * unit).abs() < 0.0001);
         assert!(eye.z > 1.25 * unit);
-        let Projection::Perspective(projection) = app.world().get::<Projection>(camera).unwrap() else { panic!() };
+        let Projection::Perspective(projection) = app.world().get::<Projection>(camera).unwrap()
+        else {
+            panic!()
+        };
         assert!((projection.near - unit * 0.05).abs() < 0.0001);
         app.world_mut().resource_mut::<Presentation>().follow.mode = FollowMode::Chase;
         for _ in 0..30 {
-            app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_millis(200));
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(200));
             app.update();
         }
         let expected = Vec3::new(0.0, 6.0 * unit * 0.3, -6.0 * unit);
-        assert!(app.world().get::<Transform>(camera).unwrap().translation.distance(expected) < 0.001);
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(expected)
+                < 0.001
+        );
         let presentation = app.world().resource::<Presentation>();
         let state = app.world().resource::<GlobalState>();
         let mut appearance = crate::scene::Appearance::default();
@@ -855,19 +989,29 @@ mod tests {
         appearance.vehicles.visual_size = 1.5;
         appearance.vehicles.length = 1.2;
         appearance.streak = 2.0;
-        assert!((followed_size(&presentation.follow, state, &appearance, &sample) - unit * 2.0).abs() < 0.0001);
+        assert!(
+            (followed_size(&presentation.follow, state, &appearance, &sample) - unit * 2.0).abs()
+                < 0.0001
+        );
     }
 
     #[test]
     #[ignore = "needs a GPU"]
     fn gpu_hunter_tracking_samples_moving_and_paused_poses_with_zero_prey() {
-        use bevy::render::settings::{Backends, RenderResources, WgpuSettings};
         use crate::gpu_flock::{gpu_params, GpuFlock};
-        let RenderResources(device, queue, ..) = bevy::tasks::block_on(
-            bevy::render::renderer::initialize_renderer(Backends::PRIMARY, None, &WgpuSettings::default()),
-        );
+        use bevy::render::settings::{Backends, RenderResources, WgpuSettings};
+        let RenderResources(device, queue, ..) =
+            bevy::tasks::block_on(bevy::render::renderer::initialize_renderer(
+                Backends::PRIMARY,
+                None,
+                &WgpuSettings::default(),
+            ));
         let mut flock = GpuFlock::new(&device);
-        let mut state = GlobalState { vehicle_count: 32, groups: hunter_groups(), ..default() };
+        let mut state = GlobalState {
+            vehicle_count: 32,
+            groups: hunter_groups(),
+            ..default()
+        };
         let step = |flock: &mut GpuFlock, params: &GpuParams| {
             let mut encoder = device.create_command_encoder(&default());
             flock.encode(&device, &queue, &mut encoder, params);
@@ -876,8 +1020,12 @@ mod tests {
         let check = |flock: &GpuFlock, index: usize| {
             let hunter = flock.read_hunters(&device, &queue)[index];
             let records = flock.read_track(&device, &queue);
-            assert_eq!(records[4], UVec4::new(index as u32, 2.5_f32.to_bits(), 1, 1));
-            let decode = |index: usize| Vec4::from_array(records[index].to_array().map(f32::from_bits));
+            assert_eq!(
+                records[4],
+                UVec4::new(index as u32, 2.5_f32.to_bits(), 1, 1)
+            );
+            let decode =
+                |index: usize| Vec4::from_array(records[index].to_array().map(f32::from_bits));
             assert!(decode(0).truncate().distance(hunter.position) < 0.00001);
             assert!(decode(1).truncate().distance(hunter.velocity) < 0.00001);
             assert!(Quat::from_array(decode(2).to_array()).angle_between(hunter.rotation) < 0.001);
@@ -886,7 +1034,9 @@ mod tests {
         let initial = crate::hunter::initial(&state.groups.hunter_configs(), 1.0)[1].position;
         let mut params = gpu_params(&state, Vec3::ZERO, false, 1.0 / 60.0);
         params.track = UVec4::new(3, 1, 2.5_f32.to_bits(), 0);
-        for _ in 0..5 { step(&mut flock, &params); }
+        for _ in 0..5 {
+            step(&mut flock, &params);
+        }
         let moving = check(&flock, 1);
         assert!(moving.distance(initial) > 0.01);
         params.dt = 0.0;

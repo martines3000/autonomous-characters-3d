@@ -88,6 +88,9 @@ mod web {
             name: &str,
             simulation_seconds: f64,
             camera: &str,
+            hunter_camera: bool,
+            first_person: bool,
+            camera_animal_id: u32,
         );
     }
 
@@ -298,6 +301,13 @@ mod web {
                     "scenic"
                 } else {
                     "free"
+                },
+                presentation.follow.subject() == crate::follow::FollowSubject::Hunter,
+                presentation.follow.mode == crate::follow::FollowMode::FirstPerson,
+                if presentation.follow.enabled() {
+                    presentation.follow.id.unwrap_or(u32::MAX)
+                } else {
+                    u32::MAX
                 },
             );
         }
