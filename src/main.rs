@@ -134,39 +134,49 @@ pub(crate) fn ui_blocks_pointer(ctx: &egui::Context) -> bool {
 }
 
 /// Egui consumes its pending input in PostUpdate, after camera ownership is decided.
-/// Use the ordered press position before a later movement can cross the HUD boundary.
+/// Replay presses and releases so a complete chord ending inside one batch releases its owner.
 pub(crate) fn ui_blocks_pointer_with_input(
     ctx: &egui::Context,
     pending: Option<&bevy_egui::EguiInput>,
-) -> bool {
-    let press = pending.and_then(|input| {
-        input.events.iter().find_map(|event| match event {
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Secondary | egui::PointerButton::Middle,
-                pressed: true,
-                ..
-            } => Some(*pos),
-            _ => None,
-        })
-    });
+    buttons: &ButtonInput<MouseButton>,
+) -> (bool, Option<bool>) {
     let over_ui = |position| {
-        ctx.layer_id_at(position)
-            .is_some_and(|layer| layer.order != egui::Order::Background)
+        ctx.layer_id_at(position).is_some_and(|layer| layer.order != egui::Order::Background)
     };
-    if let Some(press) = press {
-        return over_ui(press);
-    }
-    let position = pending.and_then(|input| {
-        input.events.iter().rev().find_map(|event| match event {
-            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(*pos),
-            _ => None,
-        })
+    let events = pending.map_or(&[][..], |input| input.events.as_slice());
+    let position = events.iter().rev().find_map(|event| match event {
+        egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(*pos),
+        _ => None,
     });
-    position.map_or_else(
+    let blocked = position.map_or_else(
         || ui_blocks_pointer(ctx),
         |position| ctx.egui_is_using_pointer() || over_ui(position),
-    )
+    );
+    let end_mask = u8::from(buttons.pressed(MouseButton::Right))
+        | (u8::from(buttons.pressed(MouseButton::Middle)) << 1);
+    let button_event = |event: &egui::Event| match event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, .. } => Some((1_u8, *pos, *pressed)),
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Middle, pressed, .. } => Some((2_u8, *pos, *pressed)),
+        _ => None,
+    };
+    // Bevy already holds the batch's final state. Undo ordered transitions to recover its start.
+    let mut mask = end_mask;
+    for (bit, _, pressed) in events.iter().rev().filter_map(button_event) {
+        if pressed { mask &= !bit; } else { mask |= bit; }
+    }
+    let mut new_chord = None;
+    for (bit, position, pressed) in events.iter().filter_map(button_event) {
+        if pressed {
+            if mask == 0 { new_chord = Some(over_ui(position)); }
+            mask |= bit;
+        } else {
+            mask &= !bit;
+            if mask == 0 { new_chord = None; }
+        }
+    }
+    // Focus loss can clear Bevy's buttons without a matching pointer release event.
+    if end_mask == 0 || mask != end_mask { new_chord = None; }
+    (blocked, new_chord)
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -176,13 +186,11 @@ pub(crate) struct PointerUi<'w, 's> {
 }
 
 impl PointerUi<'_, '_> {
-    pub(crate) fn wants_input(&mut self) -> (bool, bool) {
+    pub(crate) fn wants_input(&mut self, buttons: &ButtonInput<MouseButton>) -> (bool, bool, Option<bool>) {
         let pending = self.pending.single().ok();
-        self.contexts.ctx_mut().map_or((false, false), |ctx| {
-            (
-                ctx.egui_wants_keyboard_input(),
-                ui_blocks_pointer_with_input(ctx, pending),
-            )
+        self.contexts.ctx_mut().map_or((false, false, None), |ctx| {
+            let (pointer, new_chord) = ui_blocks_pointer_with_input(ctx, pending, buttons);
+            (ctx.egui_wants_keyboard_input(), pointer, new_chord)
         })
     }
 }
@@ -198,10 +206,11 @@ impl PointerGesture {
         &mut self,
         over_ui: bool,
         buttons: &ButtonInput<MouseButton>,
+        new_chord: Option<bool>,
     ) -> bool {
         let dragging = buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle);
-        if dragging && !self.dragging {
-            self.started_over_ui = over_ui;
+        if dragging && (!self.dragging || new_chord.is_some()) {
+            self.started_over_ui = new_chord.unwrap_or(over_ui);
         }
         self.dragging = dragging;
         if dragging {
@@ -228,8 +237,8 @@ fn camera_input(
     mut input: Local<CameraInputState>,
     presentation: Option<Res<presentation::Presentation>>,
 ) {
-    let blocked = pointer_ui.wants_input().1;
-    let blocked = input.gesture.blocks_world(blocked, &buttons);
+    let (_, blocked, new_chord) = pointer_ui.wants_input(&buttons);
+    let blocked = input.gesture.blocks_world(blocked, &buttons, new_chord);
     let following = presentation.is_some_and(|p| p.follow.enabled() && !p.director.enabled);
     let mode = if blocked {
         0
@@ -821,24 +830,24 @@ mod tests {
             let mut buttons = ButtonInput::default();
             let mut gesture = PointerGesture::default();
             buttons.press(button);
-            assert!(!gesture.blocks_world(false, &buttons));
+            assert!(!gesture.blocks_world(false, &buttons, None));
             buttons.clear();
             assert!(
-                !gesture.blocks_world(true, &buttons),
+                !gesture.blocks_world(true, &buttons, None),
                 "World drag stopped over HUD"
             );
             buttons.release(button);
-            assert!(gesture.blocks_world(true, &buttons));
+            assert!(gesture.blocks_world(true, &buttons, None));
             buttons.clear();
             buttons.press(button);
-            assert!(gesture.blocks_world(true, &buttons));
+            assert!(gesture.blocks_world(true, &buttons, None));
             buttons.clear();
             assert!(
-                gesture.blocks_world(false, &buttons),
+                gesture.blocks_world(false, &buttons, None),
                 "HUD drag escaped into world"
             );
             buttons.release(button);
-            assert!(!gesture.blocks_world(false, &buttons));
+            assert!(!gesture.blocks_world(false, &buttons, None));
         }
     }
 
@@ -853,32 +862,32 @@ mod tests {
                 let mut gesture = PointerGesture::default();
                 buttons.press(first);
                 assert_eq!(
-                    gesture.blocks_world(started_over_ui, &buttons),
+                    gesture.blocks_world(started_over_ui, &buttons, None),
                     started_over_ui
                 );
                 buttons.clear();
                 buttons.press(second);
                 assert_eq!(
-                    gesture.blocks_world(!started_over_ui, &buttons),
+                    gesture.blocks_world(!started_over_ui, &buttons, None),
                     started_over_ui,
                     "second button changed the drag owner"
                 );
                 buttons.clear();
                 buttons.release(first);
                 assert_eq!(
-                    gesture.blocks_world(!started_over_ui, &buttons),
+                    gesture.blocks_world(!started_over_ui, &buttons, None),
                     started_over_ui
                 );
                 buttons.clear();
                 buttons.release(second);
                 assert_eq!(
-                    gesture.blocks_world(!started_over_ui, &buttons),
+                    gesture.blocks_world(!started_over_ui, &buttons, None),
                     !started_over_ui
                 );
                 buttons.clear();
                 buttons.press(second);
                 assert_eq!(
-                    gesture.blocks_world(!started_over_ui, &buttons),
+                    gesture.blocks_world(!started_over_ui, &buttons, None),
                     !started_over_ui
                 );
             }
@@ -893,52 +902,30 @@ mod tests {
         let mut context = bevy_egui::EguiContext::default();
         let input = |events| {
             let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
                 events,
                 ..default()
             };
-            input
-                .viewports
-                .entry(egui::ViewportId::ROOT)
-                .or_default()
-                .native_pixels_per_point = Some(dpi);
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(dpi);
             input
         };
         let draw = |root: &mut egui::Ui| {
             egui::Window::new("HUD")
                 .fixed_pos([20.0, 20.0])
                 .fixed_size([280.0, 200.0])
-                .show(root.ctx(), |ui| {
-                    ui.label("Scene controls");
-                });
+                .show(root.ctx(), |ui| { ui.label("Scene controls"); });
         };
         let hud = egui::pos2(80.0, 80.0);
         let world = egui::pos2(700.0, 500.0);
-        let (origin, destination) = if press_over_ui {
-            (hud, world)
-        } else {
-            (world, hud)
-        };
+        let (origin, destination) = if press_over_ui { (hud, world) } else { (world, hud) };
         let ctx = context.get_mut();
         let _ = ctx.run_ui(input(Vec::new()), draw);
         let _ = ctx.run_ui(input(vec![egui::Event::PointerMoved(destination)]), draw);
-        assert_eq!(
-            ui_blocks_pointer(ctx),
-            !press_over_ui,
-            "the previous UI pass must disagree with the new press"
-        );
+        assert_eq!(ui_blocks_pointer(ctx), !press_over_ui, "the previous UI pass must disagree with the new press");
         assert!((ctx.pixels_per_point() - dpi).abs() < 0.001);
         let pending = bevy_egui::EguiInput(input(vec![
             egui::Event::PointerMoved(origin),
-            egui::Event::PointerButton {
-                pos: origin,
-                button,
-                pressed: true,
-                modifiers: default(),
-            },
+            egui::Event::PointerButton { pos: origin, button, pressed: true, modifiers: default() },
             egui::Event::PointerMoved(destination),
         ]));
         (context, pending)
@@ -949,16 +936,8 @@ mod tests {
         for dpi in [1.0, 2.0] {
             for press_over_ui in [false, true] {
                 for (first, second, egui_button) in [
-                    (
-                        MouseButton::Right,
-                        MouseButton::Middle,
-                        egui::PointerButton::Secondary,
-                    ),
-                    (
-                        MouseButton::Middle,
-                        MouseButton::Right,
-                        egui::PointerButton::Middle,
-                    ),
+                    (MouseButton::Right, MouseButton::Middle, egui::PointerButton::Secondary),
+                    (MouseButton::Middle, MouseButton::Right, egui::PointerButton::Middle),
                 ] {
                     let (context, pending) = pending_drag_context(press_over_ui, egui_button, dpi);
                     let mut app = App::new();
@@ -967,76 +946,131 @@ mod tests {
                         .init_resource::<AccumulatedMouseScroll>()
                         .init_resource::<EguiUserTextures>()
                         .add_systems(Update, camera_input);
-                    let input_entity = app
-                        .world_mut()
-                        .spawn((context, bevy_egui::PrimaryEguiContext, pending))
-                        .id();
+                    let input_entity = app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending)).id();
                     let camera = app.world_mut().spawn(PanOrbitCamera::default()).id();
-                    app.world_mut()
-                        .resource_mut::<ButtonInput<MouseButton>>()
-                        .press(first);
-                    app.world_mut()
-                        .resource_mut::<AccumulatedMouseMotion>()
-                        .delta = Vec2::new(50.0, 25.0);
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(first);
+                    app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(50.0, 25.0);
                     // Do not run egui: the camera must use the pending press, not old hover state.
                     app.update();
-                    assert_eq!(
-                        app.world()
-                            .get::<PanOrbitCamera>(camera)
-                            .unwrap()
-                            .current_motion
-                            .is_user_controlled(),
-                        !press_over_ui
-                    );
-                    let destination = if press_over_ui {
-                        egui::pos2(700.0, 500.0)
-                    } else {
-                        egui::pos2(80.0, 80.0)
-                    };
-                    app.world_mut()
-                        .get_mut::<bevy_egui::EguiInput>(input_entity)
-                        .unwrap()
-                        .events = vec![egui::Event::PointerMoved(destination)];
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui);
+                    let destination = if press_over_ui { egui::pos2(700.0, 500.0) } else { egui::pos2(80.0, 80.0) };
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events = vec![egui::Event::PointerMoved(destination)];
                     app.update();
-                    assert_eq!(
-                        app.world()
-                            .get::<PanOrbitCamera>(camera)
-                            .unwrap()
-                            .current_motion
-                            .is_user_controlled(),
-                        !press_over_ui
-                    );
-                    app.world_mut()
-                        .resource_mut::<ButtonInput<MouseButton>>()
-                        .press(second);
-                    app.world_mut()
-                        .get_mut::<bevy_egui::EguiInput>(input_entity)
-                        .unwrap()
-                        .events
-                        .push(egui::Event::PointerButton {
-                            pos: destination,
-                            button: if second == MouseButton::Right {
-                                egui::PointerButton::Secondary
-                            } else {
-                                egui::PointerButton::Middle
-                            },
-                            pressed: true,
-                            modifiers: default(),
-                        });
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui);
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(second);
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events.push(egui::Event::PointerButton {
+                        pos: destination,
+                        button: if second == MouseButton::Right { egui::PointerButton::Secondary } else { egui::PointerButton::Middle },
+                        pressed: true,
+                        modifiers: default(),
+                    });
                     app.update();
-                    app.world_mut()
-                        .resource_mut::<ButtonInput<MouseButton>>()
-                        .release(first);
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(first);
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events = vec![egui::Event::PointerButton {
+                        pos: destination,
+                        button: egui_button,
+                        pressed: false,
+                        modifiers: default(),
+                    }];
                     app.update();
-                    assert_eq!(
-                        app.world()
-                            .get::<PanOrbitCamera>(camera)
-                            .unwrap()
-                            .current_motion
-                            .is_user_controlled(),
-                        !press_over_ui,
-                        "a chord changed the latched surface"
-                    );
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui, "a chord changed the latched surface");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replayed_batch_uses_the_last_unreleased_chord_origin_idempotently() {
+        for dpi in [1.0, 2.0] {
+            for over_ui in [false, true] {
+                for (button, egui_button) in [(MouseButton::Right, egui::PointerButton::Secondary), (MouseButton::Middle, egui::PointerButton::Middle)] {
+                    let (mut context, mut pending) = pending_drag_context(over_ui, egui_button, dpi);
+                    let (origin, previous) = if over_ui { (egui::pos2(80.0, 80.0), egui::pos2(700.0, 500.0)) } else { (egui::pos2(700.0, 500.0), egui::pos2(80.0, 80.0)) };
+                    let event = |pos, pressed| egui::Event::PointerButton { pos, button: egui_button, pressed, modifiers: default() };
+                    pending.events = vec![event(previous, true), event(previous, false), event(origin, true), egui::Event::PointerMoved(previous)];
+                    let mut buttons = ButtonInput::default();
+                    buttons.press(button);
+                    let (hover, new_chord) = ui_blocks_pointer_with_input(context.get_mut(), Some(&pending), &buttons);
+                    assert_eq!(new_chord, Some(over_ui));
+                    let mut gesture = PointerGesture { dragging: true, started_over_ui: !over_ui };
+                    for _ in 0..2 {
+                        assert_eq!(gesture.blocks_world(hover, &buttons, new_chord), over_ui);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn complete_release_and_repress_inside_one_batch_replaces_camera_owner() {
+        for dpi in [1.0, 2.0] {
+            for over_ui in [false, true] {
+                for (button, egui_button) in [(MouseButton::Right, egui::PointerButton::Secondary), (MouseButton::Middle, egui::PointerButton::Middle)] {
+                    let (context, pending) = pending_drag_context(!over_ui, egui_button, dpi);
+                    let mut app = App::new();
+                    app.init_resource::<ButtonInput<MouseButton>>()
+                        .init_resource::<AccumulatedMouseMotion>()
+                        .init_resource::<AccumulatedMouseScroll>()
+                        .init_resource::<EguiUserTextures>()
+                        .add_systems(Update, camera_input);
+                    let input_entity = app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending)).id();
+                    let camera = app.world_mut().spawn(PanOrbitCamera::default()).id();
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+                    app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(50.0, 25.0);
+                    app.update();
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), over_ui);
+                    let (origin, previous) = if over_ui { (egui::pos2(80.0, 80.0), egui::pos2(700.0, 500.0)) } else { (egui::pos2(700.0, 500.0), egui::pos2(80.0, 80.0)) };
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events = vec![
+                        egui::Event::PointerButton { pos: previous, button: egui_button, pressed: false, modifiers: default() },
+                        egui::Event::PointerButton { pos: origin, button: egui_button, pressed: true, modifiers: default() },
+                        egui::Event::PointerMoved(previous),
+                    ];
+                    // Bevy's end state remains held even though the ordered batch contains a gap.
+                    {
+                        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+                        buttons.release(button);
+                        buttons.press(button);
+                    }
+                    for _ in 0..2 {
+                        app.update();
+                        assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !over_ui);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replayed_chords_keep_first_owner_and_focus_loss_clears_held_state() {
+        for dpi in [1.0, 2.0] {
+            for over_ui in [false, true] {
+                for (first, second, egui_first, egui_second) in [
+                    (MouseButton::Right, MouseButton::Middle, egui::PointerButton::Secondary, egui::PointerButton::Middle),
+                    (MouseButton::Middle, MouseButton::Right, egui::PointerButton::Middle, egui::PointerButton::Secondary),
+                ] {
+                    let (mut context, mut pending) = pending_drag_context(over_ui, egui_first, dpi);
+                    let (origin, other) = if over_ui { (egui::pos2(80.0, 80.0), egui::pos2(700.0, 500.0)) } else { (egui::pos2(700.0, 500.0), egui::pos2(80.0, 80.0)) };
+                    pending.events = vec![
+                        egui::Event::PointerButton { pos: origin, button: egui_first, pressed: true, modifiers: default() },
+                        egui::Event::PointerButton { pos: other, button: egui_second, pressed: true, modifiers: default() },
+                        egui::Event::PointerButton { pos: other, button: egui_first, pressed: false, modifiers: default() },
+                    ];
+                    let mut buttons = ButtonInput::default();
+                    buttons.press(second);
+                    let (hover, new_chord) = ui_blocks_pointer_with_input(context.get_mut(), Some(&pending), &buttons);
+                    assert_eq!(new_chord, Some(over_ui));
+                    let mut gesture = PointerGesture::default();
+                    assert_eq!(gesture.blocks_world(hover, &buttons, new_chord), over_ui);
+                    // A lost-focus reset can clear the final held state without queued releases.
+                    buttons.reset_all();
+                    let (hover, new_chord) = ui_blocks_pointer_with_input(context.get_mut(), Some(&pending), &buttons);
+                    assert_eq!(new_chord, None);
+                    gesture.blocks_world(hover, &buttons, new_chord);
+                    assert!(!gesture.dragging);
+                    buttons.press(first);
+                    pending.events = vec![egui::Event::PointerButton { pos: other, button: egui_first, pressed: true, modifiers: default() }];
+                    let (hover, new_chord) = ui_blocks_pointer_with_input(context.get_mut(), Some(&pending), &buttons);
+                    assert_eq!(gesture.blocks_world(hover, &buttons, new_chord), !over_ui);
                 }
             }
         }
@@ -1046,17 +1080,9 @@ mod tests {
     fn pending_pointer_move_reserves_the_current_hud_for_scroll() {
         for dpi in [1.0, 2.0] {
             for over_ui in [false, true] {
-                let (mut context, mut pending) =
-                    pending_drag_context(over_ui, egui::PointerButton::Secondary, dpi);
-                pending.events = vec![egui::Event::PointerMoved(if over_ui {
-                    egui::pos2(80.0, 80.0)
-                } else {
-                    egui::pos2(700.0, 500.0)
-                })];
-                assert_eq!(
-                    ui_blocks_pointer_with_input(context.get_mut(), Some(&pending)),
-                    over_ui
-                );
+                let (mut context, mut pending) = pending_drag_context(over_ui, egui::PointerButton::Secondary, dpi);
+                pending.events = vec![egui::Event::PointerMoved(if over_ui { egui::pos2(80.0, 80.0) } else { egui::pos2(700.0, 500.0) })];
+                assert_eq!(ui_blocks_pointer_with_input(context.get_mut(), Some(&pending), &ButtonInput::default()).0, over_ui);
             }
         }
     }
