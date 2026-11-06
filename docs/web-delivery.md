@@ -85,6 +85,8 @@ curl -s http://127.0.0.1:8080/release.json
 npm ci --ignore-scripts --prefix web
 CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
   node scripts/smoke-web.mjs http://127.0.0.1:8080 /tmp/flock-browser-review
+CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  node scripts/measure-web.mjs http://127.0.0.1:8080 /tmp/flock-web-measurements
 ```
 
 The smoke runner uses Playwright **1.60.0** and a headed browser so its screenshots prove presented
@@ -93,6 +95,17 @@ Use the actual Chromium binary: the Arch `/usr/bin/chromium` wrapper can merge d
 override feature flags. `CHROMIUM_EXECUTABLE` selects a different binary; `AC3D_BROWSER_ARGS` can
 provide a JSON array of explicit arguments. The runner records the actual browser version, flags,
 adapter, frame intervals, loading times, console messages, response failures and screenshots.
+The separate measurement runner repeats all nine public scene/tier combinations: three seconds of
+warmup and six seconds of frame intervals, twice each, at 1920×1080. It restarts the interactive GPU
+scatter for each window; this is not a seeded replay or a GPU timestamp benchmark. Keep other builds,
+simulation apps, benchmarks and video encoders idle during measurements.
+
+The smoke runner also launches one disposable browser profile without Playwright's default focus
+emulation. That unrouted persistent context proves real background-tab pause/return and cold/warm
+HTTP cache behavior. It crashes only that disposable browser's GPU process through CDP, checks the
+actual renderer error path, then reloads and verifies the restored scene. Failure fixtures use their
+own contexts. A 2× display-factor browser checks real backing pixels; a context-only DPR override
+does not update Chromium's device-pixel ResizeObserver consistently.
 
 The HTML shell handles loading, unsupported adapters and startup errors. Rendering errors, including
 device loss, stop rendering and offer reload. The shared visitor UI owns scenes, populations, cameras,
@@ -122,3 +135,7 @@ Publication, cluster rollout, infrastructure apply, public DNS and post-release 
 outside this review-preparation session. Roll back a future application update by restoring the
 previous verified image digest through GitOps; use the household infra runbook for public-route
 recovery.
+
+The equivalent explicit owner command is `gh workflow run publish-web-image.yml --ref master`.
+Do not run it during review preparation. The pre-merge local image, artifact checksums and tested
+source are recorded in [browser feasibility](browser-feasibility.md); none is a published GHCR digest.

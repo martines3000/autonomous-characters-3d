@@ -83,6 +83,26 @@ For the static Docker image, cache/MIME headers, pinned browser smoke runner and
 manual image publication, follow [web delivery](docs/web-delivery.md). The publication workflow runs
 only when manually dispatched from `master`; preparing it does not publish or deploy anything.
 
+For the actual static runtime and repeatable browser checks:
+
+```sh
+docker build --platform linux/amd64 --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" -t flock:review .
+docker run --rm --name flock-review --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges:true --pids-limit=64 --cpus=1 --memory=128m \
+  --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1770 \
+  -p 127.0.0.1:8080:8080 flock:review
+# In another terminal, with no competing build, benchmark or simulation app:
+npm ci --ignore-scripts --prefix web
+CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  node scripts/smoke-web.mjs http://127.0.0.1:8080 /tmp/flock-browser-review
+CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  node scripts/measure-web.mjs http://127.0.0.1:8080 /tmp/flock-web-measurements
+```
+
+After review and merge, a separately authorized owner can publish the default-branch source with
+`gh workflow run publish-web-image.yml --ref master`. Read that run's real immutable image digest
+before preparing a rollout. Publication and deployment were not performed for this review.
+
 ### Visitor scenes
 
 Startup opens **Sunset murmuration**. The public scene selector also offers **Reef drift** and
