@@ -11,7 +11,7 @@ use bevy::{
     },
     time::update_virtual_time,
 };
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::egui;
 
 use crate::{scene, target::Target, vehicle, GlobalState};
 
@@ -270,16 +270,11 @@ fn presentation_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     scroll: Res<AccumulatedMouseScroll>,
-    mut contexts: EguiContexts,
+    mut pointer_ui: crate::PointerUi,
     mut presentation: ResMut<Presentation>,
     mut gesture: Local<crate::PointerGesture>,
 ) {
-    let (keyboard, pointer) = contexts.ctx_mut().map_or((false, false), |ctx| {
-        (
-            ctx.egui_wants_keyboard_input(),
-            crate::ui_blocks_pointer(ctx),
-        )
-    });
+    let (keyboard, pointer) = pointer_ui.wants_input();
     let pointer = gesture.blocks_world(pointer, &buttons);
     presentation.manual_camera = !pointer
         && (buttons.pressed(MouseButton::Right)
@@ -909,6 +904,34 @@ pub(crate) mod tests {
                         projection.fov,
                     );
                     assert!((fit - pose.distance).abs() < 0.002);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_press_origin_controls_manual_camera_before_egui_consumes_input() {
+        for dpi in [1.0, 2.0] {
+            for press_over_ui in [false, true] {
+                for (button, egui_button) in [
+                    (MouseButton::Right, egui::PointerButton::Secondary),
+                    (MouseButton::Middle, egui::PointerButton::Middle),
+                ] {
+                    let (context, pending) = crate::tests::pending_drag_context(press_over_ui, egui_button, dpi);
+                    let mut app = App::new();
+                    app.init_resource::<Presentation>()
+                        .init_resource::<ButtonInput<KeyCode>>()
+                        .init_resource::<ButtonInput<MouseButton>>()
+                        .init_resource::<AccumulatedMouseScroll>()
+                        .init_resource::<bevy_egui::EguiUserTextures>()
+                        .add_systems(Update, presentation_input);
+                    app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending));
+                    app.world_mut().resource_mut::<Presentation>().follow.mode = crate::follow::FollowMode::Chase;
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+                    app.update();
+                    let presentation = app.world().resource::<Presentation>();
+                    assert_eq!(presentation.manual_camera, !press_over_ui);
+                    assert_eq!(presentation.follow.enabled(), press_over_ui, "only a world press may release Ride");
                 }
             }
         }

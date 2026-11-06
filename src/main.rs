@@ -104,6 +104,7 @@ fn main() {
         .add_systems(
             PreUpdate,
             camera_input
+                .after(bevy_egui::EguiPreUpdateSet::ProcessInput)
                 .after(PickingSystems::Last)
                 .before(PanOrbitCamera::update_camera_positions),
         )
@@ -130,6 +131,56 @@ fn sync_ui_visibility(
 
 pub(crate) fn ui_blocks_pointer(ctx: &egui::Context) -> bool {
     ctx.egui_wants_pointer_input() || ctx.is_pointer_over_egui()
+}
+
+/// Egui consumes its pending input in PostUpdate, after camera ownership is decided.
+/// Use the ordered press position before a later movement can cross the HUD boundary.
+pub(crate) fn ui_blocks_pointer_with_input(
+    ctx: &egui::Context,
+    pending: Option<&bevy_egui::EguiInput>,
+) -> bool {
+    let press = pending.and_then(|input| {
+        input.events.iter().find_map(|event| match event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary | egui::PointerButton::Middle,
+                pressed: true,
+                ..
+            } => Some(*pos),
+            _ => None,
+        })
+    });
+    let over_ui = |position| {
+        ctx.layer_id_at(position).is_some_and(|layer| layer.order != egui::Order::Background)
+    };
+    if let Some(press) = press {
+        return over_ui(press);
+    }
+    let position = pending.and_then(|input| {
+        input.events.iter().rev().find_map(|event| match event {
+            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(*pos),
+            _ => None,
+        })
+    });
+    position.map_or_else(
+        || ui_blocks_pointer(ctx),
+        |position| ctx.egui_is_using_pointer() || over_ui(position),
+    )
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct PointerUi<'w, 's> {
+    contexts: EguiContexts<'w, 's>,
+    pending: Query<'w, 's, &'static bevy_egui::EguiInput, With<bevy_egui::PrimaryEguiContext>>,
+}
+
+impl PointerUi<'_, '_> {
+    pub(crate) fn wants_input(&mut self) -> (bool, bool) {
+        let pending = self.pending.single().ok();
+        self.contexts.ctx_mut().map_or((false, false), |ctx| {
+            (ctx.egui_wants_keyboard_input(), ui_blocks_pointer_with_input(ctx, pending))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -168,12 +219,12 @@ fn camera_input(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    mut contexts: EguiContexts,
+    mut pointer_ui: PointerUi,
     mut cameras: Query<&mut PanOrbitCamera>,
     mut input: Local<CameraInputState>,
     presentation: Option<Res<presentation::Presentation>>,
 ) {
-    let blocked = contexts.ctx_mut().is_ok_and(|ctx| ui_blocks_pointer(ctx));
+    let blocked = pointer_ui.wants_input().1;
     let blocked = input.gesture.blocks_world(blocked, &buttons);
     let following = presentation.is_some_and(|p| p.follow.enabled() && !p.director.enabled);
     let mode = if blocked {
@@ -826,6 +877,96 @@ mod tests {
                     gesture.blocks_world(!started_over_ui, &buttons),
                     !started_over_ui
                 );
+            }
+        }
+    }
+
+    pub(crate) fn pending_drag_context(
+        press_over_ui: bool,
+        button: egui::PointerButton,
+        dpi: f32,
+    ) -> (bevy_egui::EguiContext, bevy_egui::EguiInput) {
+        let mut context = bevy_egui::EguiContext::default();
+        let input = |events| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                events,
+                ..default()
+            };
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(dpi);
+            input
+        };
+        let draw = |root: &mut egui::Ui| {
+            egui::Window::new("HUD")
+                .fixed_pos([20.0, 20.0])
+                .fixed_size([280.0, 200.0])
+                .show(root.ctx(), |ui| { ui.label("Scene controls"); });
+        };
+        let hud = egui::pos2(80.0, 80.0);
+        let world = egui::pos2(700.0, 500.0);
+        let (origin, destination) = if press_over_ui { (hud, world) } else { (world, hud) };
+        let ctx = context.get_mut();
+        let _ = ctx.run_ui(input(Vec::new()), draw);
+        let _ = ctx.run_ui(input(vec![egui::Event::PointerMoved(destination)]), draw);
+        assert_eq!(ui_blocks_pointer(ctx), !press_over_ui, "the previous UI pass must disagree with the new press");
+        assert!((ctx.pixels_per_point() - dpi).abs() < 0.001);
+        let pending = bevy_egui::EguiInput(input(vec![
+            egui::Event::PointerMoved(origin),
+            egui::Event::PointerButton { pos: origin, button, pressed: true, modifiers: default() },
+            egui::Event::PointerMoved(destination),
+        ]));
+        (context, pending)
+    }
+
+    #[test]
+    fn coalesced_hud_and_world_presses_keep_their_origin_at_both_dpi_scales() {
+        for dpi in [1.0, 2.0] {
+            for press_over_ui in [false, true] {
+                for (first, second, egui_button) in [
+                    (MouseButton::Right, MouseButton::Middle, egui::PointerButton::Secondary),
+                    (MouseButton::Middle, MouseButton::Right, egui::PointerButton::Middle),
+                ] {
+                    let (context, pending) = pending_drag_context(press_over_ui, egui_button, dpi);
+                    let mut app = App::new();
+                    app.init_resource::<ButtonInput<MouseButton>>()
+                        .init_resource::<AccumulatedMouseMotion>()
+                        .init_resource::<AccumulatedMouseScroll>()
+                        .init_resource::<EguiUserTextures>()
+                        .add_systems(Update, camera_input);
+                    let input_entity = app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending)).id();
+                    let camera = app.world_mut().spawn(PanOrbitCamera::default()).id();
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(first);
+                    app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(50.0, 25.0);
+                    // Do not run egui: the camera must use the pending press, not old hover state.
+                    app.update();
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui);
+                    let destination = if press_over_ui { egui::pos2(700.0, 500.0) } else { egui::pos2(80.0, 80.0) };
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events = vec![egui::Event::PointerMoved(destination)];
+                    app.update();
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui);
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(second);
+                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events.push(egui::Event::PointerButton {
+                        pos: destination,
+                        button: if second == MouseButton::Right { egui::PointerButton::Secondary } else { egui::PointerButton::Middle },
+                        pressed: true,
+                        modifiers: default(),
+                    });
+                    app.update();
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(first);
+                    app.update();
+                    assert_eq!(app.world().get::<PanOrbitCamera>(camera).unwrap().current_motion.is_user_controlled(), !press_over_ui, "a chord changed the latched surface");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_pointer_move_reserves_the_current_hud_for_scroll() {
+        for dpi in [1.0, 2.0] {
+            for over_ui in [false, true] {
+                let (mut context, mut pending) = pending_drag_context(over_ui, egui::PointerButton::Secondary, dpi);
+                pending.events = vec![egui::Event::PointerMoved(if over_ui { egui::pos2(80.0, 80.0) } else { egui::pos2(700.0, 500.0) })];
+                assert_eq!(ui_blocks_pointer_with_input(context.get_mut(), Some(&pending)), over_ui);
             }
         }
     }
