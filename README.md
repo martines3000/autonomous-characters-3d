@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 starlings at startup; scene-specific tiers; Lab up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 250 release tests and 22 GPU regressions passed; seeded benchmarks and school metrics available |
+| Tests | None | 255 release tests and 24 real-device GPU checks passed; seeded benchmarks and school metrics available |
 | Known bugs | 14 audit findings | Original correctness findings resolved; scaling limits tracked; CI not wanted |
 
 Bugs found and fixed include:
@@ -79,6 +79,9 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory dist
 Use desktop WebGPU over HTTPS or localhost. Unsupported devices get a clear explanation. Browser
 Lab uses bundled animals; arbitrary local model imports remain native-only. The browser fetches
 packaged lighting from the native headless baker instead of blocking input with a CPU bake.
+The FLOCK loading screen shows real resource progress and preparation stages, then reveals the
+ready scene with a short fade. Reduced motion keeps the reveal spatially still. Loading failures
+retain a visible explanation and Retry; no invented overall startup percentage is displayed.
 `?scene=shark&population=low` selects the same scene/tier contract as the HUD.
 See [browser feasibility](docs/browser-feasibility.md) for the exact tested configuration and limits.
 For the static Docker image, cache/MIME headers, pinned browser smoke runner and owner-controlled
