@@ -6,15 +6,36 @@ use bevy::prelude::*;
 
 use crate::{presentation::SimulationClock, swarm::Groups, visitor::VisitorScene, GlobalState};
 
-#[derive(Resource, Clone, Debug, Default)]
+#[derive(Resource, Clone, Debug)]
 pub(crate) struct SchoolMotion {
+    scene: VisitorScene,
     elapsed: Duration,
+}
+
+impl Default for SchoolMotion {
+    fn default() -> Self {
+        Self {
+            scene: VisitorScene::ReefDrift,
+            elapsed: Duration::ZERO,
+        }
+    }
 }
 
 impl SchoolMotion {
     pub(crate) fn advance(&mut self, state: &mut GlobalState, delta: Duration) {
         self.elapsed = self.elapsed.saturating_add(delta);
         let span = crate::vehicle::spawn_size(state.vehicle_count);
+        if self.scene == VisitorScene::SharkHunt {
+            let radius = span * 0.34;
+            let phase = self.elapsed.as_secs_f64()
+                * (state.vehicle_max_speed as f64 * 0.45 / radius as f64);
+            state.groups.table[0].target = Some(Vec3::new(
+                radius * (phase as f32).cos(),
+                span * 0.06 * (phase as f32 * 0.5).sin(),
+                span * 0.20 * (phase as f32).sin(),
+            ));
+            return;
+        }
         let radius = span * 0.30;
         let phase = self.elapsed.as_secs_f64() * (6.0 / radius as f64);
         for group in 0..3 {
@@ -30,30 +51,48 @@ impl SchoolMotion {
 
 /// Activate public tuning explicitly; Species::ReefDrift remains the loose Lab reference.
 pub(crate) fn configure(world: &mut World, scene: VisitorScene) {
-    if scene != VisitorScene::ReefDrift {
+    if scene == VisitorScene::Murmuration {
         return;
     }
-    let mut motion = SchoolMotion::default();
+    let mut motion = SchoolMotion { scene, ..default() };
     let mut state = world.resource_mut::<GlobalState>();
-    state.groups = Groups {
-        count: 3,
-        ..default()
-    };
-    state.vehicle_separation_distance = 7.0;
-    state.vehicle_separation_factor = 2.0;
-    state.vehicle_alignment_distance = 28.0;
-    state.vehicle_alignment_factor = 1.2;
-    state.vehicle_cohesion_distance = 34.0;
-    state.vehicle_cohesion_factor = 0.5;
-    state.vehicle_seek_factor = 0.35;
+    if scene == VisitorScene::ReefDrift {
+        state.groups = Groups {
+            count: 3,
+            ..default()
+        };
+        state.vehicle_separation_distance = 7.0;
+        state.vehicle_separation_factor = 2.0;
+        state.vehicle_alignment_distance = 28.0;
+        state.vehicle_alignment_factor = 1.2;
+        state.vehicle_cohesion_distance = 34.0;
+        state.vehicle_cohesion_factor = 0.5;
+        state.vehicle_seek_factor = 0.35;
+    } else {
+        // The guide moves through a school with room to split, rather than pinning a bait ball
+        // to the origin. Pursuit, lunge, flee and panic/recovery retain their shared kernels.
+        state.vehicle_separation_distance = 5.0;
+        state.vehicle_separation_factor = 2.2;
+        state.vehicle_alignment_distance = 45.0;
+        state.vehicle_alignment_factor = 1.5;
+        state.vehicle_cohesion_distance = 32.0;
+        state.vehicle_cohesion_factor = 0.6;
+        state.vehicle_seek_factor = 0.5;
+    }
     motion.advance(&mut state, Duration::ZERO);
     world.insert_resource(motion);
 }
 
 /// Public guide groups must not become inherited targets in a later Lab species preset.
 pub(crate) fn release(world: &mut World) {
-    if world.remove_resource::<SchoolMotion>().is_some() {
-        world.resource_mut::<GlobalState>().groups = default();
+    if let Some(motion) = world.remove_resource::<SchoolMotion>() {
+        let mut state = world.resource_mut::<GlobalState>();
+        if motion.scene == VisitorScene::ReefDrift {
+            state.groups = default();
+        } else {
+            // Keep visible hunters available for Lab inspection, without a hidden moving target.
+            state.groups.table[0].target = None;
+        }
     }
 }
 
@@ -169,5 +208,46 @@ mod tests {
         assert_eq!(world.resource::<GlobalState>().groups.count, 3);
         crate::showcase::apply(&mut world, crate::showcase::Showcase::Calm);
         assert!(!world.contains_resource::<SchoolMotion>());
+    }
+
+    #[test]
+    fn shark_school_travels_inside_bounds_and_keeps_hunter_configuration() {
+        for tier in PopulationTier::ALL {
+            let mut world = world();
+            crate::visitor::apply(&mut world, VisitorScene::SharkHunt, tier);
+            let mut motion = world.resource::<SchoolMotion>().clone();
+            let mut state = world.resource::<GlobalState>().clone();
+            let hunters = state.groups.table[1];
+            let start = state.groups.table[0].target.unwrap();
+            let bounds = crate::vehicle::walls(state.vehicle_count) * 0.5;
+            let mut span = 0.0_f32;
+            for _ in 0..120 {
+                motion.advance(&mut state, Duration::from_millis(500));
+                let point = state.groups.table[0].target.unwrap();
+                assert!(point.is_finite() && point.abs().cmple(bounds).all());
+                span = span.max(start.distance(point));
+                assert_eq!(state.groups.table[1], hunters);
+                assert_eq!(state.groups.hunter_count(), 3);
+            }
+            assert!(span > crate::vehicle::spawn_size(state.vehicle_count) * 0.5);
+            assert_eq!(state.vehicle_cohesion_factor, 0.6);
+        }
+    }
+
+    #[test]
+    fn shark_lab_entry_releases_guide_and_legacy_attack_restores_origin_target() {
+        let mut world = world();
+        crate::visitor::apply(&mut world, VisitorScene::SharkHunt, PopulationTier::Medium);
+        crate::visitor::set_lab(&mut world, true);
+        assert!(!world.contains_resource::<SchoolMotion>());
+        let state = world.resource::<GlobalState>();
+        assert_eq!(state.groups.hunter_count(), 3);
+        assert_eq!(state.groups.table[0].target, None);
+        crate::species::apply(&mut world, crate::species::Species::SharkAttack);
+        let state = world.resource::<GlobalState>();
+        assert_eq!(state.groups.table[0].target, Some(Vec3::ZERO));
+        assert_eq!(state.vehicle_cohesion_factor, 6.0);
+        assert_eq!(state.vehicle_seek_factor, 7.0);
+        assert_eq!(state.groups.table[1].size_scale, 5.0);
     }
 }

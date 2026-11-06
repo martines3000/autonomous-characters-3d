@@ -123,6 +123,11 @@ Public **Reef drift** uses three loose shoals with local schooling and gentle tr
 Pause freezes the guides with the fish; scene or size changes start a new school phase. Reset view,
 Ride and Another animal preserve that phase. Lab releases the automatic guides and owned Reef
 groups; the Lab **Reef drift** species retains its original slow, scattered reference behavior.
+
+Public **Shark hunt** follows a travelling school through the water, with more local spacing and
+weaker cohesion than the Lab bait ball. Three sharks retain their pursuit, lunge and prey panic/
+recovery behavior. The wider Scenic view keeps the moving encounter in frame. Lab's **Shark
+attack** retains its fixed origin target and original tuning.
 The public hunt uses three sharks with 8× visual scale and 1× cruise-speed scale so their silhouettes
 and committed passes remain readable. Lab’s legacy Shark attack retains its original 5× / 1.3× tuning.
 Selecting a scene or flock size starts a freshly scattered flock, including while paused. This avoids

@@ -207,7 +207,7 @@ pub(crate) fn reset_view(world: &mut World) {
         // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
         VisitorScene::Murmuration => (225.0, -3.0, 0.65),
         VisitorScene::ReefDrift => (20.0, 3.0, 1.10),
-        VisitorScene::SharkHunt => (15.0, 3.0, 0.5),
+        VisitorScene::SharkHunt => (15.0, 3.0, 0.80),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
     for (mut transform, mut orbit, projection) in world
@@ -343,7 +343,7 @@ pub(crate) fn ui(
                 VisitorScene::Murmuration => "Starlings flow together through the evening sky.",
                 VisitorScene::ReefDrift => "Loose shoals weave through clear, sunlit water.",
                 VisitorScene::SharkHunt => {
-                    "Three sharks pursue a school. Watch it scatter and regroup."
+                    "Sharks pursue a travelling school that splits and regroups."
                 }
             });
             ui.horizontal(|ui| {

@@ -21,9 +21,13 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - Existing `Group.target` replaces wander and wall avoidance with full-speed seek; static per-shoal targets would create smaller anchored balls. Moving, bounded guides and local alignment/cohesion must be evaluated in motion before accepting their tuning.
 - GPU prey poses are sampled through an existing asynchronous 80-byte camera readback. Hunter poses live in the GPU arena in GPU mode and in `Hunters` in CPU modes. Shark riding must sample the actual simulated hunter rather than the CPU initial pose.
 - Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
+- The first Shark moving-point trial improved median spacing and reduced panic, but sampled frames still showed a compact travelling ball and cropping. Centroid travel alone is insufficient: the fixed-target baseline already has substantial centroid motion under pursuit. Reject that trial as the final Shark behavior.
 
 ## Decision Log
 
+- Decision: Replace Shark's point seek with an explicitly enabled soft capsule-shaped flow guide, shared by CPU/GPU, and follow the moving encounter in Scenic view while respecting Free/Ride/reduced motion.
+  Rationale: Inside the corridor there is no force toward a central point; local alignment, separation, cohesion and predator responses determine the school structure. A soft boundary restores stragglers without assigning rigid positions. Existing Lab targets and Reef's validated guides retain their original paths.
+  Date: 2026-11-06.
 - Decision: Keep the work in three dependent PRs: Reef, travelling Shark school, shark riding.
   Rationale: Each behavior or camera outcome remains independently reviewable. Existing PRs 12–20 and deployment drafts remain unchanged.
   Date: 2026-11-06.
@@ -54,7 +58,7 @@ In progress. No new behavior, camera feature or measurement is claimed complete 
 
 1. Close the review app, record the existing Reef/Shark behavior and repeat medium-tier timing windows without other builds/apps.
 2. Introduce a narrow public-school controller, explicit activation/reset/Lab lifecycle, three Reef prey groups and scene-specific steering. Validate phase, bounded routes, pause/speed, group roles and unchanged reference presets. Inspect before/after clips.
-3. Extend that controller to Shark hunt, preserving three hunters and existing pursuit/panic rules while replacing the fixed origin target and adjusting local school structure. Measure travel, local spacing and all public-tier cost without hiding remaining limitations.
+3. Extend that controller to Shark hunt using a soft moving flow corridor, preserving three hunters and existing pursuit/panic rules while removing point convergence and adjusting local school structure. Add CPU/GPU guide-force parity and ABI tests. Measure travel, local spacing, school elongation and all public-tier cost without hiding remaining limitations. Keep Scenic composition centered on the moving encounter; Free/Ride/reduced motion retain their ownership.
 4. Integrate the independent shark Ride lane: actual CPU/GPU hunter samples, type-preserving random selection, correctly scaled cameras, stale-readback/lifecycle tests, visible Fish/Shark choice and scripted/browser controls.
 5. Run the final gates once for the integrated result, publish immutable evidence, push PRs with exact dependencies, update review handoff and archive this plan.
 
@@ -101,3 +105,4 @@ Reuse existing group targets, simulation clock, hunter storage, camera readback 
 Revision notes:
 
 - 2026-11-06: Initial owner-authorized follow-up plan after manual review and the tested Another animal control.
+- 2026-11-06: Rejected the first Shark point-guide trial after native frames retained a compact ball and cropped the moving school. Extended only the explicitly enabled public Shark behavior to a shared soft flow corridor, with force/ABI parity tests and camera ownership checks.
