@@ -32,7 +32,7 @@ impl SchoolMotion {
         let span = crate::vehicle::spawn_size(state.vehicle_count);
         if self.scene == VisitorScene::SharkHunt {
             let radius = span * 0.34;
-            let angular_speed = state.vehicle_max_speed * 0.45 / radius;
+            let angular_speed = state.vehicle_max_speed * 0.25 / radius;
             let phase = (self.elapsed.as_secs_f64() * angular_speed as f64) as f32;
             state.groups.table[0].target = None;
             state.groups.table[0].guide = Some(SchoolGuide {
@@ -86,12 +86,14 @@ pub(crate) fn configure(world: &mut World, scene: VisitorScene) {
     } else {
         // The soft corridor leaves its interior free of a central attraction force.
         // Pursuit, lunge, flee and panic/recovery retain their shared kernels.
-        state.vehicle_separation_distance = 5.0;
+        state.vehicle_separation_distance = 6.0;
         state.vehicle_separation_factor = 2.2;
         state.vehicle_alignment_distance = 45.0;
-        state.vehicle_alignment_factor = 0.15;
+        // The guide supplies coherent velocity. The legacy alignment kernel aims at
+        // max speed, which otherwise drives the school into the capsule's front cap.
+        state.vehicle_alignment_factor = 0.0;
         state.vehicle_cohesion_distance = 32.0;
-        state.vehicle_cohesion_factor = 0.1;
+        state.vehicle_cohesion_factor = 0.0;
         state.vehicle_seek_factor = 0.5;
     }
     motion.advance(&mut state, Duration::ZERO);
@@ -291,7 +293,7 @@ mod tests {
                 assert_eq!(state.groups.hunter_count(), 3);
             }
             assert!(span > crate::vehicle::spawn_size(state.vehicle_count) * 0.5);
-            assert_eq!(state.vehicle_cohesion_factor, 0.1);
+            assert_eq!(state.vehicle_cohesion_factor, 0.0);
         }
     }
 
