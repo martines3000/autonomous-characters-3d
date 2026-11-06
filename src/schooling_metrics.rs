@@ -141,6 +141,16 @@ mod schooling_metrics {
         max_overshoot: f32,
     }
 
+    fn median(sorted: &[f32]) -> f32 {
+        assert!(!sorted.is_empty());
+        let middle = sorted.len() / 2;
+        if sorted.len().is_multiple_of(2) {
+            sorted[middle - 1] + (sorted[middle] - sorted[middle - 1]) * 0.5
+        } else {
+            sorted[middle]
+        }
+    }
+
     fn metrics(
         boids: &[&BoidData],
         neighbors: &[NeighborSample],
@@ -184,7 +194,7 @@ mod schooling_metrics {
             neighbor_queries: queries.len(),
             same_group_fraction: queries.iter().filter(|sample| sample.same_group).count() as f32
                 / queries.len() as f32,
-            median_neighbor_distance: distances[distances.len() / 2],
+            median_neighbor_distance: median(&distances),
             panic_fraction: boids
                 .iter()
                 .filter(|boid| f32::from_bits(boid.metadata.w) > 0.0)
@@ -337,6 +347,12 @@ mod schooling_metrics {
     }
 
     #[test]
+    fn nearest_distance_median_handles_even_samples() {
+        assert_eq!(median(&[1.0, 3.0]), 2.0);
+        assert_eq!(median(&[1.0, 3.0, 5.0]), 3.0);
+    }
+
+    #[test]
     #[ignore = "real GPU school probe; run release with --nocapture --test-threads=1"]
     fn gpu_schooling_scene_metrics() {
         let step = Duration::from_secs_f64(1.0 / HZ as f64);
@@ -352,7 +368,7 @@ mod schooling_metrics {
             PopulationTier::parse(&value).expect("SCHOOL_PROBE_TIER must be low, medium or high")
         });
         println!(
-            "SCHOOL_METRICS_META,os={},arch={},release={},spawn=default_gpu_pcg_frame_0,bitwise_replay_claim=false,step_seconds={:.9},settle_seconds={SETTLE_SECONDS},sample_seconds={SAMPLE_SECONDS},readback_hz=2,max_exact_neighbor_queries={NEIGHBOR_QUERY_BUDGET},bounds=sampled_only,performance_timing=false",
+            "SCHOOL_METRICS_META,os={},arch={},release={},spawn=default_gpu_pcg_frame_0,bitwise_replay_claim=false,step_seconds={:.9},settle_seconds={SETTLE_SECONDS},sample_seconds={SAMPLE_SECONDS},readback_hz=2,max_exact_neighbor_queries={NEIGHBOR_QUERY_BUDGET},polarization=speed_weighted_velocity_sum_over_speed_sum,bounds=sampled_only,performance_timing=false",
             std::env::consts::OS, std::env::consts::ARCH,
             !cfg!(debug_assertions), step.as_secs_f64(),
         );
