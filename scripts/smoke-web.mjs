@@ -190,6 +190,9 @@ try {
   await page.screenshot({ path: path.join(output, 'visitor-help.png') });
   await page.mouse.click(48, 228);
   await page.waitForFunction(() => !window.flockReport.scene.help);
+  // The Rust state report precedes Egui's next layout/presentation pass. Let the collapsed
+  // Help panel present before sending another click into the same canvas HUD.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.mouse.click(149, 228);
   await page.waitForFunction(() => window.flockReport.scene.lab);
   await page.screenshot({ path: path.join(output, 'lab.png') });
