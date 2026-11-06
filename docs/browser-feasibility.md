@@ -17,7 +17,9 @@ compile or an application resource counter alone is not proof of a presented sce
   performance windows. Initial load average was **0.77 / 1.17 / 1.02**.
 - Real headed screenshots show the visitor HUD, warm starling scene, reef, and three visible shark
   silhouettes among split schools. A 20-second browser Shark hunt recording is separate from
-  performance measurements. Visibility of every shark throughout a clip is not promised.
+  performance measurements. CDP video contains native-window padding; use the full-resolution PNGs
+  for composition and the native hunt clip for polished behavior review. The browser recording
+  proves moving presented pixels. Visibility of every shark throughout a clip is not promised.
 
 | Visitor/capability check | Observed result |
 | --- | --- |
