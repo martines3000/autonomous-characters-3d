@@ -917,7 +917,8 @@ pub(crate) mod tests {
                     (MouseButton::Right, egui::PointerButton::Secondary),
                     (MouseButton::Middle, egui::PointerButton::Middle),
                 ] {
-                    let (context, pending) = crate::tests::pending_drag_context(press_over_ui, egui_button, dpi);
+                    let (context, pending) =
+                        crate::tests::pending_drag_context(press_over_ui, egui_button, dpi);
                     let mut app = App::new();
                     app.init_resource::<Presentation>()
                         .init_resource::<ButtonInput<KeyCode>>()
@@ -925,13 +926,21 @@ pub(crate) mod tests {
                         .init_resource::<AccumulatedMouseScroll>()
                         .init_resource::<bevy_egui::EguiUserTextures>()
                         .add_systems(Update, presentation_input);
-                    app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending));
-                    app.world_mut().resource_mut::<Presentation>().follow.mode = crate::follow::FollowMode::Chase;
-                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+                    app.world_mut()
+                        .spawn((context, bevy_egui::PrimaryEguiContext, pending));
+                    app.world_mut().resource_mut::<Presentation>().follow.mode =
+                        crate::follow::FollowMode::Chase;
+                    app.world_mut()
+                        .resource_mut::<ButtonInput<MouseButton>>()
+                        .press(button);
                     app.update();
                     let presentation = app.world().resource::<Presentation>();
                     assert_eq!(presentation.manual_camera, !press_over_ui);
-                    assert_eq!(presentation.follow.enabled(), press_over_ui, "only a world press may release Ride");
+                    assert_eq!(
+                        presentation.follow.enabled(),
+                        press_over_ui,
+                        "only a world press may release Ride"
+                    );
                 }
             }
         }
