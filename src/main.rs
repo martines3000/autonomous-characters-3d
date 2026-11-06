@@ -143,11 +143,7 @@ impl PointerGesture {
         buttons: &ButtonInput<MouseButton>,
     ) -> bool {
         let dragging = buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle);
-        if dragging
-            && (!self.dragging
-                || buttons.just_pressed(MouseButton::Right)
-                || buttons.just_pressed(MouseButton::Middle))
-        {
+        if dragging && !self.dragging {
             self.started_over_ui = over_ui;
         }
         self.dragging = dragging;
@@ -786,6 +782,49 @@ mod tests {
             );
             buttons.release(button);
             assert!(!gesture.blocks_world(false, &buttons));
+        }
+    }
+
+    #[test]
+    fn camera_chord_keeps_first_button_owner_until_all_release() {
+        for (first, second) in [
+            (MouseButton::Right, MouseButton::Middle),
+            (MouseButton::Middle, MouseButton::Right),
+        ] {
+            for started_over_ui in [false, true] {
+                let mut buttons = ButtonInput::default();
+                let mut gesture = PointerGesture::default();
+                buttons.press(first);
+                assert_eq!(
+                    gesture.blocks_world(started_over_ui, &buttons),
+                    started_over_ui
+                );
+                buttons.clear();
+                buttons.press(second);
+                assert_eq!(
+                    gesture.blocks_world(!started_over_ui, &buttons),
+                    started_over_ui,
+                    "second button changed the drag owner"
+                );
+                buttons.clear();
+                buttons.release(first);
+                assert_eq!(
+                    gesture.blocks_world(!started_over_ui, &buttons),
+                    started_over_ui
+                );
+                buttons.clear();
+                buttons.release(second);
+                assert_eq!(
+                    gesture.blocks_world(!started_over_ui, &buttons),
+                    !started_over_ui
+                );
+                buttons.clear();
+                buttons.press(second);
+                assert_eq!(
+                    gesture.blocks_world(!started_over_ui, &buttons),
+                    !started_over_ui
+                );
+            }
         }
     }
 
