@@ -1,6 +1,6 @@
 # Agent guide
 
-Native Rust/Bevy 3D boids simulation. Bevy 0.20.1, bevy_egui 0.43.1, nalgebra 0.35, Rust 1.99.1 (pinned in `rust-toolchain.toml`). Source lives in `src/`: `main.rs` (app setup, `GlobalState` defaults, egui menu, camera input), `vehicle.rs` (spawning, steering, integration), `target.rs` (selectable target), `octree.rs` (spatial index).
+Rust/Bevy 3D boids simulation with native development and optional WebGPU browser delivery. Bevy 0.20.1, bevy_egui 0.43.1, nalgebra 0.35, Rust 1.99.1 (pinned in `rust-toolchain.toml`). Source lives in `src/`: `main.rs` (app setup, `GlobalState` defaults, egui menu, camera input), `vehicle.rs` (spawning, steering, integration), `target.rs` (selectable target), `octree.rs` (spatial index).
 
 ## Commands from the repository root
 
@@ -15,6 +15,8 @@ CARGO_BUILD_JOBS=4 cargo build --release --locked
 python3 scripts/smoke-native.py
 git diff --check
 ```
+
+Browser/runtime/tooling changes also need the documented local container and headed-browser checks in `docs/web-delivery.md`. Use the recorded Chromium configuration and serialize builds/apps with the same shared lock. Headless CDP black frames do not establish visual success.
 
 `cargo test` is the behavior gate. The smoke script opens the release binary for ten seconds and needs a desktop session; it proves startup only, not flocking correctness or performance. Clippy (`CARGO_BUILD_JOBS=4 cargo clippy --release --locked --all-targets`) has 7 known pre-existing warnings; it is not a gate, but do not add new warnings in code you touch. The release build has no compiler warnings; keep it that way.
 
@@ -34,7 +36,7 @@ This machine is shared by several agents and worktrees.
 
 ## Scope boundaries
 
-- Native development only. The original WASM web build (Trunk, Docker, nginx) was removed; do not reintroduce a web target unless a task says so.
+- Native and WASM/WebGPU delivery share the Rust simulation. Follow `docs/web-delivery.md` for the supported browser build, static container and verification path; do not introduce an alternative web implementation as a side effect.
 - `review-report.html` and `review-tools-research.md` describe the original pre-modernization code (commit `e7a53d7`). Keep them as historical records; do not edit them. `review-progress.md` is the historical log up to the native modernization; record new work in `plans/`.
 - Change `Cargo.toml`/`Cargo.lock` only in tasks that are about dependencies.
 - Do not change simulation semantics (frame-rate dependence, octree query behavior, default settings) as a side effect; each has its own entry in `plans/STATUS.md`.

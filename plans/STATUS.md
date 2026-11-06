@@ -2,8 +2,8 @@
 
 ## Current work
 
-- Polished nature showcase execution is active. The AAA look track is merged.
-- [Polished nature showcase and web release](planned/2026-11-05-polished-flock-web-showcase.md) (active, 2026-11-05): autonomous development with useful subagents and small review PRs for visitor UI, visuals, animal behavior, browser delivery, and CRONA hosting preparation. Stop at the morning review handoff; do not merge or deploy. Baseline/audit PR [#12](https://github.com/martines3000/autonomous-characters-3d/pull/12) is ready. Native scene/HUD/restart checks pass; composition and browser release tooling are active. [Cluster draft](https://github.com/martines3000/household-cluster/pull/1) and [routing draft](https://github.com/martines3000/household-infra/pull/1) await publication/internal health. The active goal ends at the review handoff.
+- The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application PRs 12–18, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
+- The [approved review-preparation plan](completed/2026-11-05-polished-flock-web-showcase.md) is complete at its review handoff. Deployment publication/health and later public verification remain a separate, explicitly authorized release session.
 
 ## Prioritized future tasks
 

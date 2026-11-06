@@ -48,6 +48,8 @@ Bugs found and fixed include:
 
 The audit is [review-report.html](review-report.html). Each fix has an ExecPlan with evidence in
 [plans/completed/](plans/completed/), and [plans/STATUS.md](plans/STATUS.md) tracks the open work.
+The [6 November showcase review index](plans/evidence/2026-11-06-morning-review.md) links the prepared
+application/deployment PRs, tested evidence and later release prerequisites.
 
 ## Run it
 
