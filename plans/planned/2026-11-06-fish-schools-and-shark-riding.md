@@ -24,6 +24,9 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
 - The first Shark moving-point trial improved median spacing and reduced panic, but sampled frames still showed a compact travelling ball and cropping. Centroid travel alone is insufficient: the fixed-target baseline already has substantial centroid motion under pursuit. Reject that trial as the final Shark behavior.
 - Headed acceptance exposed a fast pointer-entry race: PreUpdate reads Egui's prior UI-pass hover state, while a press and movement can cross the HUD boundary before the next UI pass. Current-frame press-event positions must determine initial gesture ownership; keep the existing owner for the rest of the chord. A dedicated regression/fix is being prepared before browser readiness is claimed.
+- Independent review rejected the first soft-flow result as a complete non-ball solution: Medium/High still contracted into compact clouds. Legacy alignment targets maximum speed rather than matching neighbor speed, pushing fish into the capsule's leading end. Removing that propulsion, carrying the guide's angular velocity and using a gentler circular route improved elongation. Unbounded turn velocity at distant stragglers was then bounded to the nearest capsule point.
+- Random cube positions and full-speed random headings are unsuitable initial conditions for a free-interior travelling guide. Public guided prey now need coherent, uniform-volume ellipsoid spawning with the guide's local velocity. Existing target/wander/formation spawning must retain its original draw consumption and behavior.
+- At clean source `10acec7`, 250 native tests, 22 GPU regressions, nine loader tests, one packaging test and the full headed browser suite passed. The loading-specific headed proof captured actual partial bytes under a 2 MiB/s throttle, normal/reduced reveals and failure during reveal. Later school corrections require a final integrated source run; these earlier results do not establish their readiness.
 
 ## Decision Log
 
@@ -33,8 +36,11 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - Decision: Replace Shark's point seek with an explicitly enabled soft capsule-shaped flow guide, shared by CPU/GPU, and follow the moving encounter in Scenic view while respecting Free/Ride/reduced motion.
   Rationale: Inside the corridor there is no force toward a central point; local alignment, separation, cohesion and predator responses determine the school structure. A soft boundary restores stragglers without assigning rigid positions. Existing Lab targets and Reef's validated guides retain their original paths.
   Date: 2026-11-06.
-- Decision: Keep the work in three dependent PRs: Reef, travelling Shark school, shark riding.
+- Decision: Keep the work in four dependent PRs: Reef, travelling Shark school, shark riding, web loading/reveal.
   Rationale: Each behavior or camera outcome remains independently reviewable. Existing PRs 12–20 and deployment drafts remain unchanged.
+  Date: 2026-11-06.
+- Decision: Start only explicitly guided prey within a loose ellipsoid, with translating/rotating guide velocity; retain free motion inside the soft envelope and ordinary predator responses. Increase guide recovery strength and widen the public encounter framing.
+  Rationale: This supplies an immediate coherent school without assigning persistent slots or requiring a convergence ball. It also avoids hiding a poor startup behind a long warmup. Legacy spawning remains unchanged when guide navigation does not own the group.
   Date: 2026-11-06.
 - Decision: First trial a scene-only simulation-clock controller using existing prey groups and bounded travelling guides, with scene-specific steering tuning.
   Rationale: This reuses both CPU/GPU kernels. Accept only after clips and measurements show loose shoals/travel rather than anchored mini-balls; revise the approach if observed behavior fails.
@@ -53,7 +59,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 ## Outcomes & Retrospective
 
-In progress. No new behavior, camera feature or measurement is claimed complete yet.
+Implementation and review are in progress. Reef grouping, actual CPU/GPU shark Ride and truthful web loading have passing checkpoints. Shark schooling required additional observed-behavior corrections; final footage, all-tier metrics, integrated gates and PR publication remain before completion is claimed.
 
 ## Context and Orientation
 
