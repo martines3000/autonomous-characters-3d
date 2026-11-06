@@ -561,7 +561,9 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
                 ["boidcam", "next"] => Command::FollowNext,
                 ["boidcam", "fish"] => Command::FollowSubject(crate::follow::FollowSubject::Prey),
-                ["boidcam", "shark"] => Command::FollowSubject(crate::follow::FollowSubject::Hunter),
+                ["boidcam", "shark"] => {
+                    Command::FollowSubject(crate::follow::FollowSubject::Hunter)
+                }
                 ["boidcam", "id", id] => {
                     Command::FollowId(integer(id, 0, u32::MAX as usize)? as u32)
                 }
@@ -1654,24 +1656,48 @@ mod tests {
     fn camera_subject_commands_start_chase_and_preserve_first_person_and_pause() {
         use crate::follow::{FollowMode, FollowSubject};
         let commands = parse("0 boidcam shark\n0 boidcam first\n0 boidcam fish").unwrap();
-        assert_eq!(commands[0].command, Command::FollowSubject(FollowSubject::Hunter));
-        assert_eq!(commands[2].command, Command::FollowSubject(FollowSubject::Prey));
+        assert_eq!(
+            commands[0].command,
+            Command::FollowSubject(FollowSubject::Hunter)
+        );
+        assert_eq!(
+            commands[2].command,
+            Command::FollowSubject(FollowSubject::Prey)
+        );
         let mut world = World::new();
         world.init_resource::<Time<Real>>();
         world.init_resource::<Presentation>();
         world.init_resource::<crate::capture::Capture>();
         world.init_resource::<Appearance>();
         world.resource_mut::<Presentation>().paused = true;
-        world.insert_resource(Scenario { commands: parse("0 boidcam shark").unwrap().into(), measurement: None });
+        world.insert_resource(Scenario {
+            commands: parse("0 boidcam shark").unwrap().into(),
+            measurement: None,
+        });
         run_scenario(&mut world);
-        assert_eq!(world.resource::<Presentation>().follow.mode, FollowMode::Chase);
-        assert_eq!(world.resource::<Presentation>().follow.subject(), FollowSubject::Hunter);
+        assert_eq!(
+            world.resource::<Presentation>().follow.mode,
+            FollowMode::Chase
+        );
+        assert_eq!(
+            world.resource::<Presentation>().follow.subject(),
+            FollowSubject::Hunter
+        );
         assert!(world.resource::<Presentation>().paused);
         world.resource_mut::<Presentation>().follow.mode = FollowMode::FirstPerson;
-        world.insert_resource(Scenario { commands: parse("0 boidcam fish").unwrap().into(), measurement: None });
+        world.insert_resource(Scenario {
+            commands: parse("0 boidcam fish").unwrap().into(),
+            measurement: None,
+        });
         run_scenario(&mut world);
-        assert_eq!(world.resource::<Presentation>().follow.mode, FollowMode::FirstPerson);
-        assert_eq!(world.resource::<Presentation>().follow.subject(), FollowSubject::Prey);
+        assert_eq!(
+            world.resource::<Presentation>().follow.mode,
+            FollowMode::FirstPerson
+        );
+        assert_eq!(
+            world.resource::<Presentation>().follow.subject(),
+            FollowSubject::Prey
+        );
         assert!(world.resource::<Presentation>().paused);
         assert!(parse("0 boidcam dolphin").is_err());
     }

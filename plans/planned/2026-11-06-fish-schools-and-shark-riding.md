@@ -12,7 +12,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
 - [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
 - [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence. Shared soft-flow steering and camera ownership pass 237 release tests and 21 GPU regressions. Seeded all-tier windows show wider spacing and local panic; final camera captures/browser/performance/PR publication remain.
-- [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
+- [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests. Actual hunter sampling, type-safe readbacks, scaled Chase/First person and Fish/Shark controls pass 243 release tests and 22 GPU regressions. Camera captures and headed browser integration remain.
 - [ ] Prepare fourth PR with truthful web download/preparation progress and an accessible reveal after the first ready scene.
 - [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.
 - [ ] Archive plan and update README, STATUS and morning review index.
