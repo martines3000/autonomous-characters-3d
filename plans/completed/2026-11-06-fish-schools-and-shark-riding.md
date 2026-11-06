@@ -10,12 +10,12 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 - [x] (2026-11-06 09:55Z) Recorded authorization, scope, ownership and validation strategy. Existing cause confirmed: Reef drift has strong wander/weak schooling; Shark attack sets a fixed origin prey target.
 - [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
-- [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
-- [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence. Shared soft-flow steering and camera ownership pass 237 release tests and 21 GPU regressions. Seeded all-tier windows show wider spacing and local panic; final camera captures/browser/performance/PR publication remain.
-- [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests. Actual hunter sampling, type-safe readbacks, scaled Chase/First person and Fish/Shark controls pass 243 release tests and 22 GPU regressions. Camera captures and headed browser integration remain.
-- [ ] Prepare fourth PR with truthful web download/preparation progress and an accessible reveal after the first ready scene.
-- [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.
-- [ ] Archive plan and update README, STATUS and morning review index.
+- [x] (2026-11-06 16:07Z) Prepared ready [PR #22](https://github.com/martines3000/autonomous-characters-3d/pull/22): three Reef shoals, public/Lab lifecycle, pointer regressions and before/after video. Final all-tier same-shoal nearest fractions are 99.64–99.82%.
+- [x] (2026-11-06 16:07Z) Prepared ready [PR #23](https://github.com/martines3000/autonomous-characters-3d/pull/23): shared translating/turning guide, coherent initial school volume, local recovery and Scenic framing. Rejected compact/over-dispersed trials; accepted a qualified travelling-school result from all-tier metrics and a 60-second clip.
+- [x] (2026-11-06 16:07Z) Prepared ready [PR #24](https://github.com/martines3000/autonomous-characters-3d/pull/24): actual CPU/GPU hunter subjects, type-safe stale-readback rejection, scaled Chase/First person, Fish/Shark selection and target changes. Native/GPU/browser cases and two 12-second camera clips pass.
+- [x] (2026-11-06 16:07Z) Prepared ready [PR #25](https://github.com/martines3000/autonomous-characters-3d/pull/25): actual streamed progress, named preparation, rendered-scene reveal, reduced motion and recovery. Nine loader tests, one packaging fixture and headed loading proof/video pass.
+- [x] (2026-11-06 16:07Z) Integrated gates pass: 255 release tests, 24 real-device GPU checks, warning-free build, native smoke, seven existing Clippy warnings, 11 headed browser cases, healthy local Docker, 32 byte-identical clean-output files, repeated native windows and all nine browser tiers twice. Independent source/visual reviews complete; immutable evidence pushed.
+- [x] (2026-11-06 16:07Z) Updated README, web delivery, STATUS and exact review order; archived this plan. All four PRs remain unmerged. Deployment drafts retain real-image and later health prerequisites.
 
 ## Surprises & Discoveries
 
@@ -23,10 +23,12 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - GPU prey poses are sampled through an existing asynchronous 80-byte camera readback. Hunter poses live in the GPU arena in GPU mode and in `Hunters` in CPU modes. Shark riding must sample the actual simulated hunter rather than the CPU initial pose.
 - Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
 - The first Shark moving-point trial improved median spacing and reduced panic, but sampled frames still showed a compact travelling ball and cropping. Centroid travel alone is insufficient: the fixed-target baseline already has substantial centroid motion under pursuit. Reject that trial as the final Shark behavior.
-- Headed acceptance exposed a fast pointer-entry race: PreUpdate reads Egui's prior UI-pass hover state, while a press and movement can cross the HUD boundary before the next UI pass. Current-frame press-event positions must determine initial gesture ownership; keep the existing owner for the rest of the chord. A dedicated regression/fix is being prepared before browser readiness is claimed.
+- Headed acceptance exposed a fast pointer-entry race: PreUpdate reads Egui's prior UI-pass hover state, while a press and movement can cross the HUD boundary before the next UI pass. Current-frame press-event positions now establish initial ownership; ordered full-release/repress and both chord orders have regressions.
 - Independent review rejected the first soft-flow result as a complete non-ball solution: Medium/High still contracted into compact clouds. Legacy alignment targets maximum speed rather than matching neighbor speed, pushing fish into the capsule's leading end. Removing that propulsion, carrying the guide's angular velocity and using a gentler circular route improved elongation. Unbounded turn velocity at distant stragglers was then bounded to the nearest capsule point.
 - Random cube positions and full-speed random headings are unsuitable initial conditions for a free-interior travelling guide. Public guided prey now need coherent, uniform-volume ellipsoid spawning with the guide's local velocity. Existing target/wander/formation spawning must retain its original draw consumption and behavior.
-- At clean source `10acec7`, 250 native tests, 22 GPU regressions, nine loader tests, one packaging test and the full headed browser suite passed. The loading-specific headed proof captured actual partial bytes under a 2 MiB/s throttle, normal/reduced reveals and failure during reveal. Later school corrections require a final integrated source run; these earlier results do not establish their readiness.
+- At clean source `10acec7`, 250 native tests, 22 GPU regressions, nine loader tests, one packaging test and the full headed browser suite passed. The loading-specific headed proof captured actual partial bytes under a 2 MiB/s throttle, normal/reduced reveals and failure during reveal. Those earlier results did not establish later school corrections; the final integrated source was verified separately.
+- Physical desktop input contaminated later Wayland gesture checks while the owner used the PC. A trace retained HUD ownership and frozen simulation time but recorded extra mouse/wheel events. No speculative product fix was made. Full strict acceptance passed in headed Xvfb/X11 on the AMD WebGPU adapter; normal Wayland loading/reveal passed separately. The virtual display requires Chromium's `--disable-vulkan-surface`; without it presentation stalled and that attempt was not accepted.
+- A baseline worktree initially reused a newer shared-target test binary. Scenario metadata exposed the mismatch. Forcing compilation of the intended checkout produced the verified origin-target baseline; the cached attempt is excluded. AGENTS now requires source-path/test-metadata checks when sharing Cargo targets across roots.
 
 ## Decision Log
 
@@ -37,7 +39,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
   Rationale: Inside the corridor there is no force toward a central point; local alignment, separation, cohesion and predator responses determine the school structure. A soft boundary restores stragglers without assigning rigid positions. Existing Lab targets and Reef's validated guides retain their original paths.
   Date: 2026-11-06.
 - Decision: Keep the work in four dependent PRs: Reef, travelling Shark school, shark riding, web loading/reveal.
-  Rationale: Each behavior or camera outcome remains independently reviewable. Existing PRs 12–20 and deployment drafts remain unchanged.
+  Rationale: Each behavior or camera outcome remains independently reviewable. Existing application PRs 12–20 and deployment specifications remain unchanged; draft descriptions link the updated review order.
   Date: 2026-11-06.
 - Decision: Start only explicitly guided prey within a loose ellipsoid, with translating/rotating guide velocity; retain free motion inside the soft envelope and ordinary predator responses. Increase guide recovery strength and widen the public encounter framing.
   Rationale: This supplies an immediate coherent school without assigning persistent slots or requiring a convergence ball. It also avoids hiding a poor startup behind a long warmup. Legacy spawning remains unchanged when guide navigation does not own the group.
@@ -51,15 +53,32 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 ## Assumptions and Open Questions
 
-- Three reef shoals are the initial trial; compare visible separation, cohesion and motion at Low/Medium/High before fixing the count or tuning. These are art/behavior choices, not biological simulation claims.
-- A smoothly travelling bounded school guide with reduced cohesion may produce a readable moving school using current kernels. If it still forms a persistent ball, adjust the model based on measured evidence rather than claim completion.
+- Three Reef shoals are retained after all-tier metrics and footage show distinct coherent groups. This remains an art/behavior choice, not a biological simulation claim.
+- Translation alone did not avoid cap packing. Explicit turn flow, coherent spawning and stronger recovery give a travelling school that sometimes compresses. Continuous elongation, hard confinement and visibility of every shark are not acceptance claims.
 - Shark Ride uses the existing camera modes and random-target action with a simple Fish/Shark choice in Shark hunt. Handle zero hunters, scene/backend/count changes, pause, stale readbacks and model-size-dependent framing.
 - Existing assets remain usable; use Blender only if a concrete asset defect appears.
 - The recorded Linux/Chromium/RADV configuration is the browser acceptance target. Other browsers/devices remain untested.
 
 ## Outcomes & Retrospective
 
-Implementation and review are in progress. Reef grouping, actual CPU/GPU shark Ride and truthful web loading have passing checkpoints. Shark schooling required additional observed-behavior corrections; final footage, all-tier metrics, integrated gates and PR publication remain before completion is claimed.
+Four ready PRs (#22–#25) and immutable evidence are pushed after #20. The review handoff is complete.
+The public scenes and camera changes share the Rust CPU/WebGPU implementation; ordinary Lab targets,
+spawning, defaults and presets retain their paths. No dependency or asset update was needed.
+
+Final native source `4fc7b7b` passes 255 release tests and 24 real-device GPU checks. Clean browser source
+`c7fa288` differs only in a README line and produces release `596a0586e1010946ad95daab`; two fresh outputs
+match in all 32 files. Eleven strict headed browser cases and separate Wayland loading/reveal proof pass.
+See the evidence report for exact source, flags, hardware, loads, timing windows and copy/presentation limits.
+
+Reef same-shoal nearest fractions are 99.64–99.82%. Shark mean elongation is 3.94/2.51/3.68, with wider
+spacing and less panic than the pinned origin-target diagnostic. Medium has a real compact phase while
+still travelling. A 60-second rendered clip shows later re-extension; some sharks/tails reach frame edges.
+No continuous ribbon, hard confinement or biological accuracy claim is made. Different native rasters,
+machine loads and virtual-display presentation prevent direct before/after speed comparisons.
+
+Remaining prerequisites are review/merge, a separately authorized build/publication of the actual merged
+source, a real registry digest, internal health and a later public rollout/verification session. Other
+devices and internet/CRONA capacity remain untested. No production action occurred.
 
 ## Context and Orientation
 
@@ -105,13 +124,28 @@ Each public application starts a fresh school phase and existing flock restart. 
 
 ## Artifacts and Notes
 
-Parent review source: `345ce0eb1450ff4c22b11d1873eafe7f3da982a9` (#20). Raw evidence goes under `/home/martines/Projects/ac3d-evidence/2026-11-06-fish-schools/`; selected immutable evidence will be linked from PRs and the morning index.
+Parent review source: `345ce0eb1450ff4c22b11d1873eafe7f3da982a9` (#20). Raw evidence remains under `/home/martines/Projects/ac3d-evidence/2026-11-06-fish-schools/`; selected immutable evidence is linked from PRs and the morning index.
+
+Published evidence: [source, clips, logs and measurements](https://github.com/martines3000/autonomous-characters-3d/tree/8a70142b71f3793f72a4c6549bd307de22fdd06c/fish-schools).
+The [follow-up report](../evidence/2026-11-06-fish-schools.md) and [morning index](../evidence/2026-11-06-morning-review.md)
+record exact PR order, parent tips and deployment prerequisites. Original numbered PNGs and rejected
+diagnostic trials remain local; published logs normalize only trailing blank lines.
 
 Ownership: root owns visitor scenes/HUD, public-school controller, main scheduling, docs, evidence and all verification. `/root/scenes` owns shark camera sampling (`follow.rs`, presentation/scenario controls and the WGSL tracking entry point) in an isolated worktree after this plan commit. `/root/browser` researches steering constraints without edits/builds/apps. Coordinate any additional file ownership before editing.
 
+Later assignments were coordinated explicitly: browser owned metrics/loader and isolated scene geometry;
+scenes owned camera, shared turn force and guided spawning; deployment supplied read-only reviews.
+Root integrated each lane, owned public framing/docs and ran all builds/tests/apps/measurements serially.
+
 ## Interfaces and Dependencies
 
-Reuse existing group targets, simulation clock, hunter storage, camera readback and static WebGPU delivery. No dependency/toolchain upgrade is planned. Exact controller and subject APIs will be recorded after tracing existing boundaries; avoid a generic configuration or path framework.
+`SchoolMotion` explicitly owns public-scene guide phase. Optional `SchoolGuide` adds center, velocity,
+angular velocity, half-length and radius, a free-interior capsule force, and a guide-only initial-volume
+sampler. CPU/WGSL share the contract and precedence; GpuParams appends flows/turns after existing fields
+for a tested 720-byte layout. `FollowSubject::{Prey,Hunter}` extends selection and the existing 80-byte
+sample contract with type/revision validation. The web catalog adds decoded byte sizes; bootstrap
+exports pure progress/reveal helpers and distinguishes Rust readiness from usable reveal completion.
+No dependency/toolchain change or generic path/configuration framework was added.
 
 ---
 
@@ -120,3 +154,4 @@ Revision notes:
 - 2026-11-06: Initial owner-authorized follow-up plan after manual review and the tested Another animal control.
 - 2026-11-06: Rejected the first Shark point-guide trial after native frames retained a compact ball and cropped the moving school. Extended only the explicitly enabled public Shark behavior to a shared soft flow corridor, with force/ABI parity tests and camera ownership checks.
 - 2026-11-06: Added the owner's web loading/progress and reveal request as a fourth small PR. Existing school/riding work remains active; no production scope was added.
+- 2026-11-06: Completed observed-behavior corrections, explicit turn flow and guided initial volume. Recorded desktop-input contamination, isolated headed proof and shared-target source validation. Closed at the four-PR review handoff; production remains outside this plan.

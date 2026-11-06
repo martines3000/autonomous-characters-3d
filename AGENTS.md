@@ -33,6 +33,7 @@ This machine is shared by several agents and worktrees.
 - Use `CARGO_BUILD_JOBS=4` or fewer.
 - Run only one native app instance at a time (`cargo run`, the smoke script, `samply record` and app bundles all count). Close it before starting another.
 - Disposable probes (scratch crates, copied sources, experiments) use their own `CARGO_TARGET_DIR` outside `target/`. A probe that builds into the shared `target/` can overwrite the real binary at the same output path.
+- A shared target can also consider another worktree's newer test binary fresh. When changing checkout roots, force this crate to rebuild (`touch src/main.rs` before Cargo), confirm the compiler names the expected worktree, and check the expected test list or scenario metadata. A cached `Finished` line alone does not prove which source ran.
 
 ## Scope boundaries
 

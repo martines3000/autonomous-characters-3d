@@ -106,6 +106,28 @@ actual renderer error path, then reloads and verifies the restored scene. Failur
 own contexts. A 2× display-factor browser checks real backing pixels; a context-only DPR override
 does not update Chromium's device-pixel ResizeObserver consistently.
 
+When someone is using the desktop, physical mouse and wheel events can interfere with a headed
+automation window. Keep the screenshot assertions strict and use a separate display instead of
+changing application input behavior. The 2026-11-06 follow-up also verifies headed Chromium in
+Xvfb **21.1.25-2**, with the same AMD WebGPU adapter and these additional X11 presentation options:
+
+```sh
+Xvfb :97 -screen 0 3840x2160x24 -nolisten tcp -ac -noreset >/tmp/flock-xvfb.log 2>&1 &
+flock_xvfb_pid=$!
+env -u WAYLAND_DISPLAY DISPLAY=:97 CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  AC3D_BROWSER_ARGS='["--enable-unsafe-webgpu","--enable-features=Vulkan","--use-angle=vulkan","--ozone-platform=x11","--disable-vulkan-surface"]' \
+  node scripts/smoke-web.mjs http://127.0.0.1:8080 /tmp/flock-isolated-review
+kill "$flock_xvfb_pid"
+```
+
+Use an unused display number. Xvfb is an optional verification tool, not a runtime dependency.
+The recorded run used a checksum-verified package extracted into the evidence tools directory;
+it changed no system packages or desktop configuration. `--disable-vulkan-surface` is required
+for Chromium's presentation in this virtual display; WebGPU still selects the AMD RDNA 3 adapter.
+Inspect nonblank rendered screenshots and record the actual adapter, flags and display. Keep X11
+virtual-display timings separate from Wayland and native measurements; they are browser intervals,
+not GPU timestamps or an estimate of unused capacity.
+
 The HTML shell handles loading, unsupported adapters and startup errors. Rendering errors, including
 device loss, stop rendering and offer reload. The shared visitor UI owns scenes, populations, cameras,
 pause, help and Lab. Reduced camera motion follows the browser preference at startup and remains a

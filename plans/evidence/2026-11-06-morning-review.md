@@ -1,8 +1,10 @@
 # Morning review — 6 November 2026
 
-The approved review-only goal is complete: application changes are prepared in a tested PR stack, and CRONA workload/routing changes are prepared as drafts. All PRs remain unmerged. No default-branch change, image publication, production workflow dispatch, deployment, infrastructure apply or DNS mutation occurred.
+The approved review-only goal and the later owner-feedback follow-up are complete at their review handoffs. Application changes are prepared in a tested PR stack; CRONA workload/routing changes remain drafts. All PRs remain unmerged. No default-branch change, registry publication, production workflow dispatch, deployment, infrastructure apply or DNS mutation occurred.
 
-Start with the [before/after evidence](https://github.com/martines3000/autonomous-characters-3d/tree/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983) and the [complete validation report](https://github.com/martines3000/autonomous-characters-3d/blob/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983/verification/FINAL-VALIDATION.md). Local static preview remains at http://127.0.0.1:8088 from the reviewed image; the documented Linux Chromium flags are required on this machine. Browser/encoder/simulation processes are closed.
+Start with the latest [fish schools, shark Ride and loading report](2026-11-06-fish-schools.md) and its [immutable before/after evidence](https://github.com/martines3000/autonomous-characters-3d/tree/8a70142b71f3793f72a4c6549bd307de22fdd06c/fish-schools). Latest local static preview is `http://127.0.0.1:8091`, clean source `c7fa288`, release `596a0586e1010946ad95daab`; use the documented normal Wayland/Vulkan flags on this machine. The final manual-review browser is left open; automated browsers, native simulations, virtual display and encoders are closed.
+
+The [original showcase evidence](https://github.com/martines3000/autonomous-characters-3d/tree/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983) and [original validation report](https://github.com/martines3000/autonomous-characters-3d/blob/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983/verification/FINAL-VALIDATION.md) remain historical, including the original preview at port 8088. Their measurements below retain their original sources and conditions.
 
 ## PRs and merge order
 
@@ -19,8 +21,12 @@ Merge each application PR into `master` in the order below. Current PR bases poi
 | 7 | [#18](https://github.com/martines3000/autonomous-characters-3d/pull/18) | autonomous-characters-3d | Ready | A7 reproducible web/static Docker tooling and manual publication. After #17. |
 | 8 | [#19](https://github.com/martines3000/autonomous-characters-3d/pull/19) | autonomous-characters-3d | Ready | This review index and completed plan. Documentation only, after #18. |
 | 9 | [#20](https://github.com/martines3000/autonomous-characters-3d/pull/20) | autonomous-characters-3d | Ready | Owner-review follow-up: visible Another animal control in Ride. Native/browser checks pass; [follow-up evidence](2026-11-06-owner-feedback.md). After #19. |
-| 10 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires merged application, real published registry digest and pull proof. |
-| 11 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
+| 10 | [#22](https://github.com/martines3000/autonomous-characters-3d/pull/22) | autonomous-characters-3d | Ready | Three moving Reef shoals, Lab lifecycle and tested pointer ownership. After #20. |
+| 11 | [#23](https://github.com/martines3000/autonomous-characters-3d/pull/23) | autonomous-characters-3d | Ready | Coherent translating/turning Shark school, guided spawn and encounter framing. After #22. |
+| 12 | [#24](https://github.com/martines3000/autonomous-characters-3d/pull/24) | autonomous-characters-3d | Ready | Actual CPU/GPU shark Ride, Fish/Shark selector and target changes in Chase/First person. After #23. |
+| 13 | [#25](https://github.com/martines3000/autonomous-characters-3d/pull/25) | autonomous-characters-3d | Ready | Truthful web progress, normal/reduced reveal, recovery and completed follow-up handoff. After #24. |
+| 14 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires all application PRs through #25 merged, real published registry digest and pull proof. |
+| 15 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
 
 The deployment gaps are deliberate review boundaries, not completed production tests. Perform publication and rollout only in the separately authorized release session.
 
@@ -42,11 +48,37 @@ git push --force-with-lease origin <child-branch>
 | #16 `codex/showcase-hunt-readability` | `c35fbf1e54474e6ef1b77a39773356bf0c9c0954` |
 | #17 `codex/showcase-webgpu` | `aa418f99410afcc6800dc4e91c5cdf812cb28676` |
 | #18 `codex/showcase-web-release` | `da99886929c2e1944db7c3cd171286bd15313291` |
+| #22 `codex/showcase-reef-shoals` | `345ce0eb1450ff4c22b11d1873eafe7f3da982a9` |
+| #23 `codex/showcase-travelling-school` | `5977c1568ecd5bf84ce7e3a9c9a207c31aa96514` |
+| #24 `codex/showcase-shark-riding` | `937c2b889c1943a66111c7fa16423c683fa7c808` |
+| #25 `codex/showcase-web-loading` | `7e4b0c67417599e28a2e6ce7f90b3ca13678a037` |
 
 The handoff child is `codex/showcase-morning-review` (#19), with recorded parent tip `34d3e5dad6bea1be2e9ac797a65564d9248c4697`.
 The owner-review follow-up is `codex/showcase-ride-switch` (#20), with recorded parent tip `64d7022d57da50bbe3715b7ccb5d1c676c8820bc`. Rebase and retarget it after #19, before publishing the final application image. Its native/browser runtime validation is recorded separately in the [follow-up evidence](2026-11-06-owner-feedback.md); the original measurements below retain their original source commits.
 
 The eventual published source commit will differ from these feature tips after squash/rebase. Build and record that actual merged source; do not copy a review SHA into deployment provenance.
+
+## Latest follow-up validation
+
+PRs #22–#25 pass 255 release tests, 24 real-device GPU checks, a warning-free build, native smoke,
+nine loader tests, one packaging fixture and 11 headed browser cases. Native/WASM Clippy retain the
+seven existing warnings. Two clean web outputs match in all 32 files. Native source `4fc7b7b` and
+browser source `c7fa288` differ only in one README line; later handoff commits change documentation.
+
+The new evidence includes 25-second Reef before/after clips, 25-second Shark before and 60-second
+after clips, two 12-second shark camera clips, and loading/reveal video. Reef forms three shoals;
+Shark travels and sometimes compresses. It is not continuously ribbon-shaped. Some tails/hunters
+reach frame edges, and soft steering permits a small sampled outside fraction. These are explicit
+limits, not biological claims or owner taste approval.
+
+All nine browser scene/tier combinations were measured twice at 1920×1080. The final strict matrix
+and timing windows use an isolated headed X11/Xvfb display on AMD WebGPU because the owner continued
+using the PC; physical input contaminated ordinary-desktop gesture attempts. Normal/reduced loading
+and reveal are also verified in headed Wayland. Means are 16.664–20.151 ms, p95 17.7–23.8 ms, maximum
+39.2 ms under the recorded virtual-display conditions. Native Medium after means are Reef
+1.733/1.642 ms and Shark 2.081/2.138 ms at 1853×2085; the before raster/load differ, so no direct
+speedup is claimed. These are application intervals, not GPU timestamps or capacity estimates.
+See the [full source, artifact and measurement report](2026-11-06-fish-schools.md).
 
 ## Visual and behavior evidence
 
@@ -93,4 +125,4 @@ Release prerequisites, outside this goal:
 
 [Cluster runbook](https://github.com/martines3000/household-cluster/blob/codex/flock-workload/apps/flock/README.md) and [routing/recovery runbook](https://github.com/martines3000/household-infra/blob/codex/flock-public-route/docs/flock-release.md) preserve the internal-first order, terminal 404 route and host/firewall protections. No public origin port, administrator Access login, database or persistent volume is needed.
 
-Large raw logs/PNG sequences remain under `/home/martines/Projects/ac3d-evidence/2026-11-05/`. Selected evidence is pinned at `ece1b2adbae556fbc5cfdb2bee45728bc9d7b983`. The approved plan is [closed at the review handoff](../completed/2026-11-05-polished-flock-web-showcase.md); production remains outside its completed objective.
+Large raw logs/PNG sequences remain under `/home/martines/Projects/ac3d-evidence/2026-11-05/` and `/home/martines/Projects/ac3d-evidence/2026-11-06-fish-schools/`. Original evidence is pinned at `ece1b2adbae556fbc5cfdb2bee45728bc9d7b983`; latest follow-up evidence at `8a70142b71f3793f72a4c6549bd307de22fdd06c`. The approved [original plan](../completed/2026-11-05-polished-flock-web-showcase.md) and [owner follow-up plan](../completed/2026-11-06-fish-schools-and-shark-riding.md) are closed at their review handoffs. Production remains outside these completed objectives.

@@ -9,7 +9,11 @@ The owner praised the revised presentation and riding camera, questioned sparse 
 - Reef drift intentionally uses weak alignment/cohesion and high wander (`Species::ReefDrift`), explaining scattered individuals. Proposed next trial: several loose, locally aligned shoals with visible spacing.
 - Shark hunt inherits strong bait-ball cohesion and a fixed origin target from `Species::SharkAttack`, explaining the persistent central ball. Proposed next trial: a travelling school with local threat compression, visible splits and slower regrouping.
 
-The fish changes are proposals, not implemented or biologically validated results. A new ExecPlan and before/after clips across public tiers, plus CPU/GPU parity checks, are required before changing steering defaults. They are tracked in [STATUS](../STATUS.md). No fish steering, public population, model, dependency or release-policy change is part of PR #20.
+These were proposals when PR #20 was prepared. The owner subsequently authorized their implementation,
+shark riding and improved web loading. That [follow-up plan](../completed/2026-11-06-fish-schools-and-shark-riding.md)
+is now complete at ready PRs #22–#25, with [new evidence and explicit limits](2026-11-06-fish-schools.md).
+No biological accuracy is claimed. No fish steering, public population, model, dependency or release-policy
+change is part of PR #20 itself; the validation below remains tied to its original source.
 
 ## Verification and evidence
 
