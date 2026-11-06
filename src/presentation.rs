@@ -189,6 +189,9 @@ impl Presentation {
     pub(crate) fn camera_dt(&self, real: &Time<Real>) -> f32 {
         self.camera_delta.unwrap_or_else(|| real.delta_secs())
     }
+    pub(crate) fn camera_override_active(&self) -> bool {
+        self.manual_camera || self.transition.is_some() || self.preset.is_some()
+    }
     pub fn cancel_camera_transition(&mut self) {
         self.director.enabled = false;
         self.transition = None;
