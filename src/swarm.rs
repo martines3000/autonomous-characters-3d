@@ -118,6 +118,30 @@ impl SchoolGuide {
             && self.radius > f32::EPSILON
     }
 
+    /// Sample a valid guide's ellipsoid from three uniform [0, 1) position draws.
+    /// Existing heading draws are still consumed by the spawner before using this pose.
+    pub(crate) fn sample_spawn(&self, uniform: Vec3, max_speed: f32) -> (Vec3, Vec3) {
+        let speed = self.velocity.length();
+        let (axis, half_length) = if speed > f32::EPSILON {
+            (self.velocity / speed, self.half_length)
+        } else {
+            // The force contract has no axial segment at zero speed: sample its sphere.
+            (Vec3::X, self.radius)
+        };
+        let reference = if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::Z };
+        let side = axis.cross(reference).normalize();
+        let up = axis.cross(side);
+        let cosine = uniform.x * 2.0 - 1.0;
+        let angle = std::f32::consts::TAU * uniform.y;
+        let radial = (1.0 - cosine * cosine).max(0.0).sqrt();
+        let radius = uniform.z.cbrt();
+        let delta = (axis * (cosine * half_length)
+            + (side * (radial * angle.cos()) + up * (radial * angle.sin())) * self.radius)
+            * radius;
+        let velocity = crate::hunter::limit(self.velocity + self.angular_velocity.cross(delta), max_speed);
+        (self.center + delta, velocity)
+    }
+
     pub(crate) fn force(
         &self,
         position: Vec3,
@@ -746,6 +770,49 @@ pub fn ui(ui: &mut egui::Ui, attractor: &mut Attractor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn school_spawn_samples_a_uniform_aligned_ellipsoid_and_local_flow() {
+        for velocity in [Vec3::X * 12.0, Vec3::Y * 12.0, Vec3::new(12.0, -4.0, 7.0), Vec3::ZERO] {
+            let guide = SchoolGuide {
+                center: Vec3::new(20.0, -30.0, 40.0),
+                velocity,
+                angular_velocity: Vec3::new(0.1, -0.2, 0.05),
+                half_length: 30.0,
+                radius: 5.0,
+            };
+            let axis = if velocity.length() > f32::EPSILON { velocity.normalize() } else { Vec3::X };
+            let half_length = if velocity == Vec3::ZERO { guide.radius } else { guide.half_length };
+            let mut mean = Vec3::ZERO;
+            let mut second_moment = 0.0;
+            for x in 0..16 {
+                for y in 0..16 {
+                    for z in 0..16 {
+                        let uniform = (Vec3::new(x as f32, y as f32, z as f32) + Vec3::splat(0.5)) / 16.0;
+                        let (position, initial_velocity) = guide.sample_spawn(uniform, 15.0);
+                        let delta = position - guide.center;
+                        let along = delta.dot(axis);
+                        let across = delta - axis * along;
+                        let q = along * along / half_length.powi(2) + across.length_squared() / guide.radius.powi(2);
+                        assert!(q <= 1.0 + 1e-5);
+                        assert!((initial_velocity - crate::hunter::limit(velocity + guide.angular_velocity.cross(delta), 15.0)).length() < 1e-5);
+                        mean += delta;
+                        second_moment += q;
+                    }
+                }
+            }
+            assert!((mean / 4096.0).length() < 1e-4);
+            // A uniform unit ball has mean squared radius 3/5, not a surface shell.
+            assert!((second_moment / 4096.0 - 0.6).abs() < 0.002);
+            let flat = SchoolGuide { half_length: 0.0, ..guide };
+            let (position, _) = flat.sample_spawn(Vec3::new(0.25, 0.4, 0.8), 15.0);
+            if velocity == Vec3::ZERO {
+                assert!((position - flat.center).length() <= flat.radius);
+            } else {
+                assert!((position - flat.center).dot(axis).abs() < 1e-5);
+            }
+        }
+    }
 
     #[test]
     fn school_guide_preserves_matched_flow_everywhere_inside_the_capsule() {

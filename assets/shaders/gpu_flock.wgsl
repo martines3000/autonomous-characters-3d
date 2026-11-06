@@ -344,6 +344,25 @@ fn smooth_motion(a: vec4<f32>, desired: vec4<f32>, amount: f32) -> vec4<f32> {
     return normalize((a*sin((1.0-amount)*angle)+b*sin(amount*angle))/sin(angle));
 }
 
+// Mirrors SchoolGuide::sample_spawn; no extra random draws or per-fish slots.
+fn school_spawn_delta(draws: vec3<f32>, flow: vec4<f32>, radius: f32) -> vec3<f32> {
+    var axis = normalize_or_zero(flow.xyz);
+    var half_length = flow.w;
+    if all(axis == vec3<f32>(0.0)) {
+        axis = vec3<f32>(1.0, 0.0, 0.0);
+        half_length = radius;
+    }
+    var reference = vec3<f32>(0.0, 1.0, 0.0);
+    if abs(axis.y) >= 0.9 { reference = vec3<f32>(0.0, 0.0, 1.0); }
+    let side = normalize(cross(axis, reference));
+    let up = cross(axis, side);
+    let cosine = draws.x * 2.0 - 1.0;
+    let angle = 2.0 * PI * draws.y;
+    let radial = sqrt(max(1.0 - cosine * cosine, 0.0));
+    let across = side * (radial * cos(angle)) + up * (radial * sin(angle));
+    return (axis * (cosine * half_length) + across * radius) * pow(draws.z, 1.0 / 3.0);
+}
+
 @compute @workgroup_size(256)
 fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = params.spawn_from + id.x;
@@ -351,21 +370,36 @@ fn spawn(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     var seed = pcg(index ^ pcg(params.frame));
-    let position = (vec3<f32>(random(&seed), random(&seed), random(&seed)) - 0.5) * params.spawn_size;
+    let draws = vec3<f32>(random(&seed), random(&seed), random(&seed));
+    var position = (draws - 0.5) * params.spawn_size;
     // Uniform on the unit sphere, so the flock starts disordered.
     let z = random(&seed) * 2.0 - 1.0;
     let angle = random(&seed) * 2.0 * PI;
     let radius = sqrt(max(1.0 - z * z, 0.0));
-    let direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
+    var direction = vec3<f32>(radius * cos(angle), radius * sin(angle), z);
     let phase = f32(pcg(index ^ pcg(params.frame ^ 0xa511e9b3u)) >> 8u) / 16777216.0;
     let spawn_id = params.groups.y + id.x;
     let group = prey_group(spawn_id);
-    boids[index] = Boid(position, 0.0, direction * params.max_speed, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
+    var velocity = direction * params.max_speed;
+    var speed_bits = 0xffffu;
+    // Spawn is not pipeline-specialized; use runtime navigation flags here.
+    if params.groups.x != 0u && params.follow == 0u && params.formation.x == 0u &&
+       (u32(params.attractor_strength.w) & (1u << group)) == 0u && params.group_targets[group].w < 0.0 {
+        let delta = school_spawn_delta(draws, params.group_flows[group], -params.group_targets[group].w);
+        position = params.group_targets[group].xyz + delta;
+        let speed_scale = bitcast<f32>(arena[params.formation.w + group].w);
+        let max_speed = params.max_speed * select(1.0, speed_scale, speed_scale > 0.0);
+        velocity = limit(params.group_flows[group].xyz + cross(params.group_turns[group].xyz, delta), max_speed);
+        direction = normalize_or_zero(velocity);
+        let speed = clamp(length(velocity) / max(params.max_speed, EPSILON), 0.0, 1.0);
+        speed_bits = u32(floor(speed * 65535.0 + 0.5));
+    }
+    boids[index] = Boid(position, 0.0, velocity, 0.0, vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, phase));
     if params.motion.y == 0.0 { boids[index].rotation = upright_target(heading_rotation(direction),direction,vec3<f32>(0.0)); }
     arena[index] = vec4<u32>(spawn_id, group, 0u, 0u);
     write_order(params.groups.z, index, index);
     // Spawn-only maintenance must be drawable while the simulation stays paused.
-    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f80ffffu | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
+    instances[index] = Instance(vec4<f32>(position, bitcast<f32>(0x3f800000u | speed_bits | (select(group, 0u, params.groups.x == 0u) << 16u))), boids[index].rotation, vec4<f32>(phase, 0.0, 0.0, 0.0));
     // A new boid has no earlier pose, including spawn-only updates at zero delta.
     if params.motion.w >= 0.0 {
         let history = params.obstacles.z + index * 2u;
