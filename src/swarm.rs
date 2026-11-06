@@ -848,12 +848,8 @@ mod tests {
                 40.0,
             ) - guide.velocity;
             for distance in [1_000.0, 1_000_000.0] {
-                let force = guide.force(
-                    guide.center + outward * distance,
-                    guide.velocity,
-                    40.0,
-                    2.0,
-                );
+                let force =
+                    guide.force(guide.center + outward * distance, guide.velocity, 40.0, 2.0);
                 assert!((force - expected).length() < 1e-5);
                 assert!(force.dot(outward) < 0.0);
                 assert!((force + guide.velocity).length() <= 40.0 + 1e-5);
