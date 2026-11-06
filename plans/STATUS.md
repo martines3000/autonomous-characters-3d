@@ -2,7 +2,7 @@
 
 ## Current work
 
-- The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application PRs 12–18, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
+- The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application PRs 12–19, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
 - The [approved review-preparation plan](completed/2026-11-05-polished-flock-web-showcase.md) is complete at its review handoff. Deployment publication/health and later public verification remain a separate, explicitly authorized release session.
 
 ## Prioritized future tasks

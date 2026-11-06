@@ -17,6 +17,7 @@ Merge each application PR into `master` in the order below. Current PR bases poi
 | 5 | [#16](https://github.com/martines3000/autonomous-characters-3d/pull/16) | autonomous-characters-3d | Ready | Readable shark size/pass tuning; legacy Lab settings preserved. After #15. |
 | 6 | [#17](https://github.com/martines3000/autonomous-characters-3d/pull/17) | autonomous-characters-3d | Ready | A1/A6 shared WebGPU runtime, assets, loading/errors, input and recovery. After #16. |
 | 7 | [#18](https://github.com/martines3000/autonomous-characters-3d/pull/18) | autonomous-characters-3d | Ready | A7 reproducible web/static Docker tooling and manual publication. After #17. |
+| 8 | [#19](https://github.com/martines3000/autonomous-characters-3d/pull/19) | autonomous-characters-3d | Ready | This review index and completed plan. Documentation only, after #18. |
 | 9 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires merged application, real published registry digest and pull proof. |
 | 10 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
 
@@ -40,6 +41,8 @@ git push --force-with-lease origin <child-branch>
 | #16 `codex/showcase-hunt-readability` | `c35fbf1e54474e6ef1b77a39773356bf0c9c0954` |
 | #17 `codex/showcase-webgpu` | `aa418f99410afcc6800dc4e91c5cdf812cb28676` |
 | #18 `codex/showcase-web-release` | `da99886929c2e1944db7c3cd171286bd15313291` |
+
+The handoff child is `codex/showcase-morning-review` (#19), with recorded parent tip `34d3e5dad6bea1be2e9ac797a65564d9248c4697`.
 
 The eventual published source commit will differ from these feature tips after squash/rebase. Build and record that actual merged source; do not copy a review SHA into deployment provenance.
 
