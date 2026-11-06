@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 starlings at startup; scene-specific tiers; Lab up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 219 release tests and 20 GPU regressions passed; seeded benchmarks available |
+| Tests | None | 233 release tests and 20 GPU regressions passed; seeded benchmarks and school metrics available |
 | Known bugs | 14 audit findings | Original correctness findings resolved; scaling limits tracked; CI not wanted |
 
 Bugs found and fixed include:
@@ -118,6 +118,11 @@ hunters, population and camera. Public scenes use GPU simulation and have no inv
 | Shark hunt | 5,000 | 12,000 | 20,000 |
 
 Counts are scene-specific flock sizes, not rendering-quality levels. Shark hunters are additional.
+
+Public **Reef drift** uses three loose shoals with local schooling and gentle travelling guides.
+Pause freezes the guides with the fish; scene or size changes start a new school phase. Reset view,
+Ride and Another animal preserve that phase. Lab releases the automatic guides and owned Reef
+groups; the Lab **Reef drift** species retains its original slow, scattered reference behavior.
 The public hunt uses three sharks with 8× visual scale and 1× cruise-speed scale so their silhouettes
 and committed passes remain readable. Lab’s legacy Shark attack retains its original 5× / 1.3× tuning.
 Selecting a scene or flock size starts a freshly scattered flock, including while paused. This avoids

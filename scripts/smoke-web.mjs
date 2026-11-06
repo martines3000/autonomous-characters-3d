@@ -44,6 +44,26 @@ function summarize(values) {
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   return { frames: values.length, meanMs: mean, p50Ms: sorted[Math.floor(sorted.length * .5)], p95Ms: sorted[Math.floor(sorted.length * .95)], maxMs: sorted.at(-1), fps: 1000 / mean };
 }
+async function waitForHudPaint(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+async function pausedWorldSnapshot(page, clip, filename) {
+  // The state report can precede presentation of the last queued GPU frame. Establish a
+  // stable rendered baseline before testing whether a gesture changed the paused world.
+  let previous = await page.screenshot({ clip });
+  let stable = 0;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await page.waitForTimeout(100);
+    const current = await page.screenshot({ clip });
+    stable = previous.equals(current) ? stable + 1 : 0;
+    if (stable >= 3) {
+      await writeFile(filename, current);
+      return current;
+    }
+    previous = current;
+  }
+  throw new Error('The paused rendered world did not become stable');
+}
 async function checkUnsupported(label, script) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(script);
@@ -159,7 +179,7 @@ try {
   await page.waitForFunction(() => window.flockReport.scene.paused);
   const worldClip = { x: 600, y: 150, width: 800, height: 650 };
   await page.waitForTimeout(300);
-  const beforeHudDrag = await page.screenshot({ path: path.join(output, 'hud-drag-before.png'), clip: worldClip });
+  const beforeHudDrag = await pausedWorldSnapshot(page, worldClip, path.join(output, 'hud-drag-before.png'));
   for (const button of ['right', 'middle']) {
     await page.mouse.move(160, 165);
     await page.mouse.down({ button });
@@ -190,11 +210,15 @@ try {
   await page.screenshot({ path: path.join(output, 'visitor-help.png') });
   await page.mouse.click(48, 228);
   await page.waitForFunction(() => !window.flockReport.scene.help);
+  // The Rust state report precedes Egui's next layout/presentation pass. Let the collapsed
+  // Help panel present before sending another click into the same canvas HUD.
+  await waitForHudPaint(page);
   await page.mouse.click(149, 228);
   await page.waitForFunction(() => window.flockReport.scene.lab);
   await page.screenshot({ path: path.join(output, 'lab.png') });
   // A numeric Lab editor must consume shortcut letters while it owns keyboard focus.
   await page.mouse.dblclick(510, 276);
+  await waitForHudPaint(page);
   await page.keyboard.press('p');
   await page.keyboard.press('h');
   await page.waitForTimeout(200);
@@ -293,6 +317,7 @@ try {
   assert.equal(await page.evaluate(() => window.flockReport.scene.camera), 'ride', 'HUD drag cancelled Ride');
   await page.mouse.click(135, 165);
   await page.waitForFunction(() => window.flockReport.scene.camera === 'free');
+  await waitForHudPaint(page);
   await page.mouse.click(38, 190);
   await page.waitForFunction(() => !window.flockReport.scene.reducedMotion && window.flockReport.scene.camera === 'scenic');
   await page.mouse.move(160, 165);

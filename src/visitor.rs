@@ -153,6 +153,7 @@ pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier
     }
     species::apply(world, scene.species());
     world.resource_mut::<GlobalState>().vehicle_count = scene.population(tier);
+    crate::schooling::configure(world, scene);
     if scene == VisitorScene::SharkHunt {
         let mut state = world.resource_mut::<GlobalState>();
         // Give wide shots a clear predator silhouette and time to read each committed pass.
@@ -205,7 +206,7 @@ pub(crate) fn reset_view(world: &mut World) {
     let (yaw, pitch, spawn_distance): (f32, f32, f32) = match scene {
         // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
         VisitorScene::Murmuration => (225.0, -3.0, 0.65),
-        VisitorScene::ReefDrift => (20.0, 3.0, 0.95),
+        VisitorScene::ReefDrift => (20.0, 3.0, 1.10),
         VisitorScene::SharkHunt => (15.0, 3.0, 0.5),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
@@ -235,6 +236,7 @@ pub(crate) fn reset_view(world: &mut World) {
 /// Leaving Lab reapplies the public contract, so experiments never leak into visitor scenes.
 pub(crate) fn set_lab(world: &mut World, enabled: bool) {
     if enabled {
+        crate::schooling::release(world);
         world.resource_mut::<Visitor>().lab = true;
     } else {
         let visitor = world.resource::<Visitor>();
@@ -339,7 +341,7 @@ pub(crate) fn ui(
                 });
             ui.small(match visitor.scene {
                 VisitorScene::Murmuration => "Starlings flow together through the evening sky.",
-                VisitorScene::ReefDrift => "Slow fish wander through clear, sunlit water.",
+                VisitorScene::ReefDrift => "Loose shoals weave through clear, sunlit water.",
                 VisitorScene::SharkHunt => {
                     "Three sharks pursue a school. Watch it scatter and regroup."
                 }
@@ -417,7 +419,7 @@ pub(crate) fn ui(
                     presentation.ui_visible = false;
                 }
                 if ui.small_button("Lab").clicked() {
-                    visitor.lab = true;
+                    commands.queue(|world: &mut World| set_lab(world, true));
                 }
             });
             if visitor.help {
@@ -472,6 +474,10 @@ mod tests {
             assert_eq!(state.groups.count, 2);
             assert_eq!(state.groups.table[1].role, GroupRole::Hunter);
             assert_eq!(state.groups.hunter_count(), 3);
+        } else if scene == VisitorScene::ReefDrift {
+            assert_eq!(state.groups.count, 3);
+            assert_eq!(state.groups.hunter_count(), 0);
+            assert!(state.groups.has_targets());
         } else {
             assert_eq!(state.groups.hunter_count(), 0);
             assert!(!state.groups.has_targets());

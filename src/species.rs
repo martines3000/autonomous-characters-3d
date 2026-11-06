@@ -223,6 +223,7 @@ impl Species {
 
 /// Menu buttons and scenarios enter here.
 pub(crate) fn apply(world: &mut World, species: Species) {
+    crate::schooling::release(world);
     let b = species.behavior();
     let old = world.resource::<GlobalState>();
     let mut state = GlobalState {
