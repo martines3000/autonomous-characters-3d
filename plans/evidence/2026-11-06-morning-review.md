@@ -2,7 +2,7 @@
 
 The approved review-only goal and the later owner-feedback follow-up are complete at their review handoffs. Application changes are prepared in a tested PR stack; CRONA workload/routing changes remain drafts. All PRs remain unmerged. No default-branch change, registry publication, production workflow dispatch, deployment, infrastructure apply or DNS mutation occurred.
 
-Start with the latest [fish schools, shark Ride and loading report](2026-11-06-fish-schools.md) and its [immutable before/after evidence](https://github.com/martines3000/autonomous-characters-3d/tree/8a70142b71f3793f72a4c6549bd307de22fdd06c/fish-schools). Latest local static preview is `http://127.0.0.1:8091`, clean source `c7fa288`, release `596a0586e1010946ad95daab`; use the documented normal Wayland/Vulkan flags on this machine. The final manual-review browser is left open; automated browsers, native simulations, virtual display and encoders are closed.
+Start with the latest [fish schools, shark Ride and loading report](2026-11-06-fish-schools.md) and its [immutable before/after evidence](https://github.com/martines3000/autonomous-characters-3d/tree/8a70142b71f3793f72a4c6549bd307de22fdd06c/fish-schools). The pre-reboot local static preview used `http://127.0.0.1:8091`, clean source `c7fa288`, release `596a0586e1010946ad95daab`; use the documented normal Wayland/Vulkan flags on this machine. The manual-review browser was left open at the original handoff. Preview and browser session descriptions in that evidence predate the reboot; they do not establish a currently running preview.
 
 The [original showcase evidence](https://github.com/martines3000/autonomous-characters-3d/tree/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983) and [original validation report](https://github.com/martines3000/autonomous-characters-3d/blob/ece1b2adbae556fbc5cfdb2bee45728bc9d7b983/verification/FINAL-VALIDATION.md) remain historical, including the original preview at port 8088. Their measurements below retain their original sources and conditions.
 
@@ -25,8 +25,9 @@ Merge each application PR into `master` in the order below. Current PR bases poi
 | 11 | [#23](https://github.com/martines3000/autonomous-characters-3d/pull/23) | autonomous-characters-3d | Ready | Coherent translating/turning Shark school, guided spawn and encounter framing. After #22. |
 | 12 | [#24](https://github.com/martines3000/autonomous-characters-3d/pull/24) | autonomous-characters-3d | Ready | Actual CPU/GPU shark Ride, Fish/Shark selector and target changes in Chase/First person. After #23. |
 | 13 | [#25](https://github.com/martines3000/autonomous-characters-3d/pull/25) | autonomous-characters-3d | Ready | Truthful web progress, normal/reduced reveal, recovery and completed follow-up handoff. After #24. |
-| 14 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires all application PRs through #25 merged, real published registry digest and pull proof. |
-| 15 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
+| 14 | [#26](https://github.com/martines3000/autonomous-characters-3d/pull/26) | autonomous-characters-3d | Ready | 32-line README, one Reef screenshot and full reference preserved in docs. Documentation only, after #25. |
+| 15 | [#1](https://github.com/martines3000/household-cluster/pull/1) | household-cluster | Draft | C1 namespace/workload/service/internal Ingress. Requires all runtime application PRs through #25 merged, real published registry digest and pull proof. |
+| 16 | [#1](https://github.com/martines3000/household-infra/pull/1) | household-infra | Draft | I1 hostname, Tunnel route and proxied CNAME. Requires healthy internal C1 workload and later guarded production plan/apply. |
 
 The deployment gaps are deliberate review boundaries, not completed production tests. Perform publication and rollout only in the separately authorized release session.
 
@@ -52,6 +53,7 @@ git push --force-with-lease origin <child-branch>
 | #23 `codex/showcase-travelling-school` | `5977c1568ecd5bf84ce7e3a9c9a207c31aa96514` |
 | #24 `codex/showcase-shark-riding` | `937c2b889c1943a66111c7fa16423c683fa7c808` |
 | #25 `codex/showcase-web-loading` | `7e4b0c67417599e28a2e6ce7f90b3ca13678a037` |
+| #26 `codex/short-readme` | `7a8eaff73350b1bdbfc73583244d99286d612d8c` |
 
 The handoff child is `codex/showcase-morning-review` (#19), with recorded parent tip `34d3e5dad6bea1be2e9ac797a65564d9248c4697`.
 The owner-review follow-up is `codex/showcase-ride-switch` (#20), with recorded parent tip `64d7022d57da50bbe3715b7ccb5d1c676c8820bc`. Rebase and retarget it after #19, before publishing the final application image. Its native/browser runtime validation is recorded separately in the [follow-up evidence](2026-11-06-owner-feedback.md); the original measurements below retain their original source commits.
@@ -64,6 +66,14 @@ PRs #22–#25 pass 255 release tests, 24 real-device GPU checks, a warning-free 
 nine loader tests, one packaging fixture and 11 headed browser cases. Native/WASM Clippy retain the
 seven existing warnings. Two clean web outputs match in all 32 files. Native source `4fc7b7b` and
 browser source `c7fa288` differ only in one README line; later handoff commits change documentation.
+
+The post-reboot check on 2026-11-06 confirmed ready, unmerged PRs #22–#25 and their source-matched
+evidence. Only final handoff documentation remained uncommitted; it is recovered in parent commit
+`7a8eaff`. README PR #26 reduces the entry point from 1,282 to 32 lines while preserving the complete
+reference. Formatting, 255 release tests, a warning-free release build, native startup and diff checks
+pass again. All 35 local README/reference links and anchors resolve, and a content comparison confirms
+the original guide text and code blocks are preserved. No runtime source changed or new GPU/browser
+measurement was needed.
 
 The new evidence includes 25-second Reef before/after clips, 25-second Shark before and 60-second
 after clips, two 12-second shark camera clips, and loading/reveal video. Reef forms three shoals;
