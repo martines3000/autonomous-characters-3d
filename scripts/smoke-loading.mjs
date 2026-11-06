@@ -17,7 +17,9 @@ const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXE
 const report = { browser: browser.version(), args, cases: [] };
 try {
   for (const mode of ['normal', 'reduced', 'late-error']) {
-    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, reducedMotion: mode === 'reduced' ? 'reduce' : 'no-preference' });
+    const recordVideo = process.env.AC3D_RECORD_LOADING === '1' && mode === 'normal'
+      ? { dir: path.join(output, 'video'), size: { width: 1280, height: 720 } } : undefined;
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, reducedMotion: mode === 'reduced' ? 'reduce' : 'no-preference', recordVideo });
     await context.addInitScript(() => {
       window.reviewAnimations = [];
       const animate = Element.prototype.animate;
