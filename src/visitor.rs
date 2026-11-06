@@ -382,6 +382,14 @@ pub(crate) fn ui(
                     commands.queue(reset_view);
                 }
             });
+            if presentation.follow.enabled()
+                && ui
+                    .button("Another animal · N")
+                    .on_hover_text("Follow a random animal while keeping the current camera mode.")
+                    .clicked()
+            {
+                presentation.follow.next();
+            }
             if ui
                 .checkbox(&mut visitor.reduced_motion, "Reduce camera motion")
                 .changed()
@@ -415,7 +423,7 @@ pub(crate) fn ui(
             if visitor.help {
                 ui.small("Right-drag to orbit · scroll to zoom · middle-drag to pan.");
                 ui.small(
-                    "Ride follows one animal. N chooses another. Reset view returns to the scene.",
+                    "Ride follows one animal. Another animal or N picks a new subject. Reset view returns to the scene.",
                 );
                 ui.small("P pauses animals. H hides or restores the interface.");
                 ui.small(
