@@ -132,6 +132,8 @@ The compact **FLOCK** panel exposes Scene, Flock size, Pause, Scenic/Ride/Free c
 Help and Reduced camera motion. Scenic uses a slow orbit; Ride follows one animal; Free stops
 automatic movement. Reduced camera motion keeps the composed view still. **H** hides/restores the
 interface and **P** pauses animals. Camera drag, pan and scroll remain available over the world.
+While riding, **Another animal · N** picks a random animal without leaving Chase or First person;
+the **N** shortcut also works with the interface hidden.
 Drags keep the surface where they begin until release: HUD drags stay in the HUD, while world drags
 continue across it. With no active world drag, scrolling over the HUD keeps the world camera still.
 
