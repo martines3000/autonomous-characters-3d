@@ -20,6 +20,7 @@ mod underwater;
 mod vehicle;
 mod vehicle_appearance;
 mod vehicle_model;
+mod visitor;
 mod volumetric;
 
 use bevy::{
@@ -87,6 +88,7 @@ fn main() {
             swarm::SwarmPlugin,
         ))
         .add_plugins(hunter::HunterPlugin)
+        .add_plugins(visitor::VisitorPlugin)
         .add_systems(
             PreUpdate,
             camera_input

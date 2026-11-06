@@ -187,6 +187,15 @@ impl GpuParams {
     }
 }
 
+/// An explicit scene restart, separate from the shader ABI and ordinary count edits.
+/// `prepared` advances with GpuParams so late UI commands cannot restart with an old domain.
+#[derive(Resource, ExtractResource, Clone, Copy, Debug, Default)]
+#[extract_app(RenderApp)]
+pub(crate) struct FlockRestart {
+    pub requested: u64,
+    prepared: u64,
+}
+
 pub struct GpuFlockPlugin;
 
 impl Plugin for GpuFlockPlugin {
@@ -195,8 +204,10 @@ impl Plugin for GpuFlockPlugin {
             .init_resource::<FormationFrame>()
             .init_resource::<SwarmScene>()
             .init_resource::<GpuParams>()
+            .init_resource::<FlockRestart>()
             .add_plugins((
                 ExtractResourcePlugin::<GpuParams>::default(),
+                ExtractResourcePlugin::<FlockRestart>::default(),
                 ExtractResourcePlugin::<SwarmScene>::default(),
                 ExtractResourcePlugin::<FormationFrame>::default(),
                 ExtractResourcePlugin::<PredatorFrame>::default(),
@@ -226,6 +237,7 @@ pub(crate) fn update_gpu_params(
     mut params: ResMut<GpuParams>,
     formation: Res<FormationFrame>,
     predators: Res<PredatorFrame>,
+    restart: Option<ResMut<FlockRestart>>,
 ) {
     let (target, selection) = targets
         .single()
@@ -237,6 +249,12 @@ pub(crate) fn update_gpu_params(
             .with_formation(&formation, state.gpu_max_neighbors)
             .with_predators(&predators),
     );
+    if let Some(mut restart) = restart {
+        let requested = restart.requested;
+        if restart.prepared != requested {
+            restart.prepared = requested;
+        }
+    }
 }
 
 pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f32) -> GpuParams {
@@ -331,6 +349,7 @@ fn init_gpu_flock(mut commands: Commands, device: Res<RenderDevice>) {
 #[derive(SystemParam)]
 struct FlockFrame<'w, 's> {
     simulation: Res<'w, crate::presentation::SimulationFrame>,
+    restart: Res<'w, FlockRestart>,
     hunter_settings: Option<Res<'w, crate::hunter::HunterSettings>>,
     hunter_draw: ResMut<'w, crate::instancing::HunterInstances>,
     motion_views: Query<'w, 's, (), With<bevy::core_pipeline::prepass::MotionVectorPrepass>>,
@@ -350,6 +369,7 @@ fn run_gpu_flock(
     mut draw: ResMut<FlockInstances>,
     scene: Res<SwarmScene>,
 ) {
+    flock.restart_if_requested(frames.restart.prepared);
     if let Some(settings) = &frames.hunter_settings {
         flock.set_group_scales(&settings.0);
     }
@@ -482,6 +502,7 @@ pub(crate) struct GpuFlock {
     count: u32,
     frame: u32,
     next_id: u32,
+    restart_revision: u64,
     group_count: u32,
     // Vec4 offset (0 or capacity/4) of the order map matching the current boids.
     order_base: u32,
@@ -755,6 +776,7 @@ impl GpuFlock {
             count: 0,
             frame: 0,
             next_id: 0,
+            restart_revision: 0,
             group_count: 0,
             order_base: 0,
             obstacles: Vec::new(),
@@ -767,6 +789,23 @@ impl GpuFlock {
             #[cfg(test)]
             scene_uploads: 0,
         }
+    }
+
+    /// Reuse allocations, but make the next maintenance pass spawn the complete requested flock.
+    /// Repeated revisions are inert, preserving Lab count edits and ordinary simulation continuity.
+    pub(crate) fn restart_if_requested(&mut self, revision: u64) {
+        if self.restart_revision == revision {
+            return;
+        }
+        self.restart_revision = revision;
+        self.count = 0;
+        self.frame = 0;
+        self.next_id = 0;
+        self.order_base = 0;
+        self.group_count = 0;
+        self.group_mask = 0;
+        self.formation_enabled = false;
+        self.hunters = None;
     }
 
     /// Records one simulation step for `params.count` boids: spawns boids beyond the current
@@ -1739,6 +1778,123 @@ mod tests {
         );
         assert_eq!(size_of::<crate::instancing::InstanceData>(), 48);
         assert_eq!(GpuParams::min_size().get(), 464);
+    }
+
+    #[test]
+    fn late_scene_restart_waits_for_matching_gpu_params() {
+        let mut app = App::new();
+        app.init_resource::<GlobalState>()
+            .init_resource::<GpuParams>()
+            .init_resource::<FlockRestart>()
+            .init_resource::<crate::presentation::SimulationFrame>()
+            .init_resource::<PredatorFrame>()
+            .init_resource::<FormationFrame>()
+            .add_systems(Update, update_gpu_params)
+            .add_systems(
+                PostUpdate,
+                |mut state: ResMut<GlobalState>,
+                 mut restart: ResMut<FlockRestart>,
+                 mut changed: Local<bool>| {
+                    if !*changed {
+                        state.vehicle_count = 500;
+                        restart.requested += 1;
+                        *changed = true;
+                    }
+                },
+            );
+        app.update();
+        assert_eq!(app.world().resource::<GpuParams>().count, 20_000);
+        let restart = app.world().resource::<FlockRestart>();
+        assert_eq!((restart.requested, restart.prepared), (1, 0));
+        app.update();
+        assert_eq!(app.world().resource::<GpuParams>().count, 500);
+        let restart = app.world().resource::<FlockRestart>();
+        assert_eq!((restart.requested, restart.prepared), (1, 1));
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_public_restart_replaces_large_world_while_paused_and_clears_old_hunters() {
+        use bevy::render::settings::{Backends, RenderResources, WgpuSettings};
+        let RenderResources(device, queue, ..) =
+            bevy::tasks::block_on(bevy::render::renderer::initialize_renderer(
+                Backends::PRIMARY,
+                None,
+                &WgpuSettings::default(),
+            ));
+        let mut flock = GpuFlock::new(&device);
+        let step = |flock: &mut GpuFlock, params: &GpuParams| {
+            let mut encoder = device.create_command_encoder(&default());
+            flock.encode(&device, &queue, &mut encoder, params);
+            queue.submit([encoder.finish()]);
+        };
+        let old: Vec<BoidData> = (0..512)
+            .map(|id| BoidData {
+                state: [
+                    Vec3::new(10_000.0 + id as f32, 0.0, 0.0).extend(0.0),
+                    Vec4::X,
+                    Vec4::W,
+                    Vec4::ZERO,
+                ],
+                metadata: UVec4::new(id + 1000, 0, 0, 0.5_f32.to_bits()),
+            })
+            .collect();
+        flock.upload(&device, &queue, &old);
+        let mut state = GlobalState {
+            vehicle_count: 512,
+            ..default()
+        };
+        state.groups.count = 2;
+        state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
+        state.groups.table[1].hunter_count = 3;
+        let mut params = gpu_params(&state, Vec3::ZERO, false, 0.0);
+        params.motion.w = 0.0;
+        step(&mut flock, &params);
+        assert_eq!(flock.read_hunters(&device, &queue).len(), 3);
+        assert!(flock
+            .read_boids(&device, &queue)
+            .iter()
+            .all(|boid| boid[0].x >= 10_000.0));
+        let boid_buffer = flock.buffers.as_ref().unwrap().boids.id();
+        let instance_buffer = flock.buffers.as_ref().unwrap().instances.id();
+        flock.restart_if_requested(1);
+        state = GlobalState {
+            vehicle_count: 32,
+            ..default()
+        };
+        params = gpu_params(&state, Vec3::ZERO, false, 0.0);
+        params.motion.w = 0.0;
+        step(&mut flock, &params);
+        assert_eq!(flock.buffers.as_ref().unwrap().boids.id(), boid_buffer);
+        assert_eq!(
+            flock.buffers.as_ref().unwrap().instances.id(),
+            instance_buffer
+        );
+        assert!(flock.hunter_storage_is_off());
+        assert!(flock.read_hunters(&device, &queue).is_empty());
+        let boids = flock.read_boids(&device, &queue);
+        let instances = flock.read_instances(&device, &queue);
+        let previous = flock.read_previous(&device, &queue);
+        assert_eq!(boids.len(), 32);
+        for (id, boid) in boids.iter().enumerate() {
+            assert!(boid[0].truncate().abs().max_element() <= vehicle::spawn_size(32) * 0.5);
+            assert!(boid[0].is_finite());
+            assert_eq!(
+                boid.metadata,
+                UVec4::new(id as u32, state.groups.spawn_group(id as u32), 0, 0)
+            );
+            assert_eq!(instances[id][0].truncate(), boid[0].truncate());
+            assert_eq!(previous[id][0].truncate(), boid[0].truncate());
+            assert_eq!(previous[id][1], boid[2]);
+        }
+        flock.restart_if_requested(1);
+        step(&mut flock, &params);
+        assert_eq!(flock.read_boids(&device, &queue), boids);
+        state.vehicle_count = 16;
+        params = gpu_params(&state, Vec3::ZERO, false, 0.0);
+        params.motion.w = 0.0;
+        step(&mut flock, &params);
+        assert_eq!(flock.read_boids(&device, &queue), boids[..16]);
     }
 
     #[test]
