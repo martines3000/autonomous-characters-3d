@@ -35,7 +35,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 starlings at startup; scene-specific tiers; Lab up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 243 release tests and 22 GPU regressions passed; seeded benchmarks and school metrics available |
+| Tests | None | 250 release tests and 22 GPU regressions passed; seeded benchmarks and school metrics available |
 | Known bugs | 14 audit findings | Original correctness findings resolved; scaling limits tracked; CI not wanted |
 
 Bugs found and fixed include:

@@ -984,11 +984,16 @@ mod tests {
         );
         let presentation = app.world().resource::<Presentation>();
         let state = app.world().resource::<GlobalState>();
-        let mut appearance = crate::scene::Appearance::default();
-        appearance.style = crate::scene::SceneStyle::Glow;
-        appearance.vehicles.visual_size = 1.5;
-        appearance.vehicles.length = 1.2;
-        appearance.streak = 2.0;
+        let appearance = crate::scene::Appearance {
+            style: crate::scene::SceneStyle::Glow,
+            vehicles: crate::vehicle_appearance::VehicleAppearance {
+                visual_size: 1.5,
+                length: 1.2,
+                ..default()
+            },
+            streak: 2.0,
+            ..default()
+        };
         assert!(
             (followed_size(&presentation.follow, state, &appearance, &sample) - unit * 2.0).abs()
                 < 0.0001
