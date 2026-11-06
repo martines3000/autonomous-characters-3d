@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#071d25">
+  <link rel="icon" href="data:,">
+  <meta name="description" content="A small world in motion. Watch bird clouds, drifting fish and ocean hunts in an interactive nature showcase.">
+  <base href="__RELEASE_BASE__">
+  <title>Flock — A small world in motion</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.6 system-ui, sans-serif; color: #ecf3ea; background: #071d25; }
+    * { box-sizing: border-box; }
+    html, body, main { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; outline-offset: -4px; }
+    canvas:focus-visible { outline: 2px solid #a5d4b3; }
+    #loading { position: fixed; inset: 0; display: grid; place-items: center; padding: 2rem; background: radial-gradient(ellipse at 60% 0%, #25554c, #071d25 70%); z-index: 10; }
+    #loading[hidden] { display: none; }
+    .card { width: min(31rem, 100%); }
+    .eyebrow { font-size: .7rem; letter-spacing: .3em; color: #a5d4b3; }
+    h1 { font-size: clamp(3rem, 11vw, 5rem); line-height: 1; font-weight: 500; letter-spacing: -.06em; margin: 1rem 0; }
+    .tagline { color: #b9cdc7; font-size: 1.2rem; margin-bottom: 3rem; }
+    #message { color: #dce6dd; }
+    #detail { color: #9db5b2; font-size: .85rem; }
+    button { border: 1px solid #8eafa4; color: #eff7ee; background: #16433c; padding: .7rem 1.1rem; border-radius: .5rem; font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 2px solid #dcdf99; outline-offset: 4px; }
+    noscript { position: fixed; inset: 0; padding: 4rem; z-index: 20; background: #071d25; }
+  </style>
+</head>
+<body>
+  <main aria-label="Interactive nature showcase">
+    <canvas id="flock" tabindex="0" aria-label="Flock nature scene. Use the on-screen help for camera and keyboard controls."></canvas>
+  </main>
+  <div id="loading" role="status" aria-live="polite">
+    <section class="card">
+      <div class="eyebrow">NATURE, IN MOTION</div>
+      <h1>Flock</h1>
+      <p class="tagline">A small world in motion.</p>
+      <p id="message">Finding a window into the wild…</p>
+      <p id="detail">Preparing the scene on your device.</p>
+      <button id="retry" type="button" hidden>Try again</button>
+    </section>
+  </div>
+  <noscript>Flock needs JavaScript and desktop WebGPU to bring its animals to life. Enable JavaScript, then reload.</noscript>
+  <script type="module" src="bootstrap.js"></script>
+</body>
+</html>
