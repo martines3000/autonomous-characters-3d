@@ -118,7 +118,7 @@ async function realVisibilityAndRecovery() {
     await instance?.close();
     processHandle.kill('SIGTERM');
     await exited;
-    await rm(profile, { recursive: true });
+    await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 
@@ -168,6 +168,17 @@ try {
     await page.mouse.up({ button });
     await page.waitForTimeout(300);
     assert(beforeHudDrag.equals(await page.screenshot({ path: path.join(output, `hud-drag-${button}.png`), clip: worldClip })), `${button} HUD drag escaped into the world camera`);
+    const second = button === 'right' ? 'middle' : 'right';
+    await page.mouse.move(160, 165);
+    await page.mouse.down({ button });
+    await page.mouse.move(1000, 500, { steps: 8 });
+    await page.mouse.down({ button: second });
+    await page.mouse.move(1100, 550, { steps: 8 });
+    await page.mouse.up({ button });
+    await page.mouse.move(1200, 600, { steps: 8 });
+    await page.mouse.up({ button: second });
+    await page.waitForTimeout(300);
+    assert(beforeHudDrag.equals(await page.screenshot({ path: path.join(output, `hud-chord-${button}.png`), clip: worldClip })), `${button}-first chord changed the HUD drag owner`);
   }
   await page.mouse.move(160, 165);
   await page.mouse.wheel(0, 150);
@@ -226,7 +237,17 @@ try {
   await page.mouse.move(250, 180, { steps: 8 });
   await page.waitForTimeout(100);
   assert(!worldDragOverHud.equals(await page.screenshot({ clip })), 'World drag stopped when crossing the HUD');
+  await page.mouse.down({ button: 'middle' });
+  const beforeWorldChord = await page.screenshot({ clip });
+  await page.mouse.move(170, 165, { steps: 8 });
+  await page.waitForTimeout(100);
+  assert(!beforeWorldChord.equals(await page.screenshot({ clip })), 'Adding Middle over the HUD changed the world drag owner');
   await page.mouse.up({ button: 'right' });
+  const afterFirstReleased = await page.screenshot({ clip });
+  await page.mouse.move(250, 180, { steps: 8 });
+  await page.waitForTimeout(100);
+  assert(!afterFirstReleased.equals(await page.screenshot({ clip })), 'Releasing the first world button lost the chord owner');
+  await page.mouse.up({ button: 'middle' });
   await page.waitForTimeout(500);
   const after = await page.screenshot({ path: path.join(output, 'camera-drag-paused.png'), clip });
   assert(!before.equals(after), 'World drag must move the paused camera');
