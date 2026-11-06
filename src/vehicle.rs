@@ -323,6 +323,19 @@ fn movement(
                     acceleration.apply_force(force, state.vehicle_mass);
                     return;
                 }
+                if let Some(guide) = state.groups.guide(metadata.0.y) {
+                    if formation.settings.enabled() {
+                        return;
+                    }
+                    let force = guide.force(
+                        transform.translation,
+                        velocity.0.into(),
+                        max_speed,
+                        state.vehicle_seek_factor,
+                    );
+                    acceleration.apply_force(force.into(), state.vehicle_mass);
+                    return;
+                }
                 // Check if in bounds
                 let fx = transform.translation.x < -walls.x || transform.translation.x > walls.x;
                 let fy = transform.translation.y < -walls.y || transform.translation.y > walls.y;
@@ -1950,15 +1963,26 @@ mod tests {
                 Transform::from_xyz(220.0, 0.0, 0.0),
             ))
             .id();
-        for (follow, group_target, multiple) in
-            [(true, true, 1.0), (false, true, 1.0), (false, false, 2.0)]
-        {
+        for (follow, group_target, guide, multiple) in [
+            (true, true, false, 1.0),
+            (false, true, false, 1.0),
+            (false, false, false, 2.0),
+            (true, false, true, 1.0),
+            (false, false, true, 1.0),
+        ] {
             app.world_mut()
                 .get_mut::<TargetSelection>(target)
                 .unwrap()
                 .0 = follow;
             app.world_mut().resource_mut::<GlobalState>().groups.table[0].target =
                 group_target.then_some(Vec3::Y * 10000.0);
+            app.world_mut().resource_mut::<GlobalState>().groups.table[0].guide =
+                guide.then_some(crate::swarm::SchoolGuide {
+                    center: Vec3::Y * 10000.0,
+                    velocity: Vec3::X * 20.0,
+                    half_length: 20.0,
+                    radius: 10.0,
+                });
             app.world_mut()
                 .get_mut::<VehicleAcceleration>(entity)
                 .unwrap()
@@ -2111,6 +2135,79 @@ mod tests {
         assert_eq!(
             snapshot(app.world_mut()).values().map(|v| v.0.x).min(),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn guide_navigation_matches_flow_and_defers_to_point_and_global_targets() {
+        let mut state = GlobalState {
+            mode: SimulationMode::Naive,
+            vehicle_count: 200,
+            ..default()
+        };
+        state.groups.count = 2;
+        state.groups.table[0].guide = Some(crate::swarm::SchoolGuide {
+            center: Vec3::ZERO,
+            velocity: Vec3::X * 10.0,
+            half_length: 20.0,
+            radius: 5.0,
+        });
+        let max_speed = state.vehicle_max_speed;
+        let mass = state.vehicle_mass;
+        let mut app = App::new();
+        app.insert_resource(state)
+            .init_resource::<Time>()
+            .init_resource::<SwarmScene>()
+            .init_resource::<FormationFrame>()
+            .init_resource::<PredatorFrame>()
+            .add_systems(Update, movement);
+        let target = app
+            .world_mut()
+            .spawn((
+                Target,
+                TargetSelection(false),
+                Transform::from_xyz(0.0, 0.0, 100.0),
+            ))
+            .id();
+        let fish = app
+            .world_mut()
+            .spawn((
+                Vehicle,
+                VehicleVelocity(Vector3::x() * 10.0),
+                VehicleAcceleration::default(),
+                VehicleWanderRotation {
+                    theta: 1.25,
+                    phi: 2.5,
+                },
+                Transform::from_xyz(0.0, 3.0, 0.0),
+            ))
+            .id();
+        let sample = |app: &mut App| {
+            app.world_mut()
+                .get_mut::<VehicleAcceleration>(fish)
+                .unwrap()
+                .0 = Vector3::zeros();
+            app.update();
+            app.world().get::<VehicleAcceleration>(fish).unwrap().0
+        };
+        assert_eq!(sample(&mut app), Vector3::zeros());
+        app.world_mut().get_mut::<VehicleVelocity>(fish).unwrap().0 = Vector3::zeros();
+        assert!((sample(&mut app) - Vector3::x() * (10.0 / mass)).magnitude() < 1e-6);
+        app.world_mut().resource_mut::<GlobalState>().groups.table[0].target =
+            Some(Vec3::Y * 100.0);
+        assert!((sample(&mut app) - Vector3::y() * (max_speed / mass)).magnitude() < 1e-6);
+        app.world_mut()
+            .get_mut::<TargetSelection>(target)
+            .unwrap()
+            .0 = true;
+        let expected = normalize_or_zero(Vector3::new(0.0, -3.0, 100.0)) * (max_speed / mass);
+        assert!((sample(&mut app) - expected).magnitude() < 1e-6);
+        assert_eq!(
+            app.world()
+                .get::<VehicleWanderRotation>(fish)
+                .unwrap()
+                .theta,
+            1.25
         );
     }
 
@@ -3023,6 +3120,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_school_guides_match_cpu_and_preserve_navigation_precedence() {
+        use crate::{
+            formation::{Formation, FormationMode},
+            swarm::{Groups, SchoolGuide},
+        };
+        let mut groups = Groups {
+            count: 3,
+            ..default()
+        };
+        groups.table[0].guide = Some(SchoolGuide {
+            center: Vec3::new(-100.0, 50.0, -30.0),
+            velocity: Vec3::new(17.0, 4.0, -2.0),
+            half_length: 60.0,
+            radius: 18.0,
+        });
+        groups.table[1].target = Some(Vec3::new(100.0, -20.0, -30.0));
+        groups.table[1].guide = Some(SchoolGuide {
+            velocity: Vec3::NEG_Y * 20.0,
+            ..groups.table[0].guide.unwrap()
+        });
+        groups.table[2].guide = Some(SchoolGuide {
+            center: Vec3::new(60.0, -20.0, 10.0),
+            velocity: Vec3::ZERO,
+            half_length: 0.0,
+            radius: 25.0,
+        });
+        for cap in [0, 512] {
+            // The existing real-device harness checks both global-follow states and
+            // compares identity, velocity, rotation and position for several steps.
+            gpu_steering_parity(256, cap, default(), groups, default());
+        }
+        let scene = SwarmScene {
+            formation: Formation {
+                mode: FormationMode::Sphere,
+                ..default()
+            },
+            ..default()
+        };
+        gpu_steering_parity(256, 512, default(), groups, scene);
+        groups.count = 4;
+        groups.table[3].role = crate::swarm::GroupRole::Hunter;
+        groups.table[3].hunter_count = 1;
+        gpu_steering_parity(256, 512, default(), groups, default());
     }
 
     #[test]

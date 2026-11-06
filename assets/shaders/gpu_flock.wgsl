@@ -53,6 +53,7 @@ struct Params {
     predator_settings: vec4<f32>,
     track: vec4<u32>,
     motion: vec4<f32>,
+    group_flows: array<vec4<f32>, 8>,
 };
 
 struct Boid {
@@ -235,6 +236,21 @@ fn limit(v: vec3<f32>, cap: f32) -> vec3<f32> {
         return normalize(v) * cap;
     }
     return v;
+}
+
+// Mirrors SchoolGuide::force. Packed guide.w is negative radius; flow.w is half-length.
+fn school_guide_force(position: vec3<f32>, velocity: vec3<f32>, guide: vec4<f32>, flow: vec4<f32>, max_speed: f32) -> vec3<f32> {
+    let axis = normalize_or_zero(flow.xyz);
+    let delta = position - guide.xyz;
+    let offset = delta - axis * clamp(dot(delta, axis), -flow.w, flow.w);
+    let distance = length(offset);
+    let radius = -guide.w;
+    var correction = vec3<f32>(0.0);
+    if distance > radius {
+        correction = -normalize_or_zero(offset) * max_speed * clamp((distance - radius) / radius, 0.0, 1.0);
+    }
+    let desired = limit(flow.xyz + correction, max_speed);
+    return limit(desired - velocity, max_speed * params.seek_factor);
 }
 
 fn cell_of(position: vec3<f32>) -> vec3<i32> {
@@ -697,14 +713,24 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     var phi = me.wander_phi;
     var seek_target = params.target_position;
     var seeking = params.follow != 0u;
+    var guide = vec4<f32>(0.0);
+    var flow = vec4<f32>(0.0);
     if !seeking && GROUPS_ENABLED {
         let group_target = params.group_targets[group];
         seeking = group_target.w != 0.0;
         seek_target = group_target.xyz;
+        if group_target.w < 0.0 {
+            guide = group_target;
+            flow = params.group_flows[group];
+        }
     }
     if seeking && !FORMATION_ENABLED {
-        let seek = normalize_or_zero(seek_target - position) * max_speed - velocity;
-        acceleration += limit(seek, max_speed * params.seek_factor) / params.mass;
+        if guide.w < 0.0 {
+            acceleration += school_guide_force(position, velocity, guide, flow, max_speed) / params.mass;
+        } else {
+            let seek = normalize_or_zero(seek_target - position) * max_speed - velocity;
+            acceleration += limit(seek, max_speed * params.seek_factor) / params.mass;
+        }
     } else {
         let walls = params.walls;
         let outside = (position < -walls) | (position > walls);
