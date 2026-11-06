@@ -20,7 +20,10 @@ def package(staging: Path, output: Path):
     dirty = bool(run("git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"))
     provenance = {"source": "https://github.com/martines3000/autonomous-characters-3d", "revision": revision, "dirty": dirty, "rust": "1.99.1", "wasm_bindgen": "0.2.130", "profile": "web-release"}
     catalog = sorted(path.relative_to(staging / "assets").as_posix() for path in (staging / "assets").rglob("*") if path.is_file())
-    (staging / "asset-list.json").write_text(json.dumps(catalog) + "\n")
+    # Fetch exposes decoded chunks; gzip Content-Length describes compressed bytes.
+    decoded_sizes = {"flock_bg.wasm": (staging / "flock_bg.wasm").stat().st_size}
+    decoded_sizes.update({f"assets/{path}": (staging / "assets" / path).stat().st_size for path in catalog})
+    (staging / "asset-list.json").write_text(json.dumps({"assets": catalog, "decodedBytes": decoded_sizes}, sort_keys=True) + "\n")
     (staging / "source.json").write_text(json.dumps(provenance, indent=2) + "\n")
     files = sorted(path for path in staging.rglob("*") if path.is_file())
     digest = hashlib.sha256()
