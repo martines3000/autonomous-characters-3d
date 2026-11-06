@@ -138,7 +138,10 @@ impl SchoolGuide {
         let delta = (axis * (cosine * half_length)
             + (side * (radial * angle.cos()) + up * (radial * angle.sin())) * self.radius)
             * radius;
-        let velocity = crate::hunter::limit(self.velocity + self.angular_velocity.cross(delta), max_speed);
+        let velocity = crate::hunter::limit(
+            self.velocity + self.angular_velocity.cross(delta),
+            max_speed,
+        );
         (self.center + delta, velocity)
     }
 
@@ -773,7 +776,12 @@ mod tests {
 
     #[test]
     fn school_spawn_samples_a_uniform_aligned_ellipsoid_and_local_flow() {
-        for velocity in [Vec3::X * 12.0, Vec3::Y * 12.0, Vec3::new(12.0, -4.0, 7.0), Vec3::ZERO] {
+        for velocity in [
+            Vec3::X * 12.0,
+            Vec3::Y * 12.0,
+            Vec3::new(12.0, -4.0, 7.0),
+            Vec3::ZERO,
+        ] {
             let guide = SchoolGuide {
                 center: Vec3::new(20.0, -30.0, 40.0),
                 velocity,
@@ -781,21 +789,39 @@ mod tests {
                 half_length: 30.0,
                 radius: 5.0,
             };
-            let axis = if velocity.length() > f32::EPSILON { velocity.normalize() } else { Vec3::X };
-            let half_length = if velocity == Vec3::ZERO { guide.radius } else { guide.half_length };
+            let axis = if velocity.length() > f32::EPSILON {
+                velocity.normalize()
+            } else {
+                Vec3::X
+            };
+            let half_length = if velocity == Vec3::ZERO {
+                guide.radius
+            } else {
+                guide.half_length
+            };
             let mut mean = Vec3::ZERO;
             let mut second_moment = 0.0;
             for x in 0..16 {
                 for y in 0..16 {
                     for z in 0..16 {
-                        let uniform = (Vec3::new(x as f32, y as f32, z as f32) + Vec3::splat(0.5)) / 16.0;
+                        let uniform =
+                            (Vec3::new(x as f32, y as f32, z as f32) + Vec3::splat(0.5)) / 16.0;
                         let (position, initial_velocity) = guide.sample_spawn(uniform, 15.0);
                         let delta = position - guide.center;
                         let along = delta.dot(axis);
                         let across = delta - axis * along;
-                        let q = along * along / half_length.powi(2) + across.length_squared() / guide.radius.powi(2);
+                        let q = along * along / half_length.powi(2)
+                            + across.length_squared() / guide.radius.powi(2);
                         assert!(q <= 1.0 + 1e-5);
-                        assert!((initial_velocity - crate::hunter::limit(velocity + guide.angular_velocity.cross(delta), 15.0)).length() < 1e-5);
+                        assert!(
+                            (initial_velocity
+                                - crate::hunter::limit(
+                                    velocity + guide.angular_velocity.cross(delta),
+                                    15.0
+                                ))
+                            .length()
+                                < 1e-5
+                        );
                         mean += delta;
                         second_moment += q;
                     }
@@ -804,7 +830,10 @@ mod tests {
             assert!((mean / 4096.0).length() < 1e-4);
             // A uniform unit ball has mean squared radius 3/5, not a surface shell.
             assert!((second_moment / 4096.0 - 0.6).abs() < 0.002);
-            let flat = SchoolGuide { half_length: 0.0, ..guide };
+            let flat = SchoolGuide {
+                half_length: 0.0,
+                ..guide
+            };
             let (position, _) = flat.sample_spawn(Vec3::new(0.25, 0.4, 0.8), 15.0);
             if velocity == Vec3::ZERO {
                 assert!((position - flat.center).length() <= flat.radius);

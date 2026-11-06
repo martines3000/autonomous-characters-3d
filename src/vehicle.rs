@@ -204,7 +204,10 @@ fn vehicle_spawner(
         let mut velocity = random_direction().mul(state.vehicle_max_speed);
         let group = state.groups.spawn_group(id);
         if let Some(guide) = guided.then(|| state.groups.guide(group)).flatten() {
-            let pose = guide.sample_spawn(uniform, state.vehicle_max_speed * state.groups.speed_scale(group));
+            let pose = guide.sample_spawn(
+                uniform,
+                state.vehicle_max_speed * state.groups.speed_scale(group),
+            );
             position = pose.0;
             velocity = pose.1.into();
         }
@@ -216,12 +219,7 @@ fn vehicle_spawner(
         commands
             .spawn(Transform::from_translation(position).with_rotation(rotation))
             .insert(Vehicle)
-            .insert(VehicleMetadata(UVec4::new(
-                id,
-                group,
-                0,
-                0,
-            )))
+            .insert(VehicleMetadata(UVec4::new(id, group, 0, 0)))
             .insert(VehicleVelocity(velocity))
             .insert(VehicleAcceleration(Vector3::zeros()))
             .insert(VehicleWanderRotation {
@@ -2050,7 +2048,10 @@ mod tests {
 
     #[test]
     fn cpu_guided_spawn_starts_in_flow_and_respects_navigation_precedence() {
-        use crate::{formation::{Formation, FormationMode}, swarm::SchoolGuide};
+        use crate::{
+            formation::{Formation, FormationMode},
+            swarm::SchoolGuide,
+        };
         let guide = SchoolGuide {
             center: Vec3::new(500.0, -200.0, 90.0),
             velocity: Vec3::new(12.0, 1.0, 4.0),
@@ -2060,27 +2061,47 @@ mod tests {
         };
         for mode in [SimulationMode::Naive, SimulationMode::Octree] {
             for case in 0..6 {
-                let mut state = GlobalState { mode, vehicle_count: 96, vehicle_max_speed: 20.0, ..default() };
+                let mut state = GlobalState {
+                    mode,
+                    vehicle_count: 96,
+                    vehicle_max_speed: 20.0,
+                    ..default()
+                };
                 state.groups.count = if case == 5 { 0 } else { 2 };
                 state.groups.table[0].guide = Some(guide);
                 state.groups.table[0].speed_scale = 0.5;
                 state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
                 state.groups.table[1].hunter_count = 1;
-                if case == 3 { state.groups.table[0].target = Some(Vec3::Y * 1000.0); }
-                if case == 4 { state.groups.table[0].guide.as_mut().unwrap().angular_velocity = Vec3::NAN; }
+                if case == 3 {
+                    state.groups.table[0].target = Some(Vec3::Y * 1000.0);
+                }
+                if case == 4 {
+                    state.groups.table[0]
+                        .guide
+                        .as_mut()
+                        .unwrap()
+                        .angular_velocity = Vec3::NAN;
+                }
                 let mut app = App::new();
                 app.insert_resource(state)
                     .init_resource::<VehicleSpawner>()
                     .insert_resource(FormationFrame::fixed(Formation {
-                        mode: if case == 2 { FormationMode::Sphere } else { FormationMode::Off },
+                        mode: if case == 2 {
+                            FormationMode::Sphere
+                        } else {
+                            FormationMode::Off
+                        },
                         ..default()
                     }))
                     .add_systems(Update, vehicle_spawner);
                 app.world_mut().spawn((Target, TargetSelection(case == 1)));
                 app.update();
                 let world = app.world_mut();
-                let boids: Vec<_> = world.query::<(&Transform, &VehicleVelocity, &VehicleMetadata)>()
-                    .iter(world).map(|(t, v, m)| (t.translation, Vec3::from(v.0), m.0)).collect();
+                let boids: Vec<_> = world
+                    .query::<(&Transform, &VehicleVelocity, &VehicleMetadata)>()
+                    .iter(world)
+                    .map(|(t, v, m)| (t.translation, Vec3::from(v.0), m.0))
+                    .collect();
                 assert_eq!(boids.len(), 96);
                 let mut ids: Vec<_> = boids.iter().map(|(_, _, m)| m.x).collect();
                 ids.sort_unstable();
@@ -2092,8 +2113,15 @@ mod tests {
                         let axis = guide.velocity.normalize();
                         let along = delta.dot(axis);
                         let across = delta - axis * along;
-                        assert!(along.powi(2) / guide.half_length.powi(2) + across.length_squared() / guide.radius.powi(2) <= 1.0 + 1e-5);
-                        let expected = crate::hunter::limit(guide.velocity + guide.angular_velocity.cross(delta), 10.0);
+                        assert!(
+                            along.powi(2) / guide.half_length.powi(2)
+                                + across.length_squared() / guide.radius.powi(2)
+                                <= 1.0 + 1e-5
+                        );
+                        let expected = crate::hunter::limit(
+                            guide.velocity + guide.angular_velocity.cross(delta),
+                            10.0,
+                        );
                         assert!((velocity - expected).length() < 1e-4);
                     } else {
                         assert!(position.abs().max_element() <= spawn_size(96) * 0.5);
@@ -3192,7 +3220,11 @@ mod tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn gpu_guided_spawn_matches_cpu_sampler_and_preserves_legacy_fallbacks() {
-        use crate::{formation::{Formation, FormationMode}, gpu_flock::{gpu_params, GpuFlock}, swarm::SchoolGuide};
+        use crate::{
+            formation::{Formation, FormationMode},
+            gpu_flock::{gpu_params, GpuFlock},
+            swarm::SchoolGuide,
+        };
         fn pcg(value: u32) -> u32 {
             let state = value.wrapping_mul(747796405).wrapping_add(2891336453);
             let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277803737);
@@ -3210,17 +3242,41 @@ mod tests {
         let mut legacy: Option<Vec<[Vec4; 4]>> = None;
         // Start with no guide, then prove every blocked guide retains the same draws/pose.
         for case in [6, 0, 7, 1, 2, 3, 4, 5] {
-            let active_guide = if case == 7 { SchoolGuide { velocity: Vec3::ZERO, ..guide } } else { guide };
-            let mut state = GlobalState { mode: SimulationMode::Gpu, vehicle_count: 192, vehicle_max_speed: 20.0, ..default() };
+            let active_guide = if case == 7 {
+                SchoolGuide {
+                    velocity: Vec3::ZERO,
+                    ..guide
+                }
+            } else {
+                guide
+            };
+            let mut state = GlobalState {
+                mode: SimulationMode::Gpu,
+                vehicle_count: 192,
+                vehicle_max_speed: 20.0,
+                ..default()
+            };
             state.groups.count = if case == 5 { 0 } else { 2 };
             state.groups.table[0].guide = (case != 6).then_some(active_guide);
             state.groups.table[0].speed_scale = 0.5;
             state.groups.table[1].role = crate::swarm::GroupRole::Hunter;
             state.groups.table[1].hunter_count = 1;
-            if case == 3 { state.groups.table[0].target = Some(Vec3::Y * 1000.0); }
-            if case == 4 { state.groups.table[0].guide.as_mut().unwrap().angular_velocity = Vec3::NAN; }
+            if case == 3 {
+                state.groups.table[0].target = Some(Vec3::Y * 1000.0);
+            }
+            if case == 4 {
+                state.groups.table[0]
+                    .guide
+                    .as_mut()
+                    .unwrap()
+                    .angular_velocity = Vec3::NAN;
+            }
             let frame = FormationFrame::fixed(Formation {
-                mode: if case == 2 { FormationMode::Sphere } else { FormationMode::Off },
+                mode: if case == 2 {
+                    FormationMode::Sphere
+                } else {
+                    FormationMode::Off
+                },
                 ..default()
             });
             flock.restart_if_requested(case + 1);
@@ -3241,23 +3297,39 @@ mod tests {
                         seed = pcg(seed);
                         *value = (seed >> 8) as f32 / 16777216.0;
                     }
-                    let (position, velocity) = active_guide.sample_spawn(Vec3::from_array(uniform), 10.0);
+                    let (position, velocity) =
+                        active_guide.sample_spawn(Vec3::from_array(uniform), 10.0);
                     assert!(boid[0].truncate().distance(position) < 1e-3);
                     assert!(boid[1].truncate().distance(velocity) < 1e-3);
                     let delta = boid[0].truncate() - active_guide.center;
-                    let axis = if case == 7 { Vec3::X } else { active_guide.velocity.normalize() };
-                    let half_length = if case == 7 { active_guide.radius } else { active_guide.half_length };
+                    let axis = if case == 7 {
+                        Vec3::X
+                    } else {
+                        active_guide.velocity.normalize()
+                    };
+                    let half_length = if case == 7 {
+                        active_guide.radius
+                    } else {
+                        active_guide.half_length
+                    };
                     let along = delta.dot(axis);
-                    assert!(along.powi(2) / half_length.powi(2) + (delta - axis * along).length_squared() / active_guide.radius.powi(2) <= 1.0 + 1e-5);
+                    assert!(
+                        along.powi(2) / half_length.powi(2)
+                            + (delta - axis * along).length_squared() / active_guide.radius.powi(2)
+                            <= 1.0 + 1e-5
+                    );
                     assert!(boid[1].truncate().length() <= 10.0 + 1e-5);
-                    let (speed, group) = crate::vehicle_appearance::unpack_speed_group(instances[id][0].w);
+                    let (speed, group) =
+                        crate::vehicle_appearance::unpack_speed_group(instances[id][0].w);
                     assert_eq!(group, 0);
                     assert!((speed - boid[1].truncate().length() / 20.0).abs() <= 1.0 / 65535.0);
                 } else if case != 6 {
                     assert_eq!(boid.state, legacy.as_ref().unwrap()[id]);
                 }
             }
-            if case == 6 { legacy = Some(boids.iter().map(|boid| boid.state).collect::<Vec<_>>()); }
+            if case == 6 {
+                legacy = Some(boids.iter().map(|boid| boid.state).collect::<Vec<_>>());
+            }
         }
     }
 
