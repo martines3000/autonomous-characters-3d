@@ -775,21 +775,55 @@ mod tests {
             half_length: 20.0,
             radius: 5.0,
         };
-        for delta in [Vec3::ZERO, Vec3::X * 15.0, Vec3::NEG_X * 15.0, Vec3::Y * 4.0] {
+        for delta in [
+            Vec3::ZERO,
+            Vec3::X * 15.0,
+            Vec3::NEG_X * 15.0,
+            Vec3::Y * 4.0,
+        ] {
             let flow = guide.velocity + guide.angular_velocity.cross(delta);
-            assert_eq!(guide.force(guide.center + delta, flow, 40.0, 2.0), Vec3::ZERO);
-            assert_eq!(guide.force(guide.center + delta, Vec3::ZERO, 40.0, 2.0), flow);
+            assert_eq!(
+                guide.force(guide.center + delta, flow, 40.0, 2.0),
+                Vec3::ZERO
+            );
+            assert_eq!(
+                guide.force(guide.center + delta, Vec3::ZERO, 40.0, 2.0),
+                flow
+            );
         }
         let front = guide.force(guide.center + Vec3::X * 15.0, guide.velocity, 40.0, 2.0);
         let rear = guide.force(guide.center - Vec3::X * 15.0, guide.velocity, 40.0, 2.0);
         assert!(front.z < 0.0 && rear.z > 0.0);
         assert_eq!(front, -rear);
-        assert!(guide.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 5.0, 1.0).length() <= 5.0 + 1e-5);
-        let zero_axis = SchoolGuide { velocity: Vec3::ZERO, half_length: 0.0, ..guide };
+        assert!(
+            guide
+                .force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 5.0, 1.0)
+                .length()
+                <= 5.0 + 1e-5
+        );
+        let zero_axis = SchoolGuide {
+            velocity: Vec3::ZERO,
+            half_length: 0.0,
+            ..guide
+        };
         let delta = Vec3::X * 3.0;
-        assert_eq!(zero_axis.force(zero_axis.center + delta, zero_axis.angular_velocity.cross(delta), 40.0, 2.0), Vec3::ZERO);
-        let overflowing = SchoolGuide { angular_velocity: Vec3::Y * f32::MAX, ..guide };
-        assert_eq!(overflowing.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 40.0, 2.0), Vec3::ZERO);
+        assert_eq!(
+            zero_axis.force(
+                zero_axis.center + delta,
+                zero_axis.angular_velocity.cross(delta),
+                40.0,
+                2.0
+            ),
+            Vec3::ZERO
+        );
+        let overflowing = SchoolGuide {
+            angular_velocity: Vec3::Y * f32::MAX,
+            ..guide
+        };
+        assert_eq!(
+            overflowing.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 40.0, 2.0),
+            Vec3::ZERO
+        );
     }
 
     #[test]

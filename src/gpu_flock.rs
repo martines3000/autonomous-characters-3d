@@ -319,7 +319,10 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
         }),
         group_turns: std::array::from_fn(|i| {
             if i < state.groups.count as usize {
-                state.groups.guide(i as u32).map_or(Vec4::ZERO, |guide| guide.angular_velocity.extend(0.0))
+                state
+                    .groups
+                    .guide(i as u32)
+                    .map_or(Vec4::ZERO, |guide| guide.angular_velocity.extend(0.0))
             } else {
                 Vec4::ZERO
             }
@@ -2083,7 +2086,10 @@ mod tests {
         assert_eq!(invalid.group_flows[0], Vec4::ZERO);
         assert_eq!(invalid.group_turns[0], Vec4::ZERO);
         assert_eq!(invalid.max_neighbors, 0);
-        state.groups.table[0].guide = Some(SchoolGuide { angular_velocity: Vec3::NAN, ..guide });
+        state.groups.table[0].guide = Some(SchoolGuide {
+            angular_velocity: Vec3::NAN,
+            ..guide
+        });
         let invalid_turn = gpu_params(&state, Vec3::ZERO, false, 0.01);
         assert_eq!(invalid_turn.group_targets[0], Vec4::ZERO);
         assert_eq!(invalid_turn.group_flows[0], Vec4::ZERO);
