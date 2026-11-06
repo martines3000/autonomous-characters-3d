@@ -36,6 +36,9 @@ Serve the merged Flock application at `https://flock.skippy-ai.com` through CRON
 - Decision: Reuse source-matched native/GPU/browser evidence, then verify the published image and public endpoint.
   Rationale: Squash merges changed history but not the tested tree; deployment needs new serving/provenance checks.
   Date: 2026-11-06.
+- Decision: Use GitHub/Flux and public verification without making workstation SSH access a deployment prerequisite.
+  Rationale: The owner questioned SSH and supplied the GitHub deployment repositories. This is a first installation of a public static site; retain Deployment readiness/liveness and Flux wait, verify the exact published image locally, then verify actual public health/assets and browser behavior. Record private rollout/digest inspection as unavailable rather than claiming it passed. Stop or correct the route through normal GitOps if public verification fails.
+  Date: 2026-11-06.
 
 ## Assumptions and Open Questions
 
@@ -54,7 +57,7 @@ Release in progress. No published digest, merged household change or production 
 
 1. Dispatch default-branch publication and establish private read access while it runs.
 2. Pin the returned digest, verify pull and the restricted container, validate rendered cluster additions and merge C1.
-3. Let Flux reconcile; diagnose only if delayed. Prove internal health/assets and image provenance before exposure.
+3. Let Flux reconcile under the existing readiness probes and Flux wait. Use private rollout/internal asset checks if access is available. Otherwise retain that explicit verification limit and proceed with the exact-image local proof and live public checks for this owner-authorized first installation.
 4. Complete I1 review and merge. Dispatch a full production plan and inspect every action. Apply the authorized route with normal confirmation and guards.
 5. Verify public HTTPS, visible interactive WebGPU, existing services and closed direct-origin ports. Record evidence and recovery.
 
@@ -68,7 +71,7 @@ Use the documented private SSH/Kubernetes tunnel, exact-image local container, H
 
 - Publication succeeds from the actual merged source; registry pull and release metadata prove provenance.
 - Cluster contribution checks pass; rendered additions preserve existing resources and add no public Service, PVC or plaintext Secret.
-- The intended CRONA node reports `amd64`; Flux, pod health, digest and internal Host-header asset checks pass.
+- With private access, verify CRONA `amd64`, Flux, pod health, digest and internal Host-header assets directly. Without it, record these checks as unavailable; prove exact published-image health locally and actual release provenance, health and assets through the public hostname without claiming direct cluster inspection.
 - Full OpenTofu plan preserves server/firewall/Access/other routes and contains only the Flock DNS/routing delta; guarded apply succeeds.
 - Public HTTPS, cache/MIME/compression, assets and a nonblank interactive scene pass on the recorded WebGPU configuration. Existing services retain expected behavior; direct-origin ingress stays closed.
 
