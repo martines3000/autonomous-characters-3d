@@ -189,6 +189,7 @@ impl Showcase {
 /// Both menu buttons and validated scenarios enter here. Vehicle lifecycle stays with
 /// the existing count/backend systems; selecting a showcase does not reset retained boids.
 pub(crate) fn apply(world: &mut World, showcase: Showcase) {
+    crate::schooling::release(world);
     let mut settings = showcase.settings();
     // The applied look belongs to the environment runtime, not the preset.
     settings.appearance.applied_environment = world

@@ -13,6 +13,7 @@ mod predator;
 mod presentation;
 mod scenario;
 mod scene;
+mod schooling;
 mod showcase;
 mod species;
 mod swarm;
@@ -98,6 +99,7 @@ fn main() {
         ))
         .add_plugins(hunter::HunterPlugin)
         .add_plugins(visitor::VisitorPlugin)
+        .add_plugins(schooling::SchoolingPlugin)
         .add_plugins(browser::BrowserPlugin)
         .add_systems(
             PreUpdate,

@@ -9,7 +9,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 ## Progress
 
 - [x] (2026-11-06 09:55Z) Recorded authorization, scope, ownership and validation strategy. Existing cause confirmed: Reef drift has strong wander/weak schooling; Shark attack sets a fixed origin prey target.
-- [ ] Record native before behavior clips and comparable timing windows for Reef/Shark.
+- [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
 - [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions.
 - [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence.
 - [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
@@ -20,6 +20,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 - Existing `Group.target` replaces wander and wall avoidance with full-speed seek; static per-shoal targets would create smaller anchored balls. Moving, bounded guides and local alignment/cohesion must be evaluated in motion before accepting their tuning.
 - GPU prey poses are sampled through an existing asynchronous 80-byte camera readback. Hunter poses live in the GPU arena in GPU mode and in `Hunters` in CPU modes. Shark riding must sample the actual simulated hunter rather than the CPU initial pose.
+- Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
 
 ## Decision Log
 
