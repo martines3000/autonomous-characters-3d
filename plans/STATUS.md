@@ -2,12 +2,7 @@
 
 ## Current work
 
-- [Public Flock release](planned/2026-11-06-public-flock-release.md) is authorized and in progress: publish merged source `57fa57a`, complete the household workload/routing PRs and deploy `https://flock.skippy-ai.com` with internal and public verification.
-- [Short README](https://github.com/martines3000/autonomous-characters-3d/pull/26) is ready after #25: 32 lines, one Reef screenshot and links to the preserved [full reference](../docs/reference.md). The post-reboot check recovered and pushed the prior handoff documentation; the feature PRs remain ready and unmerged.
-- [Reef shoals, travelling school, shark riding and web loading](completed/2026-11-06-fish-schools-and-shark-riding.md) are prepared for review in ready PRs #22–#25 after #20. The follow-up handoff is complete; [evidence and limits](evidence/2026-11-06-fish-schools.md) include videos, native/GPU/browser checks and repeated measurements. No implementation work remains in this plan.
-- The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application/documentation PRs #12–#20 and #22–#26, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
-- The [approved review-preparation plan](completed/2026-11-05-polished-flock-web-showcase.md) is complete at its review handoff. Deployment publication/health and later public verification remain a separate, explicitly authorized release session.
-- Owner manual review on 2026-11-06 praised the improved presentation and riding camera, and questioned sparse Reef drift grouping and the persistent Shark hunt ball. [PR #20](https://github.com/martines3000/autonomous-characters-3d/pull/20) adds **Another animal · N** after #19. The later authorized school, shark Ride and loading work is complete at the review handoff above; it does not reopen the original goal. The [initial feedback record](evidence/2026-11-06-owner-feedback.md) preserves PR #20's own scope and validation.
+- [Flock is live](https://flock.skippy-ai.com/). The [public release](completed/2026-11-06-public-flock-release.md) is complete: application stack and household PRs merged, image published, guarded routing applied and actual public WebGPU/asset checks passed. No implementation plan remains active. See [release evidence](evidence/2026-11-06-public-release.md) for exact provenance, results and deferred private/network inspection.
 
 ## Prioritized future tasks
 
@@ -31,7 +26,7 @@ CI (finding F12) is not wanted by the owner.
 
 `review-report.html` audited commit `e7a53d7`. Status against `master` (the native modernization was merged in `3f8813a`), verified against source on 2026-10-30:
 
-The F12 test counts below reflect the unmerged showcase review stack verified on 2026-11-06;
+The F12 test counts below reflect the showcase source merged into `57fa57a` and verified on 2026-11-06;
 the historical resolution commits and performance measurements in the other rows are unchanged.
 
 | ID | Finding | Status |
@@ -53,6 +48,7 @@ the historical resolution commits and performance measurements in the other rows
 
 ## Completed
 
+- [Public Flock deployment](completed/2026-11-06-public-flock-release.md) (2026-11-06): [flock.skippy-ai.com](https://flock.skippy-ai.com/) serves published source `57fa57a`, content `8ccdbb8b6a861d290b652024`, with the real immutable image digest pinned through merged household PRs. Guarded apply added one DNS record and updated only the shared Tunnel configuration. Exact-image and public acceptance each pass 20 HTTP paths and 11 headed WebGPU cases; all 15 immutable public files match. Final native gate passes 255 tests, warning-free build and startup. Existing services remain healthy/protected; private cluster and direct-origin network inspection are explicitly deferred in the [report](evidence/2026-11-06-public-release.md).
 - [README condensation](https://github.com/martines3000/autonomous-characters-3d/pull/26) (2026-11-06): reduced the main README from 1,282 to 32 lines with one actual Reef screenshot. Preserved the complete original content in [docs/reference.md](../docs/reference.md) and adjusted relative links. All 35 local links/anchors, formatting, 255 release tests, warning-free build, ten-second native startup and diff checks pass. Runtime source is unchanged; existing GPU/browser evidence remains applicable. No ExecPlan was needed for this contained documentation change.
 - [Fish schools, shark Ride and web loading](completed/2026-11-06-fish-schools-and-shark-riding.md) (2026-11-06): three Reef shoals, translating/turning Shark flow and coherent initial school, actual CPU/GPU hunter cameras and accessible streamed loading/reveal. Ready PRs #22–#25; 255 release tests, 24 GPU checks, 11 headed browser cases, nine loader tests and one packaging fixture pass. Two clean outputs match in all 32 files. Videos and all-tier measurements record transient school compression, soft bounds and differing display conditions. [Follow-up report](evidence/2026-11-06-fish-schools.md).
 - [Polished nature showcase review preparation](completed/2026-11-05-polished-flock-web-showcase.md) (2026-11-06): three GPU scenes, visitor HUD/Lab, coherent tiers/restarts, composed animal motion and readable shark encounters; shared WebGPU runtime and reproducible web/Docker tooling. 219 release tests and 20 GPU regressions pass; all nine browser tiers measured twice on the recorded Linux configuration. Application PRs 12–19 are ready for review; cluster/routing drafts retain real-image, internal-health and later release prerequisites. See the [morning review index](evidence/2026-11-06-morning-review.md).

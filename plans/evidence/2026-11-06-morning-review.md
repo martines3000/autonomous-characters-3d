@@ -1,6 +1,8 @@
 # Morning review — 6 November 2026
 
-The approved review-only goal and the later owner-feedback follow-up are complete at their review handoffs. Application changes are prepared in a tested PR stack; CRONA workload/routing changes remain drafts. All PRs remain unmerged. No default-branch change, registry publication, production workflow dispatch, deployment, infrastructure apply or DNS mutation occurred.
+**Release update:** [Flock is live](https://flock.skippy-ai.com/). The application stack and both household PRs are merged; publication and guarded production apply succeeded. The [public release report](2026-11-06-public-release.md) records source, digest, workflows, real public browser/asset checks and deferred private/network inspection.
+
+The sections below preserve the original review handoff and its dependency order. The approved review-only goal and later owner-feedback follow-up were complete at those handoffs. Application changes were prepared in a tested PR stack and CRONA workload/routing changes remained drafts. At that point all PRs were unmerged; no default-branch change, registry publication, production workflow dispatch, deployment, infrastructure apply or DNS mutation had occurred.
 
 Start with the latest [fish schools, shark Ride and loading report](2026-11-06-fish-schools.md) and its [immutable before/after evidence](https://github.com/martines3000/autonomous-characters-3d/tree/8a70142b71f3793f72a4c6549bd307de22fdd06c/fish-schools). The pre-reboot local static preview used `http://127.0.0.1:8091`, clean source `c7fa288`, release `596a0586e1010946ad95daab`; use the documented normal Wayland/Vulkan flags on this machine. The manual-review browser was left open at the original handoff. Preview and browser session descriptions in that evidence predate the reboot; they do not establish a currently running preview.
 

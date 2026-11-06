@@ -3,6 +3,8 @@
 Bird flocks, reef shoals and shark hunts in Rust and [Bevy](https://bevyengine.org/).
 GPU flocking, animated animals and Scenic, Ride and Free cameras, on desktop and WebGPU.
 
+[Try it in your browser](https://flock.skippy-ai.com/) · Desktop WebGPU required.
+
 ![Reef drift: animated fish shoals in the underwater scene](docs/images/reef-drift.png)
 
 ## Run
