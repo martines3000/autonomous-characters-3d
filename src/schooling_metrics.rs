@@ -139,6 +139,7 @@ mod schooling_metrics {
         max_speed: f32,
         outside_fraction: f32,
         max_overshoot: f32,
+        elongation: f64,
     }
 
     fn median(sorted: &[f32]) -> f32 {
@@ -151,6 +152,32 @@ mod schooling_metrics {
         }
     }
 
+    fn elongation(positions: &[Vec3]) -> f64 {
+        assert!(!positions.is_empty());
+        let point = |p: Vec3| nalgebra::Vector3::new(p.x as f64, p.y as f64, p.z as f64);
+        // Center and accumulate in f64 so translation and f32 summation error do not
+        // manufacture a secondary axis in a narrow school.
+        let center = positions
+            .iter()
+            .map(|&p| point(p))
+            .sum::<nalgebra::Vector3<f64>>()
+            / positions.len() as f64;
+        let mut covariance = nalgebra::Matrix3::<f64>::zeros();
+        for &position in positions {
+            let offset = point(position) - center;
+            covariance += offset * offset.transpose();
+        }
+        covariance /= positions.len() as f64;
+        let values = covariance.symmetric_eigenvalues();
+        assert!(values.iter().all(|value| value.is_finite()));
+        let mut values = [values.x.max(0.0), values.y.max(0.0), values.z.max(0.0)];
+        values.sort_unstable_by(f64::total_cmp);
+        // The largest/second-largest ratio distinguishes a prolate school from a
+        // flattened disc. Floor both axes for a finite degenerate-cloud result (1).
+        let floor = values[2].max(1.0) * 1e-12;
+        (values[2].max(floor) / values[1].max(floor)).sqrt()
+    }
+
     fn metrics(
         boids: &[&BoidData],
         neighbors: &[NeighborSample],
@@ -159,11 +186,12 @@ mod schooling_metrics {
     ) -> Metrics {
         assert!(!boids.is_empty());
         let count = boids.len() as f32;
-        let center = boids.iter().map(|b| b[0].truncate()).sum::<Vec3>() / count;
+        let positions: Vec<_> = boids.iter().map(|b| b[0].truncate()).collect();
+        let center = positions.iter().copied().sum::<Vec3>() / count;
         let velocity = boids.iter().map(|b| b[1].truncate()).sum::<Vec3>();
-        let mut radii: Vec<_> = boids
+        let mut radii: Vec<_> = positions
             .iter()
-            .map(|boid| boid[0].truncate().distance(center))
+            .map(|position| position.distance(center))
             .collect();
         radii.sort_unstable_by(f32::total_cmp);
         let speeds: Vec<_> = boids.iter().map(|b| b[1].truncate().length()).collect();
@@ -205,6 +233,7 @@ mod schooling_metrics {
             outside_fraction: overshoots.iter().filter(|&&value| value > 0.0).count() as f32
                 / count,
             max_overshoot: overshoots.into_iter().fold(0.0, f32::max),
+            elongation: elongation(&positions),
         }
     }
 
@@ -277,14 +306,14 @@ mod schooling_metrics {
                 group.to_string()
             };
             println!(
-                "SCHOOL_METRICS_CSV,{phase},{},{},{seconds:.6},{label},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                "SCHOOL_METRICS_CSV,{phase},{},{},{seconds:.6},{label},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
                 scene.name(), tier.name(), members.len(),
                 sample.center.x, sample.center.y, sample.center.z,
                 track.span, track.length, sample.r80, sample.polarization,
                 sample.neighbor_queries, sample.same_group_fraction,
                 sample.median_neighbor_distance, sample.panic_fraction,
                 sample.mean_speed, sample.max_speed,
-                sample.outside_fraction, sample.max_overshoot,
+                sample.outside_fraction, sample.max_overshoot, sample.elongation,
             );
         }
     }
@@ -353,6 +382,28 @@ mod schooling_metrics {
     }
 
     #[test]
+    fn elongation_distinguishes_prolate_schools_from_spheres_and_discs() {
+        let sphere = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        assert!((elongation(&sphere) - 1.0).abs() < 1e-8);
+        let disc = sphere.map(|point| point * Vec3::new(1.0, 1.0, 0.01));
+        assert!((elongation(&disc) - 1.0).abs() < 1e-8);
+        let prolate = sphere.map(|point| point * Vec3::new(5.0, 1.0, 1.0));
+        assert!((elongation(&prolate) - 5.0).abs() < 1e-8);
+        let rotation = Quat::from_rotation_y(0.71) * Quat::from_rotation_z(0.42);
+        let moved = prolate.map(|point| rotation * point + Vec3::new(100.0, -20.0, 7.0));
+        assert!((elongation(&moved) - 5.0).abs() < 1e-4);
+        assert_eq!(elongation(&[Vec3::ONE; 4]), 1.0);
+        assert!(elongation(&[Vec3::NEG_X, Vec3::X]).is_finite());
+    }
+
+    #[test]
     #[ignore = "real GPU school probe; run release with --nocapture --test-threads=1"]
     fn gpu_schooling_scene_metrics() {
         let step = Duration::from_secs_f64(1.0 / HZ as f64);
@@ -368,12 +419,12 @@ mod schooling_metrics {
             PopulationTier::parse(&value).expect("SCHOOL_PROBE_TIER must be low, medium or high")
         });
         println!(
-            "SCHOOL_METRICS_META,os={},arch={},release={},spawn=default_gpu_pcg_frame_0,bitwise_replay_claim=false,step_seconds={:.9},settle_seconds={SETTLE_SECONDS},sample_seconds={SAMPLE_SECONDS},readback_hz=2,max_exact_neighbor_queries={NEIGHBOR_QUERY_BUDGET},polarization=speed_weighted_velocity_sum_over_speed_sum,bounds=sampled_only,performance_timing=false",
+            "SCHOOL_METRICS_META,os={},arch={},release={},spawn=default_gpu_pcg_frame_0,bitwise_replay_claim=false,step_seconds={:.9},settle_seconds={SETTLE_SECONDS},sample_seconds={SAMPLE_SECONDS},readback_hz=2,max_exact_neighbor_queries={NEIGHBOR_QUERY_BUDGET},polarization=speed_weighted_velocity_sum_over_speed_sum,elongation=sqrt_largest_over_second_position_covariance_eigenvalue,bounds=sampled_only,performance_timing=false",
             std::env::consts::OS, std::env::consts::ARCH,
             !cfg!(debug_assertions), step.as_secs_f64(),
         );
         println!(
-            "SCHOOL_METRICS_CSV,phase,scene,tier,seconds,group,count,centroid_x,centroid_y,centroid_z,centroid_span,centroid_path_length,r80,polarization,neighbor_queries,same_group_nearest_fraction,median_nearest_distance,panic_fraction,mean_speed,max_speed,outside_fraction,max_overshoot"
+            "SCHOOL_METRICS_CSV,phase,scene,tier,seconds,group,count,centroid_x,centroid_y,centroid_z,centroid_span,centroid_path_length,r80,polarization,neighbor_queries,same_group_nearest_fraction,median_nearest_distance,panic_fraction,mean_speed,max_speed,outside_fraction,max_overshoot,elongation"
         );
         let (device, queue) = gpu_device();
         for scene in [VisitorScene::ReefDrift, VisitorScene::SharkHunt] {
