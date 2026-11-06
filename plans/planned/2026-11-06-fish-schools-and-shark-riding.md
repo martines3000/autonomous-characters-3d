@@ -10,7 +10,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 - [x] (2026-11-06 09:55Z) Recorded authorization, scope, ownership and validation strategy. Existing cause confirmed: Reef drift has strong wander/weak schooling; Shark attack sets a fixed origin prey target.
 - [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
-- [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and current-frame pointer ownership pass 229 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Final browser/PR publication remain.
+- [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
 - [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence.
 - [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
 - [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.

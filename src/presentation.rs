@@ -950,8 +950,12 @@ pub(crate) mod tests {
     fn release_and_repress_in_one_batch_replaces_presentation_drag_owner() {
         for dpi in [1.0, 2.0] {
             for over_ui in [false, true] {
-                for (button, egui_button) in [(MouseButton::Right, egui::PointerButton::Secondary), (MouseButton::Middle, egui::PointerButton::Middle)] {
-                    let (context, pending) = crate::tests::pending_drag_context(!over_ui, egui_button, dpi);
+                for (button, egui_button) in [
+                    (MouseButton::Right, egui::PointerButton::Secondary),
+                    (MouseButton::Middle, egui::PointerButton::Middle),
+                ] {
+                    let (context, pending) =
+                        crate::tests::pending_drag_context(!over_ui, egui_button, dpi);
                     let mut app = App::new();
                     app.init_resource::<Presentation>()
                         .init_resource::<ButtonInput<KeyCode>>()
@@ -959,17 +963,43 @@ pub(crate) mod tests {
                         .init_resource::<AccumulatedMouseScroll>()
                         .init_resource::<bevy_egui::EguiUserTextures>()
                         .add_systems(Update, presentation_input);
-                    let input_entity = app.world_mut().spawn((context, bevy_egui::PrimaryEguiContext, pending)).id();
-                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+                    let input_entity = app
+                        .world_mut()
+                        .spawn((context, bevy_egui::PrimaryEguiContext, pending))
+                        .id();
+                    app.world_mut()
+                        .resource_mut::<ButtonInput<MouseButton>>()
+                        .press(button);
                     app.update();
-                    assert_eq!(app.world().resource::<Presentation>().manual_camera, over_ui);
-                    let (origin, previous) = if over_ui { (egui::pos2(80.0, 80.0), egui::pos2(700.0, 500.0)) } else { (egui::pos2(700.0, 500.0), egui::pos2(80.0, 80.0)) };
-                    app.world_mut().get_mut::<bevy_egui::EguiInput>(input_entity).unwrap().events = vec![
-                        egui::Event::PointerButton { pos: previous, button: egui_button, pressed: false, modifiers: default() },
-                        egui::Event::PointerButton { pos: origin, button: egui_button, pressed: true, modifiers: default() },
+                    assert_eq!(
+                        app.world().resource::<Presentation>().manual_camera,
+                        over_ui
+                    );
+                    let (origin, previous) = if over_ui {
+                        (egui::pos2(80.0, 80.0), egui::pos2(700.0, 500.0))
+                    } else {
+                        (egui::pos2(700.0, 500.0), egui::pos2(80.0, 80.0))
+                    };
+                    app.world_mut()
+                        .get_mut::<bevy_egui::EguiInput>(input_entity)
+                        .unwrap()
+                        .events = vec![
+                        egui::Event::PointerButton {
+                            pos: previous,
+                            button: egui_button,
+                            pressed: false,
+                            modifiers: default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos: origin,
+                            button: egui_button,
+                            pressed: true,
+                            modifiers: default(),
+                        },
                         egui::Event::PointerMoved(previous),
                     ];
-                    app.world_mut().resource_mut::<Presentation>().follow.mode = crate::follow::FollowMode::Chase;
+                    app.world_mut().resource_mut::<Presentation>().follow.mode =
+                        crate::follow::FollowMode::Chase;
                     for _ in 0..2 {
                         app.update();
                         let presentation = app.world().resource::<Presentation>();
