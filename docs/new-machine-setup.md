@@ -162,7 +162,7 @@ git diff --check
 
 At the smoke step, use level C below; explicitly skip it without a usable desktop, then run the diff
 check. Require formatting success, passing tests, warning-free release build and clean diff.
-Documented baseline: **33 passed, 5 ignored**; report actual counts. On failure, retain errors and
+Report the actual passed and ignored test counts. On failure, retain errors and
 diagnose tools/libraries/access; report source failures instead of patching them during setup.
 
 ## 5. Complete and label each verification level
@@ -179,16 +179,13 @@ additions. Level A does not execute the ignored GPU regressions or benchmarks.
 
 **B — real GPU/driver access, no display required.** Run outside Codex's `workspace-write` sandbox,
 which may hide the GPU. If access is unavailable, ask for an unrestricted session and mark B skipped
-pending results. Use README.md's filter:
+pending results. Use the full guide's filter:
 
 ```sh
 CARGO_BUILD_JOBS=4 cargo test --release --locked gpu_ -- --ignored --nocapture --test-threads=1 --skip gpu_flocking_benchmark
 ```
 
-Require all three ignored regressions to pass (`vehicle::tests::` prefix):
-`gpu_steering_matches_cpu_reference` (cap-0 CPU parity and retained headings),
-`gpu_neighbor_cap_preserves_complete_separation` (cap-1 separation), and
-`gpu_flock_spawns_grows_and_stays_bounded` (growth/truncation/reset and bounds). These execute
+Require the selected ignored GPU regressions to pass. These execute
 `src/gpu_flock.rs` compute/readback without a window. For “Unable to find a GPU” or wgpu adapter
 errors, check driver, Vulkan ICD, container/sandbox GPU access and user permissions (Linux
 render/video groups, `/dev/dri`). Report the cause; obtain approval for driver/group/access changes,
@@ -211,7 +208,7 @@ The exact CPU filter avoids the GPU benchmark; CPU measurement also works at lev
 GPU env vars are comma-separated. Record median/p95, count/mode/cap, completed/skipped steps
 and density. GPU timing includes encode + submit + wait: 600 warmup, 60 timed steps at 1/60 s;
 steps over 250 ms skip the remainder. Partial cases are not steady-state results.
-Compare with README.md's M3 Pro tables and `plans/completed/2026-10-30-gpu-flocking.md`:
+Historical M3 Pro results in [the full guide](reference.md#performance) include:
 GPU wander/follow-cap-16 medians 0.67/1.4 ms at 20k, 2.5/6.4 ms at 100k;
 CPU naive/octree 25.53/3.74 ms at 10k. Use these as baselines, not acceptance thresholds.
 
@@ -219,18 +216,12 @@ CPU naive/octree 25.53/3.74 ms at 10k. Use these as baselines, not acceptance th
 `target/release/autonomous-characters-3d` (`.exe` on Windows), supplies the asset root, waits ten
 seconds and closes it. Require PASS: startup/assets only. Then run:
 `CARGO_BUILD_JOBS=4 cargo run --release --locked`. Inspect flock, camera, target and mode switching
-using README.md's controls. Close the app before continuing. Cargo supplies the asset root;
+using the full guide's controls. Close the app before continuing. Cargo supplies the asset root;
 direct launches need `CARGO_MANIFEST_DIR`. Over SSH without a display, skip both runs and say why.
 Request a desktop or VNC/remote desktop with GPU access to prove windowed rendering.
 
-## 6. Hand back evidence and machine-local tooling gaps
+## 6. Record verification results
 
-The owner installs and logs into Claude Code/Codex CLI. Copy wanted user skills (e.g.
-`~/.claude/skills/orchestrate`) and Claude Code project memory manually from the old machine; the
-clone does not restore them.
-
-Report: machine/driver/display facts and commit/branch; approved installations; levels A/B/C passed,
-failed or skipped with reasons; ordinary and ignored test counts; compiler/Clippy warnings; repeated
-benchmark numbers with load average (or its absence), parameters and partial cases; remaining
-blockers; and every deviation from AGENTS.md, including skipped desktop checks or an owner-approved
-job-limit change. Distinguish measured results from unverified capabilities.
+Report the source commit, toolchain and GPU/driver, checks passed or skipped with reasons,
+actual test counts, compiler/Clippy warnings and remaining setup blockers. Keep raw machine-local
+logs outside the checkout. Benchmark results must include parameters, machine load and repeated runs.
