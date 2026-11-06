@@ -12,8 +12,7 @@ GPUs must not be described as supported until tested. See the measured matrix in
 ## Build on Linux x86_64
 
 Use the pinned Rust 1.99.1 toolchain and the native prerequisites in
-[new-machine setup](new-machine-setup.md). That guide's native-only tool restriction describes the
-older native workflow; this approved showcase plan explicitly adds the optional browser workflow.
+[new-machine setup](new-machine-setup.md), then install the pinned optional browser tools below.
 No driver, desktop or system configuration change is needed by these scripts.
 
 ```sh
