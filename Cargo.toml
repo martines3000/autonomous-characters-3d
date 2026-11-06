@@ -13,3 +13,16 @@ bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui", "
 bevy_egui = "0.43.1"
 rand = "0.10.3"
 nalgebra = { version = "0.35.0", features = ["convert-glam033"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = ["webgpu"] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+js-sys = "=0.3.107"
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "=0.4.80"
+web-sys = { version = "=0.3.107", features = ["Document", "Location", "Response", "UrlSearchParams", "Window"] }
+
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+strip = "debuginfo"
