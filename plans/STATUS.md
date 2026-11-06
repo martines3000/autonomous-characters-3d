@@ -2,6 +2,7 @@
 
 ## Current work
 
+- [Public Flock release](planned/2026-11-06-public-flock-release.md) is authorized and in progress: publish merged source `57fa57a`, complete the household workload/routing PRs and deploy `https://flock.skippy-ai.com` with internal and public verification.
 - [Short README](https://github.com/martines3000/autonomous-characters-3d/pull/26) is ready after #25: 32 lines, one Reef screenshot and links to the preserved [full reference](../docs/reference.md). The post-reboot check recovered and pushed the prior handoff documentation; the feature PRs remain ready and unmerged.
 - [Reef shoals, travelling school, shark riding and web loading](completed/2026-11-06-fish-schools-and-shark-riding.md) are prepared for review in ready PRs #22–#25 after #20. The follow-up handoff is complete; [evidence and limits](evidence/2026-11-06-fish-schools.md) include videos, native/GPU/browser checks and repeated measurements. No implementation work remains in this plan.
 - The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application/documentation PRs #12–#20 and #22–#26, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
