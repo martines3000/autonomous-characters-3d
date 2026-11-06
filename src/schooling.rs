@@ -32,22 +32,35 @@ impl SchoolMotion {
         let span = crate::vehicle::spawn_size(state.vehicle_count);
         if self.scene == VisitorScene::SharkHunt {
             let radius = span * 0.34;
-            let angular_speed = state.vehicle_max_speed * 0.25 / radius;
+            let angular_speed = state.vehicle_max_speed * 0.35 / radius;
             let phase = (self.elapsed.as_secs_f64() * angular_speed as f64) as f32;
+            let velocity = Vec3::new(
+                -radius * angular_speed * phase.sin(),
+                span * 0.03 * angular_speed * (phase * 0.5).cos(),
+                radius * angular_speed * phase.cos(),
+            );
+            let acceleration = Vec3::new(
+                -radius * angular_speed * angular_speed * phase.cos(),
+                -span * 0.015 * angular_speed * angular_speed * (phase * 0.5).sin(),
+                -radius * angular_speed * angular_speed * phase.sin(),
+            );
+            let speed_squared = velocity.length_squared();
+            let angular_velocity = if speed_squared > f32::EPSILON * f32::EPSILON {
+                velocity.cross(acceleration) / speed_squared
+            } else {
+                Vec3::ZERO
+            };
             state.groups.table[0].target = None;
             state.groups.table[0].guide = Some(SchoolGuide {
                 center: Vec3::new(
                     radius * phase.cos(),
                     span * 0.06 * (phase * 0.5).sin(),
-                    span * 0.20 * phase.sin(),
+                    radius * phase.sin(),
                 ),
-                velocity: Vec3::new(
-                    -radius * angular_speed * phase.sin(),
-                    span * 0.03 * angular_speed * (phase * 0.5).cos(),
-                    span * 0.20 * angular_speed * phase.cos(),
-                ),
-                half_length: span * 0.22,
-                radius: span * 0.08,
+                velocity,
+                angular_velocity,
+                half_length: span * 0.28,
+                radius: span * 0.07,
             });
             return;
         }
@@ -89,8 +102,8 @@ pub(crate) fn configure(world: &mut World, scene: VisitorScene) {
         state.vehicle_separation_distance = 6.0;
         state.vehicle_separation_factor = 2.2;
         state.vehicle_alignment_distance = 45.0;
-        // The guide supplies coherent velocity. The legacy alignment kernel aims at
-        // max speed, which otherwise drives the school into the capsule's front cap.
+        // The turning guide owns coherent velocity. Legacy alignment aims at max
+        // speed and otherwise drives fish into the front cap instead of sharing the flow.
         state.vehicle_alignment_factor = 0.0;
         state.vehicle_cohesion_distance = 32.0;
         state.vehicle_cohesion_factor = 0.0;
@@ -126,9 +139,8 @@ pub(crate) fn prepare_frame(
 
 pub(crate) fn encounter_focus(state: &GlobalState) -> Option<Vec3> {
     let guide = state.groups.guide(0)?;
-    // Aligned fish travel toward the leading end of the corridor. Frame that activity,
-    // rather than leaving the guide's largely empty rear half in the center of the shot.
-    Some(guide.center + guide.velocity.normalize_or_zero() * guide.half_length)
+    // The guide describes the full corridor; center its distributed activity in Scenic.
+    Some(guide.center)
 }
 
 /// Scenic follows the encounter's soft envelope; Free, Ride and reduced motion own their views.
@@ -287,6 +299,13 @@ mod tests {
                 let point = guide.center;
                 assert!(point.is_finite() && point.abs().cmple(bounds).all());
                 assert!(guide.velocity.is_finite());
+                assert!(guide.angular_velocity.is_finite());
+                assert!(
+                    (Vec2::new(point.x, point.z).length()
+                        - crate::vehicle::spawn_size(state.vehicle_count) * 0.34)
+                        .abs()
+                        < 1e-4
+                );
                 assert_eq!(state.groups.table[0].target, None);
                 span = span.max(start.distance(point));
                 assert_eq!(state.groups.table[1], hunters);
@@ -294,6 +313,48 @@ mod tests {
             }
             assert!(span > crate::vehicle::spawn_size(state.vehicle_count) * 0.5);
             assert_eq!(state.vehicle_cohesion_factor, 0.0);
+        }
+    }
+
+    #[test]
+    fn shark_route_velocity_and_turn_match_its_position_derivatives() {
+        let delta = Duration::from_millis(10);
+        for tier in PopulationTier::ALL {
+            let mut world = world();
+            crate::visitor::apply(&mut world, VisitorScene::SharkHunt, tier);
+            let motion = world.resource::<SchoolMotion>().clone();
+            let state = world.resource::<GlobalState>().clone();
+            let sample = |elapsed| {
+                let mut motion = motion.clone();
+                let mut state = state.clone();
+                motion.advance(&mut state, elapsed);
+                state.groups.table[0].guide.unwrap()
+            };
+            for seconds in [1, 7, 19, 41] {
+                let t = Duration::from_secs(seconds);
+                let before = sample(t - delta);
+                let guide = sample(t);
+                let after = sample(t + delta);
+                let velocity = (after.center - before.center) / (2.0 * delta.as_secs_f32());
+                assert!(velocity.distance(guide.velocity) < 0.02);
+                let axis = guide.velocity.normalize_or_zero();
+                let derivative = (after.velocity.normalize_or_zero()
+                    - before.velocity.normalize_or_zero())
+                    / (2.0 * delta.as_secs_f32());
+                assert!(derivative.distance(guide.angular_velocity.cross(axis)) < 0.002);
+            }
+            let mut state = state;
+            let mut motion = motion;
+            motion.advance(&mut state, Duration::from_secs(7));
+            assert_eq!(
+                encounter_focus(&state),
+                Some(state.groups.guide(0).unwrap().center)
+            );
+            state.vehicle_max_speed = 0.0;
+            motion.advance(&mut state, Duration::from_secs(1));
+            let stopped = state.groups.guide(0).unwrap();
+            assert_eq!(stopped.angular_velocity, Vec3::ZERO);
+            assert!(stopped.center.is_finite());
         }
     }
 
