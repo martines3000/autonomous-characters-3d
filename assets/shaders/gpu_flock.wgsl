@@ -54,6 +54,7 @@ struct Params {
     track: vec4<u32>,
     motion: vec4<f32>,
     group_flows: array<vec4<f32>, 8>,
+    group_turns: array<vec4<f32>, 8>,
 };
 
 struct Boid {
@@ -239,7 +240,7 @@ fn limit(v: vec3<f32>, cap: f32) -> vec3<f32> {
 }
 
 // Mirrors SchoolGuide::force. Packed guide.w is negative radius; flow.w is half-length.
-fn school_guide_force(position: vec3<f32>, velocity: vec3<f32>, guide: vec4<f32>, flow: vec4<f32>, max_speed: f32) -> vec3<f32> {
+fn school_guide_force(position: vec3<f32>, velocity: vec3<f32>, guide: vec4<f32>, flow: vec4<f32>, turn: vec3<f32>, max_speed: f32) -> vec3<f32> {
     let axis = normalize_or_zero(flow.xyz);
     let delta = position - guide.xyz;
     let offset = delta - axis * clamp(dot(delta, axis), -flow.w, flow.w);
@@ -249,7 +250,10 @@ fn school_guide_force(position: vec3<f32>, velocity: vec3<f32>, guide: vec4<f32>
     if distance > radius {
         correction = -normalize_or_zero(offset) * max_speed * clamp((distance - radius) / radius, 0.0, 1.0);
     }
-    let desired = limit(flow.xyz + correction, max_speed);
+    let local_flow = flow.xyz + cross(turn, delta);
+    // Match Rust's finite-flow guard before clamping an overflowing cross product.
+    if !all(abs(local_flow) <= vec3<f32>(3.402823466e38)) { return vec3<f32>(0.0); }
+    let desired = limit(local_flow + correction, max_speed);
     return limit(desired - velocity, max_speed * params.seek_factor);
 }
 
@@ -726,7 +730,7 @@ fn steer(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     if seeking && !FORMATION_ENABLED {
         if guide.w < 0.0 {
-            acceleration += school_guide_force(position, velocity, guide, flow, max_speed) / params.mass;
+            acceleration += school_guide_force(position, velocity, guide, flow, params.group_turns[group].xyz, max_speed) / params.mass;
         } else {
             let seek = normalize_or_zero(seek_target - position) * max_speed - velocity;
             acceleration += limit(seek, max_speed * params.seek_factor) / params.mass;

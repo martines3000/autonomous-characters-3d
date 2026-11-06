@@ -95,12 +95,14 @@ pub enum GroupRole {
     Hunter,
 }
 
-/// A soft flow corridor. Fish inside the capsule match its velocity without
-/// being pulled toward the axis or assigned a position within the school.
+/// A soft flow corridor. Fish inside match its translating and rotating flow
+/// without being pulled toward the axis or assigned a position within the school.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SchoolGuide {
     pub center: Vec3,
     pub velocity: Vec3,
+    /// World-space radians per simulated second; zero retains translation-only flow.
+    pub angular_velocity: Vec3,
     pub half_length: f32,
     pub radius: f32,
 }
@@ -109,6 +111,7 @@ impl SchoolGuide {
     pub(crate) fn valid(&self) -> bool {
         self.center.is_finite()
             && self.velocity.is_finite()
+            && self.angular_velocity.is_finite()
             && self.half_length.is_finite()
             && self.half_length >= 0.0
             && self.radius.is_finite()
@@ -152,7 +155,11 @@ impl SchoolGuide {
         } else {
             Vec3::ZERO
         };
-        let desired = crate::hunter::limit(self.velocity + correction, max_speed);
+        let flow = self.velocity + self.angular_velocity.cross(delta);
+        if !flow.is_finite() {
+            return Vec3::ZERO;
+        }
+        let desired = crate::hunter::limit(flow + correction, max_speed);
         crate::hunter::limit(desired - current_velocity, max_speed * seek_factor)
     }
 }
@@ -743,6 +750,7 @@ mod tests {
         let guide = SchoolGuide {
             center: Vec3::new(10.0, -3.0, 2.0),
             velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::ZERO,
             half_length: 20.0,
             radius: 5.0,
         };
@@ -759,10 +767,37 @@ mod tests {
     }
 
     #[test]
+    fn rotating_school_guide_preserves_matched_interior_flow_and_turns_both_ends() {
+        let guide = SchoolGuide {
+            center: Vec3::new(100.0, -20.0, 50.0),
+            velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::Y * 0.25,
+            half_length: 20.0,
+            radius: 5.0,
+        };
+        for delta in [Vec3::ZERO, Vec3::X * 15.0, Vec3::NEG_X * 15.0, Vec3::Y * 4.0] {
+            let flow = guide.velocity + guide.angular_velocity.cross(delta);
+            assert_eq!(guide.force(guide.center + delta, flow, 40.0, 2.0), Vec3::ZERO);
+            assert_eq!(guide.force(guide.center + delta, Vec3::ZERO, 40.0, 2.0), flow);
+        }
+        let front = guide.force(guide.center + Vec3::X * 15.0, guide.velocity, 40.0, 2.0);
+        let rear = guide.force(guide.center - Vec3::X * 15.0, guide.velocity, 40.0, 2.0);
+        assert!(front.z < 0.0 && rear.z > 0.0);
+        assert_eq!(front, -rear);
+        assert!(guide.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 5.0, 1.0).length() <= 5.0 + 1e-5);
+        let zero_axis = SchoolGuide { velocity: Vec3::ZERO, half_length: 0.0, ..guide };
+        let delta = Vec3::X * 3.0;
+        assert_eq!(zero_axis.force(zero_axis.center + delta, zero_axis.angular_velocity.cross(delta), 40.0, 2.0), Vec3::ZERO);
+        let overflowing = SchoolGuide { angular_velocity: Vec3::Y * f32::MAX, ..guide };
+        assert_eq!(overflowing.force(guide.center + Vec3::X * 15.0, Vec3::ZERO, 40.0, 2.0), Vec3::ZERO);
+    }
+
+    #[test]
     fn school_guide_recovers_outside_the_sides_and_endcaps_with_bounded_force() {
         let guide = SchoolGuide {
             center: Vec3::ZERO,
             velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::ZERO,
             half_length: 20.0,
             radius: 5.0,
         };
@@ -780,6 +815,7 @@ mod tests {
         let guide = SchoolGuide {
             center: Vec3::ZERO,
             velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             half_length: 0.0,
             radius: 5.0,
         };
@@ -807,6 +843,14 @@ mod tests {
                 velocity: Vec3::INFINITY,
                 ..guide
             },
+            SchoolGuide {
+                angular_velocity: Vec3::NAN,
+                ..guide
+            },
+            SchoolGuide {
+                angular_velocity: Vec3::INFINITY,
+                ..guide
+            },
         ] {
             assert!(!invalid.valid());
             assert_eq!(invalid.force(Vec3::Y, Vec3::ZERO, 20.0, 1.0), Vec3::ZERO);
@@ -822,6 +866,7 @@ mod tests {
         let guide = SchoolGuide {
             center: Vec3::ZERO,
             velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::ZERO,
             half_length: 20.0,
             radius: 5.0,
         };

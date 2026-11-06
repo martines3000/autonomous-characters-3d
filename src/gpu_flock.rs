@@ -138,6 +138,8 @@ pub(crate) struct GpuParams {
     pub motion: Vec4,
     // Appended to preserve existing uniform offsets. xyz: guide velocity, w: half-length.
     pub group_flows: [Vec4; crate::swarm::MAX_GROUPS],
+    // Appended after flows to preserve every prior offset. xyz: world angular velocity, w reserved.
+    pub group_turns: [Vec4; crate::swarm::MAX_GROUPS],
 }
 
 impl GpuParams {
@@ -311,6 +313,13 @@ pub(crate) fn gpu_params(state: &GlobalState, target: Vec3, follow: bool, dt: f3
                     .groups
                     .guide(i as u32)
                     .map_or(Vec4::ZERO, |guide| guide.velocity.extend(guide.half_length))
+            } else {
+                Vec4::ZERO
+            }
+        }),
+        group_turns: std::array::from_fn(|i| {
+            if i < state.groups.count as usize {
+                state.groups.guide(i as u32).map_or(Vec4::ZERO, |guide| guide.angular_velocity.extend(0.0))
             } else {
                 Vec4::ZERO
             }
@@ -1803,7 +1812,7 @@ mod tests {
             gpu_params(&dormant, Vec3::ZERO, false, 0.01)
         );
         assert_eq!(size_of::<crate::instancing::InstanceData>(), 48);
-        assert_eq!(GpuParams::min_size().get(), 592);
+        assert_eq!(GpuParams::min_size().get(), 720);
     }
 
     #[test]
@@ -2040,6 +2049,7 @@ mod tests {
         let guide = SchoolGuide {
             center: Vec3::new(20.0, -4.0, 7.0),
             velocity: Vec3::new(15.0, 2.0, -1.0),
+            angular_velocity: Vec3::new(0.1, -0.3, 0.2),
             half_length: 80.0,
             radius: 30.0,
         };
@@ -2055,6 +2065,8 @@ mod tests {
             guide.velocity.extend(guide.half_length)
         );
         assert_eq!(guided.group_flows[1], Vec4::ZERO);
+        assert_eq!(guided.group_turns[0], guide.angular_velocity.extend(0.0));
+        assert_eq!(guided.group_turns[1], Vec4::ZERO);
         assert_eq!(guided.max_neighbors, state.gpu_max_neighbors);
         state.groups.table[1].guide = Some(guide);
         assert_eq!(gpu_params(&state, Vec3::ZERO, false, 0.01), guided);
@@ -2062,13 +2074,20 @@ mod tests {
         let target = gpu_params(&state, Vec3::ZERO, false, 0.01);
         assert_eq!(target.group_targets[0], (Vec3::Y * 50.0).extend(1.0));
         assert_eq!(target.group_flows[0], Vec4::ZERO);
+        assert_eq!(target.group_turns[0], Vec4::ZERO);
         assert_eq!(target.group_targets[1], guided.group_targets[1]);
         state.groups.table[0].target = None;
         state.groups.table[0].guide.as_mut().unwrap().radius = 0.0;
         let invalid = gpu_params(&state, Vec3::ZERO, false, 0.01);
         assert_eq!(invalid.group_targets[0], Vec4::ZERO);
         assert_eq!(invalid.group_flows[0], Vec4::ZERO);
+        assert_eq!(invalid.group_turns[0], Vec4::ZERO);
         assert_eq!(invalid.max_neighbors, 0);
+        state.groups.table[0].guide = Some(SchoolGuide { angular_velocity: Vec3::NAN, ..guide });
+        let invalid_turn = gpu_params(&state, Vec3::ZERO, false, 0.01);
+        assert_eq!(invalid_turn.group_targets[0], Vec4::ZERO);
+        assert_eq!(invalid_turn.group_flows[0], Vec4::ZERO);
+        assert_eq!(invalid_turn.group_turns[0], Vec4::ZERO);
     }
 
     #[test]
@@ -2217,16 +2236,26 @@ mod tests {
             group_flows: std::array::from_fn(|i| {
                 Vec4::from_array(std::array::from_fn(|axis| (80 + i * 4 + axis) as f32))
             }),
+            group_turns: std::array::from_fn(|i| {
+                Vec4::from_array(std::array::from_fn(|axis| (120 + i * 4 + axis) as f32))
+            }),
         };
         let mut buffer = encase::UniformBuffer::new(Vec::<u8>::new());
         buffer.write(&params).unwrap();
         let bytes = buffer.as_ref();
-        assert_eq!(GpuParams::min_size().get(), 592);
-        assert_eq!(bytes.len(), 592);
+        assert_eq!(GpuParams::min_size().get(), 720);
+        assert_eq!(bytes.len(), 720);
         for i in 0..8 {
             for axis in 0..4 {
                 let offset = 464 + i * 16 + axis * 4;
                 let value = (80 + i * 4 + axis) as f32;
+                assert_eq!(&bytes[offset..offset + 4], &value.to_le_bytes());
+            }
+        }
+        for i in 0..8 {
+            for axis in 0..4 {
+                let offset = 592 + i * 16 + axis * 4;
+                let value = (120 + i * 4 + axis) as f32;
                 assert_eq!(&bytes[offset..offset + 4], &value.to_le_bytes());
             }
         }

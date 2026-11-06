@@ -1980,6 +1980,7 @@ mod tests {
                 guide.then_some(crate::swarm::SchoolGuide {
                     center: Vec3::Y * 10000.0,
                     velocity: Vec3::X * 20.0,
+                    angular_velocity: Vec3::ZERO,
                     half_length: 20.0,
                     radius: 10.0,
                 });
@@ -2149,6 +2150,7 @@ mod tests {
         state.groups.table[0].guide = Some(crate::swarm::SchoolGuide {
             center: Vec3::ZERO,
             velocity: Vec3::X * 10.0,
+            angular_velocity: Vec3::ZERO,
             half_length: 20.0,
             radius: 5.0,
         });
@@ -3136,6 +3138,7 @@ mod tests {
         groups.table[0].guide = Some(SchoolGuide {
             center: Vec3::new(-100.0, 50.0, -30.0),
             velocity: Vec3::new(17.0, 4.0, -2.0),
+            angular_velocity: Vec3::ZERO,
             half_length: 60.0,
             radius: 18.0,
         });
@@ -3147,9 +3150,16 @@ mod tests {
         groups.table[2].guide = Some(SchoolGuide {
             center: Vec3::new(60.0, -20.0, 10.0),
             velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             half_length: 0.0,
             radius: 25.0,
         });
+        // Translation-only guides keep their existing CPU/GPU behavior.
+        gpu_steering_parity(256, 512, default(), groups, default());
+        groups.table[0].guide.as_mut().unwrap().angular_velocity = Vec3::new(0.03, -0.12, 0.02);
+        // The point target still owns group 1 despite its nonzero turn field.
+        groups.table[1].guide.as_mut().unwrap().angular_velocity = Vec3::Y * 0.4;
+        groups.table[2].guide.as_mut().unwrap().angular_velocity = Vec3::Y * -0.2;
         for cap in [0, 512] {
             // The existing real-device harness checks both global-follow states and
             // compares identity, velocity, rotation and position for several steps.
