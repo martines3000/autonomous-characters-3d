@@ -1,6 +1,6 @@
 # Reef shoals, travelling shark school and shark riding
 
-This ExecPlan is maintained according to `PLANS.md`. The owner authorized implementation on 2026-11-06 after manual review of the showcase and PR #20. It is a new follow-up; the original review-preparation goal remains complete. Prepare small tested PRs after #20. Do not merge, publish registry images, deploy, apply infrastructure, change DNS or trigger production workflows.
+This ExecPlan is maintained according to `PLANS.md`. The owner authorized fish-school and shark-riding implementation on 2026-11-06 after manual review of the showcase and PR #20, then added improved web loading/progress and a reveal animation. It is a new follow-up; the original review-preparation goal remains complete. Prepare small tested PRs after #20. Do not merge, publish registry images, deploy, apply infrastructure, change DNS or trigger production workflows.
 
 ## Purpose
 
@@ -11,8 +11,9 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - [x] (2026-11-06 09:55Z) Recorded authorization, scope, ownership and validation strategy. Existing cause confirmed: Reef drift has strong wander/weak schooling; Shark attack sets a fixed origin prey target.
 - [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
 - [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
-- [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence.
+- [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence. Shared soft-flow steering and camera ownership pass 237 release tests and 21 GPU regressions. Seeded all-tier windows show wider spacing and local panic; final camera captures/browser/performance/PR publication remain.
 - [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
+- [ ] Prepare fourth PR with truthful web download/preparation progress and an accessible reveal after the first ready scene.
 - [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.
 - [ ] Archive plan and update README, STATUS and morning review index.
 
@@ -21,11 +22,25 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - Existing `Group.target` replaces wander and wall avoidance with full-speed seek; static per-shoal targets would create smaller anchored balls. Moving, bounded guides and local alignment/cohesion must be evaluated in motion before accepting their tuning.
 - GPU prey poses are sampled through an existing asynchronous 80-byte camera readback. Hunter poses live in the GPU arena in GPU mode and in `Hunters` in CPU modes. Shark riding must sample the actual simulated hunter rather than the CPU initial pose.
 - Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
+- The first Shark moving-point trial improved median spacing and reduced panic, but sampled frames still showed a compact travelling ball and cropping. Centroid travel alone is insufficient: the fixed-target baseline already has substantial centroid motion under pursuit. Reject that trial as the final Shark behavior.
+- Headed acceptance exposed a fast pointer-entry race: PreUpdate reads Egui's prior UI-pass hover state, while a press and movement can cross the HUD boundary before the next UI pass. Current-frame press-event positions must determine initial gesture ownership; keep the existing owner for the rest of the chord. A dedicated regression/fix is being prepared before browser readiness is claimed.
+- Independent review rejected the first soft-flow result as a complete non-ball solution: Medium/High still contracted into compact clouds. Legacy alignment targets maximum speed rather than matching neighbor speed, pushing fish into the capsule's leading end. Removing that propulsion, carrying the guide's angular velocity and using a gentler circular route improved elongation. Unbounded turn velocity at distant stragglers was then bounded to the nearest capsule point.
+- Random cube positions and full-speed random headings are unsuitable initial conditions for a free-interior travelling guide. Public guided prey now need coherent, uniform-volume ellipsoid spawning with the guide's local velocity. Existing target/wander/formation spawning must retain its original draw consumption and behavior.
+- At clean source `10acec7`, 250 native tests, 22 GPU regressions, nine loader tests, one packaging test and the full headed browser suite passed. The loading-specific headed proof captured actual partial bytes under a 2 MiB/s throttle, normal/reduced reveals and failure during reveal. Later school corrections require a final integrated source run; these earlier results do not establish their readiness.
 
 ## Decision Log
 
-- Decision: Keep the work in three dependent PRs: Reef, travelling Shark school, shark riding.
+- Decision: Add the owner-requested web loader/reveal as a fourth independent PR after the simulation/camera slices. Show actual bytes or determinate progress only when a trustworthy total exists; use named preparation stages otherwise. Prefer a short fade/subtle canvas reveal and respect reduced motion.
+  Rationale: This improves the cold-load experience without inventing a global percentage or fighting the 3D camera. Loading/error/retry and device-loss states must remain readable.
+  Date: 2026-11-06.
+- Decision: Replace Shark's point seek with an explicitly enabled soft capsule-shaped flow guide, shared by CPU/GPU, and follow the moving encounter in Scenic view while respecting Free/Ride/reduced motion.
+  Rationale: Inside the corridor there is no force toward a central point; local alignment, separation, cohesion and predator responses determine the school structure. A soft boundary restores stragglers without assigning rigid positions. Existing Lab targets and Reef's validated guides retain their original paths.
+  Date: 2026-11-06.
+- Decision: Keep the work in four dependent PRs: Reef, travelling Shark school, shark riding, web loading/reveal.
   Rationale: Each behavior or camera outcome remains independently reviewable. Existing PRs 12–20 and deployment drafts remain unchanged.
+  Date: 2026-11-06.
+- Decision: Start only explicitly guided prey within a loose ellipsoid, with translating/rotating guide velocity; retain free motion inside the soft envelope and ordinary predator responses. Increase guide recovery strength and widen the public encounter framing.
+  Rationale: This supplies an immediate coherent school without assigning persistent slots or requiring a convergence ball. It also avoids hiding a poor startup behind a long warmup. Legacy spawning remains unchanged when guide navigation does not own the group.
   Date: 2026-11-06.
 - Decision: First trial a scene-only simulation-clock controller using existing prey groups and bounded travelling guides, with scene-specific steering tuning.
   Rationale: This reuses both CPU/GPU kernels. Accept only after clips and measurements show loose shoals/travel rather than anchored mini-balls; revise the approach if observed behavior fails.
@@ -44,7 +59,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 
 ## Outcomes & Retrospective
 
-In progress. No new behavior, camera feature or measurement is claimed complete yet.
+Implementation and review are in progress. Reef grouping, actual CPU/GPU shark Ride and truthful web loading have passing checkpoints. Shark schooling required additional observed-behavior corrections; final footage, all-tier metrics, integrated gates and PR publication remain before completion is claimed.
 
 ## Context and Orientation
 
@@ -54,9 +69,10 @@ In progress. No new behavior, camera feature or measurement is claimed complete 
 
 1. Close the review app, record the existing Reef/Shark behavior and repeat medium-tier timing windows without other builds/apps.
 2. Introduce a narrow public-school controller, explicit activation/reset/Lab lifecycle, three Reef prey groups and scene-specific steering. Validate phase, bounded routes, pause/speed, group roles and unchanged reference presets. Inspect before/after clips.
-3. Extend that controller to Shark hunt, preserving three hunters and existing pursuit/panic rules while replacing the fixed origin target and adjusting local school structure. Measure travel, local spacing and all public-tier cost without hiding remaining limitations.
+3. Extend that controller to Shark hunt using a soft moving flow corridor, preserving three hunters and existing pursuit/panic rules while removing point convergence and adjusting local school structure. Add CPU/GPU guide-force parity and ABI tests. Measure travel, local spacing, school elongation and all public-tier cost without hiding remaining limitations. Keep Scenic composition centered on the moving encounter; Free/Ride/reduced motion retain their ownership.
 4. Integrate the independent shark Ride lane: actual CPU/GPU hunter samples, type-preserving random selection, correctly scaled cameras, stale-readback/lifecycle tests, visible Fish/Shark choice and scripted/browser controls.
 5. Run the final gates once for the integrated result, publish immutable evidence, push PRs with exact dependencies, update review handoff and archive this plan.
+6. In the independent web lane, improve the existing HTML/bootstrap loader, use real network/preparation signals, and reveal the actual ready scene with reduced-motion support. Integrate this fourth PR and include loading, failure, retry and reveal in the final headed-browser gate.
 
 ## Concrete Steps
 
@@ -79,6 +95,7 @@ Run native captures and repeated timings using README's scenario/record/measure 
 - Shark prey visibly travel rather than stay around the origin, split near hunters, and reform while moving. Before/after video supports the claim; an isolated still or a moving target alone does not.
 - School guide phase uses simulation time, freezes during Pause, resets on public scene/tier application and stops owning Lab presets. Public scene/group roles, hunters and finite steering remain correct.
 - Fish/Shark Ride selection works in Chase and First person, including N/Another animal, Pause, empty hunters and scene/backend/count changes. GPU samples reflect current hunter motion; stale samples cannot overwrite a new subject.
+- Cold and warm browser loads show truthful progress or named stages, then reveal a rendered scene. Known byte totals produce bounded percentages; unknown/compressed lengths remain indeterminate with a byte count. Reduced motion skips spatial animation; failures/unsupported devices and Retry remain accessible and visible.
 - Native/GPU tests and headed browser acceptance pass. Record real source, hardware/configuration, resolution, population, warmup and repeated timing distributions. Make no claim for untested devices or biological accuracy.
 - Small PRs include images/videos, validation, measured cost, exact dependencies and remaining limits. No production action occurs.
 
@@ -101,3 +118,5 @@ Reuse existing group targets, simulation clock, hunter storage, camera readback 
 Revision notes:
 
 - 2026-11-06: Initial owner-authorized follow-up plan after manual review and the tested Another animal control.
+- 2026-11-06: Rejected the first Shark point-guide trial after native frames retained a compact ball and cropped the moving school. Extended only the explicitly enabled public Shark behavior to a shared soft flow corridor, with force/ABI parity tests and camera ownership checks.
+- 2026-11-06: Added the owner's web loading/progress and reveal request as a fourth small PR. Existing school/riding work remains active; no production scope was added.

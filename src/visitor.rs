@@ -203,11 +203,17 @@ pub(crate) fn reset_view(world: &mut World) {
     let state = world.resource::<GlobalState>();
     let count = state.vehicle_count;
     let scene = world.resource::<Visitor>().scene;
+    let reduced_motion = world.resource::<Visitor>().reduced_motion;
+    let focus = if scene == VisitorScene::SharkHunt && !reduced_motion {
+        crate::schooling::encounter_focus(state).unwrap_or(Vec3::ZERO)
+    } else {
+        Vec3::ZERO
+    };
     let (yaw, pitch, spawn_distance): (f32, f32, f32) = match scene {
         // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
         VisitorScene::Murmuration => (225.0, -3.0, 0.65),
         VisitorScene::ReefDrift => (20.0, 3.0, 1.10),
-        VisitorScene::SharkHunt => (15.0, 3.0, 0.5),
+        VisitorScene::SharkHunt => (15.0, 3.0, 1.15),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
     for (mut transform, mut orbit, projection) in world
@@ -221,12 +227,11 @@ pub(crate) fn reset_view(world: &mut World) {
         // Narrow windows pull back enough to retain a useful horizontal view of the encounter.
         let portrait_compensation = (1.1 / projection.aspect_ratio.max(0.3)).clamp(1.0, 2.0);
         let distance = vehicle::spawn_size(count) * spawn_distance * portrait_compensation;
-        *transform =
-            Transform::from_translation(rotation * Vec3::Z * distance).with_rotation(rotation);
+        *transform = Transform::from_translation(focus + rotation * Vec3::Z * distance)
+            .with_rotation(rotation);
         orbit.current_motion = default();
         orbit.last_anchor_depth = -(distance as f64);
     }
-    let reduced_motion = world.resource::<Visitor>().reduced_motion;
     let mut presentation = world.resource_mut::<Presentation>();
     presentation.cancel_camera_transition();
     presentation.orbit = !reduced_motion;
@@ -343,7 +348,7 @@ pub(crate) fn ui(
                 VisitorScene::Murmuration => "Starlings flow together through the evening sky.",
                 VisitorScene::ReefDrift => "Loose shoals weave through clear, sunlit water.",
                 VisitorScene::SharkHunt => {
-                    "Three sharks pursue a school. Watch it scatter and regroup."
+                    "Sharks pursue a travelling school that splits and regroups."
                 }
             });
             ui.horizontal(|ui| {
