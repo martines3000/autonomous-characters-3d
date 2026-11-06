@@ -912,6 +912,125 @@ pub(crate) mod tests {
         }
     }
 
+    fn shark_camera_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Presentation>()
+            .init_resource::<GlobalState>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .init_resource::<crate::scene::Appearance>()
+            .init_resource::<crate::swarm::SwarmScene>()
+            .init_resource::<crate::visitor::Visitor>();
+        crate::visitor::apply(
+            app.world_mut(),
+            crate::visitor::VisitorScene::SharkHunt,
+            crate::visitor::PopulationTier::Medium,
+        );
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(0.0, 0.0, 300.0),
+                Projection::Perspective(default()),
+                PanOrbitCamera::default().with_initial_anchor_depth(300.0),
+            ))
+            .id();
+        // Keep the guide away from the camera's focus so an unwanted translation is observable.
+        assert!(
+            app.world().resource::<GlobalState>().groups.guide(0).unwrap().center.length()
+                > 1.0
+        );
+        (app, camera)
+    }
+
+    #[test]
+    fn shark_tracker_respects_manual_and_preset_ownership_then_resumes_scenic() {
+        let (mut reference, reference_camera) = shark_camera_app();
+        let (mut tracked, tracked_camera) = shark_camera_app();
+        reference.add_systems(Update, (presentation_input, animate_camera).chain());
+        tracked.add_systems(
+            Update,
+            (presentation_input, animate_camera, crate::schooling::track_encounter).chain(),
+        );
+        let advance = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+        };
+        let original = *tracked.world().get::<Transform>(tracked_camera).unwrap();
+        for app in [&mut reference, &mut tracked] {
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Right);
+            advance(app);
+            let presentation = app.world().resource::<Presentation>();
+            assert!(presentation.manual_camera);
+            assert!(presentation.preset.is_none());
+            assert!(presentation.transition.is_none());
+        }
+        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
+        assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+
+        // A requested preset waits while the same world drag remains held.
+        for app in [&mut reference, &mut tracked] {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Digit2);
+            advance(app);
+            assert_eq!(app.world().resource::<Presentation>().preset, Some(CameraPreset::Side));
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Right);
+        }
+        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
+
+        // Once released, the explicit transition must match the camera without a tracker.
+        for _ in 0..3 {
+            advance(&mut reference);
+            advance(&mut tracked);
+            assert!(tracked.world().resource::<Presentation>().transition.is_some());
+            assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+            assert_eq!(tracked.world().get::<PanOrbitCamera>(tracked_camera).unwrap().last_anchor_depth(), reference.world().get::<PanOrbitCamera>(reference_camera).unwrap().last_anchor_depth());
+        }
+        assert_ne!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
+
+        // Scenic intentionally resumes after the explicit transition has finished.
+        for _ in 0..5 {
+            advance(&mut reference);
+            advance(&mut tracked);
+        }
+        let presentation = tracked.world().resource::<Presentation>();
+        assert!(presentation.orbit);
+        assert!(!presentation.camera_override_active());
+        assert_ne!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+        let resumed = *tracked.world().get::<Transform>(tracked_camera).unwrap();
+        tracked.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Middle);
+        advance(&mut tracked);
+        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), resumed);
+    }
+
+    #[test]
+    fn shark_tracker_does_not_shift_a_late_pending_camera_preset() {
+        fn request_after_animation(mut presentation: ResMut<Presentation>) {
+            presentation.preset = Some(CameraPreset::Side);
+        }
+        let (mut reference, reference_camera) = shark_camera_app();
+        let (mut tracked, tracked_camera) = shark_camera_app();
+        reference.add_systems(Update, (animate_camera, request_after_animation).chain());
+        tracked.add_systems(
+            Update,
+            (animate_camera, request_after_animation, crate::schooling::track_encounter).chain(),
+        );
+        for app in [&mut reference, &mut tracked] {
+            app.world_mut().resource_mut::<Time<Real>>().advance_by(Duration::from_millis(100));
+            app.update();
+            let presentation = app.world().resource::<Presentation>();
+            assert!(!presentation.manual_camera);
+            assert!(presentation.transition.is_none());
+            assert_eq!(presentation.preset, Some(CameraPreset::Side));
+        }
+        assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+    }
+
     #[test]
     fn pending_press_origin_controls_manual_camera_before_egui_consumes_input() {
         for dpi in [1.0, 2.0] {
