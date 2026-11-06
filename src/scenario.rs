@@ -68,6 +68,10 @@ enum Command {
     Preset(CameraPreset),
     Showcase(crate::showcase::Showcase),
     Species(crate::species::Species),
+    VisitorScene(crate::visitor::VisitorScene),
+    Population(crate::visitor::PopulationTier),
+    Lab(bool),
+    ResetView,
     Target(Vec3),
     Attractor(Option<Vec3>),
     ObstacleAdd(Vec3, f32),
@@ -519,6 +523,33 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                     obstacle_count = settings.swarm.obstacles.len();
                     Command::Showcase(showcase)
                 }
+                ["scene", name] => {
+                    let scene = crate::visitor::VisitorScene::parse(name)?;
+                    mode = SimulationMode::Gpu;
+                    model_settings = default();
+                    predator_count = 0;
+                    obstacle_count = 0;
+                    Command::VisitorScene(scene)
+                }
+                ["population", name] => {
+                    let tier = crate::visitor::PopulationTier::parse(name)?;
+                    mode = SimulationMode::Gpu;
+                    model_settings = default();
+                    predator_count = 0;
+                    obstacle_count = 0;
+                    Command::Population(tier)
+                }
+                ["lab", value] => {
+                    let enabled = switch(value)?;
+                    if !enabled {
+                        mode = SimulationMode::Gpu;
+                        model_settings = default();
+                        predator_count = 0;
+                        obstacle_count = 0;
+                    }
+                    Command::Lab(enabled)
+                }
+                ["camera", "reset"] => Command::ResetView,
                 ["species", name] => {
                     let species = crate::species::Species::parse(name)?;
                     predator_count = species.behavior().predators;
@@ -646,6 +677,16 @@ pub(crate) fn run_scenario(world: &mut World) {
                 Command::Set(setting) => apply_setting(world, setting),
                 Command::Showcase(showcase) => crate::showcase::apply(world, showcase),
                 Command::Species(species) => crate::species::apply(world, species),
+                Command::VisitorScene(scene) => {
+                    let tier = world.resource::<crate::visitor::Visitor>().tier;
+                    crate::visitor::apply(world, scene, tier);
+                }
+                Command::Population(tier) => {
+                    let scene = world.resource::<crate::visitor::Visitor>().scene;
+                    crate::visitor::apply(world, scene, tier);
+                }
+                Command::Lab(enabled) => crate::visitor::set_lab(world, enabled),
+                Command::ResetView => crate::visitor::reset_view(world),
                 Command::Director(enabled) => {
                     world.resource_mut::<Presentation>().set_director(enabled)
                 }
@@ -1666,6 +1707,30 @@ mod tests {
         assert_eq!(world.resource::<GlobalState>(), &before);
         assert!(parse("0 set flock_draw maybe").is_err());
         assert!(parse("0 set msaa 8").is_err());
+    }
+
+    #[test]
+    fn public_scene_commands_validate_and_restore_parser_state() {
+        use crate::visitor::{PopulationTier, VisitorScene};
+        let parsed = parse("0 lab on\n0 set mode naive\n0 scene reef\n0 population low\n0 lab off\n0 camera reset\n0 set count 100000").unwrap();
+        assert_eq!(parsed[0].command, Command::Lab(true));
+        assert_eq!(
+            parsed[2].command,
+            Command::VisitorScene(VisitorScene::ReefDrift)
+        );
+        assert_eq!(parsed[3].command, Command::Population(PopulationTier::Low));
+        assert_eq!(parsed[4].command, Command::Lab(false));
+        assert_eq!(parsed[5].command, Command::ResetView);
+        assert_eq!(parsed[6].command, Command::Set(Setting::Count(100000)));
+        for script in [
+            "0 scene fish",
+            "0 population 20000",
+            "0 population extreme",
+            "0 lab maybe",
+            "0 camera restart",
+        ] {
+            assert!(parse(script).is_err(), "{script}");
+        }
     }
 
     #[test]

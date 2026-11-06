@@ -83,6 +83,18 @@ in **Lab**; their ordinary count edits keep the existing continuity rules.
 
 ### Controls
 
+The compact **FLOCK** panel exposes Scene, Flock size, Pause, Scenic/Ride/Free camera, Reset view,
+Help and Reduced camera motion. Scenic uses a slow orbit; Ride follows one animal; Free stops
+automatic movement. Reduced camera motion keeps the composed view still. **H** hides/restores the
+interface and **P** pauses animals. Camera drag, pan and scroll remain available over the world.
+Drags keep the surface where they begin until release: HUD drags stay in the HUD, while world drags
+continue across it. With no active world drag, scrolling over the HUD keeps the world camera still.
+
+**Lab** opens the original menus, backend selection, imports, numeric settings and FPS/target
+diagnostics. **Back to showcase** restores the last complete public scene and restarts its flock.
+Target selection/movement is active only in Lab. Pointer and keyboard focus in the HUD block world
+input. The following table also lists the retained Lab and camera shortcuts.
+
 | Input | Action |
 | --- | --- |
 | Right-drag / middle-drag / scroll | Orbit / pan / zoom the camera |
@@ -104,7 +116,7 @@ in **Lab**; their ordinary count edits keep the existing continuity rules.
 | Scroll while riding | Change chase distance |
 | 1 / 2 / 3 / 4 / 5 | Front / side / top / overview / target close-up |
 
-The on-screen Controls panel shows these and the follow state. Camera and target input defer to the
+The Lab Controls panel shows these and the follow state. Camera and target input defer to the
 menu when it has focus.
 
 ### Species behaviors (Lab)
@@ -1003,6 +1015,10 @@ pgrep -a autonomous   # no process should remain after exit
 
 | Command | Arguments / behavior |
 | --- | --- |
+| `scene` | `murmuration`, `reef`, `shark`; apply a complete public scene and restart its flock |
+| `population` | `low`, `medium`, `high`; apply the current scene’s flock tier and restart |
+| `lab` | `on` / `off`; leaving Lab restores the last complete public scene |
+| `camera reset` | Restore the public composed view without restarting animals |
 | `showcase` | `starling`, `fish`, `swallow`, `neon`, `calm`; replace the live settings bundle (see Showcase presets) |
 | `species` | `sardine`, `tuna`, `reef`, `murmuration`, `swallow`, `rook`, `shark-attack`, `falcon-strike`, `tuna-raid`; replace flocking behavior and model only (see Species behaviors) |
 | `set count` (alias `vehicle_count`) | Integer, 0–1,000,000 in GPU; 0–50,000 in CPU modes |

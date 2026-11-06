@@ -1,5 +1,6 @@
 //! Curated visitor scenes. Detailed experiments keep their existing Lab contracts.
 use bevy::{camera_controller::pan_orbit_camera::prelude::*, prelude::*};
+use bevy_egui::{egui, EguiContexts};
 
 use crate::{
     environment::Environment,
@@ -29,6 +30,17 @@ impl VisitorScene {
             Self::Murmuration => "Sunset murmuration",
             Self::ReefDrift => "Reef drift",
             Self::SharkHunt => "Shark hunt",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "murmuration" | "starling" => Ok(Self::Murmuration),
+            "reef" | "reef-drift" => Ok(Self::ReefDrift),
+            "shark" | "shark-hunt" => Ok(Self::SharkHunt),
+            _ => Err(format!(
+                "invalid scene '{name}'; expected murmuration, reef or shark"
+            )),
         }
     }
 
@@ -68,6 +80,17 @@ pub(crate) enum PopulationTier {
 impl PopulationTier {
     pub const ALL: [Self; 3] = [Self::Low, Self::Medium, Self::High];
 
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err(format!(
+                "invalid population '{name}'; expected low, medium or high"
+            )),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Low => "Low",
@@ -82,6 +105,8 @@ pub(crate) struct Visitor {
     pub scene: VisitorScene,
     pub tier: PopulationTier,
     pub reduced_motion: bool,
+    pub lab: bool,
+    pub help: bool,
 }
 
 pub(crate) struct VisitorPlugin;
@@ -118,6 +143,9 @@ pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier
     let reduced_motion = world
         .get_resource::<Visitor>()
         .is_some_and(|visitor| visitor.reduced_motion);
+    let help = world
+        .get_resource::<Visitor>()
+        .is_some_and(|visitor| visitor.help);
     showcase::apply(world, Showcase::Calm);
     if let Some(mut models) = world.get_resource_mut::<crate::vehicle_model::VehicleModels>() {
         models.clip = "0".into();
@@ -155,6 +183,8 @@ pub(crate) fn apply(world: &mut World, scene: VisitorScene, tier: PopulationTier
         scene,
         tier,
         reduced_motion,
+        lab: false,
+        help,
     });
     reset_view(world);
     info!("Visitor scene: {} / {}", scene.name(), tier.name());
@@ -190,9 +220,205 @@ pub(crate) fn reset_view(world: &mut World) {
         orbit.current_motion = default();
         orbit.last_anchor_depth = -(distance as f64);
     }
-    world
-        .resource_mut::<Presentation>()
-        .cancel_camera_transition();
+    let reduced_motion = world.resource::<Visitor>().reduced_motion;
+    let mut presentation = world.resource_mut::<Presentation>();
+    presentation.cancel_camera_transition();
+    presentation.orbit = !reduced_motion;
+    presentation.orbit_speed = 3.0;
+}
+
+/// Leaving Lab reapplies the public contract, so experiments never leak into visitor scenes.
+pub(crate) fn set_lab(world: &mut World, enabled: bool) {
+    if enabled {
+        world.resource_mut::<Visitor>().lab = true;
+    } else {
+        let visitor = world.resource::<Visitor>();
+        let (scene, tier) = (visitor.scene, visitor.tier);
+        apply(world, scene, tier);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VisitorCamera {
+    Scenic,
+    Ride,
+    Free,
+}
+
+impl VisitorCamera {
+    fn current(presentation: &Presentation) -> Self {
+        if presentation.follow.enabled() || presentation.director.enabled {
+            Self::Ride
+        } else if presentation.orbit {
+            Self::Scenic
+        } else {
+            Self::Free
+        }
+    }
+}
+
+fn set_camera(world: &mut World, camera: VisitorCamera) {
+    if camera == VisitorCamera::Scenic {
+        reset_view(world);
+        return;
+    }
+    let mut presentation = world.resource_mut::<Presentation>();
+    presentation.cancel_camera_transition();
+    presentation.orbit = false;
+    if camera == VisitorCamera::Ride {
+        presentation.follow.mode = crate::follow::FollowMode::Chase;
+        presentation.follow.next();
+    }
+}
+
+pub(crate) fn ui(
+    mut contexts: EguiContexts,
+    mut visitor: ResMut<Visitor>,
+    mut presentation: ResMut<Presentation>,
+    appearance: Res<Appearance>,
+    models: Res<crate::vehicle_model::VehicleModels>,
+    mut commands: Commands,
+) -> Result {
+    if !presentation.ui_visible {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let width = (ctx.content_rect().width() - 56.0).clamp(200.0, 292.0);
+    let frame = egui::Frame::window(&ctx.global_style())
+        .fill(egui::Color32::from_rgba_unmultiplied(10, 24, 28, 232))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(73, 100, 101),
+        ))
+        .corner_radius(12)
+        .inner_margin(14);
+    egui::Window::new("Flock")
+        .id(egui::Id::new("visitor_hud"))
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .auto_sized()
+        .vscroll(true)
+        .max_height((ctx.content_rect().height() - 32.0).max(180.0))
+        .fixed_pos([16.0, 16.0])
+        .min_width(width)
+        .max_width(width)
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.visuals_mut().override_text_color = Some(egui::Color32::from_rgb(225, 237, 229));
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 7.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("FLOCK").strong().size(23.0));
+                ui.label(
+                    egui::RichText::new("Nature in motion")
+                        .small()
+                        .color(egui::Color32::from_rgb(154, 188, 178)),
+                );
+            });
+            if visitor.lab {
+                ui.label("Lab · experiments and diagnostics");
+                if ui.button("Return to nature showcase").clicked() {
+                    commands.queue(|world: &mut World| set_lab(world, false));
+                }
+                ui.small("Returning restores this scene's animals, light and motion.");
+                return;
+            }
+            let mut scene = visitor.scene;
+            egui::ComboBox::from_id_salt("visitor_scene")
+                .selected_text(scene.name())
+                .width(width)
+                .show_ui(ui, |ui| {
+                    for candidate in VisitorScene::ALL {
+                        ui.selectable_value(&mut scene, candidate, candidate.name());
+                    }
+                });
+            ui.small(match visitor.scene {
+                VisitorScene::Murmuration => "Starlings flow together through the evening sky.",
+                VisitorScene::ReefDrift => "Slow fish wander through clear, sunlit water.",
+                VisitorScene::SharkHunt => {
+                    "Three sharks pursue a school. Watch it scatter and regroup."
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Flock size");
+                let mut tier = visitor.tier;
+                for candidate in PopulationTier::ALL {
+                    ui.selectable_value(&mut tier, candidate, candidate.name());
+                }
+                if scene != visitor.scene || tier != visitor.tier {
+                    commands.queue(move |world: &mut World| apply(world, scene, tier));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Camera");
+                let current = VisitorCamera::current(&presentation);
+                for (camera, label) in [
+                    (VisitorCamera::Scenic, "Scenic"),
+                    (VisitorCamera::Ride, "Ride"),
+                    (VisitorCamera::Free, "Free"),
+                ] {
+                    if ui.selectable_label(current == camera, label).clicked() {
+                        commands.queue(move |world: &mut World| set_camera(world, camera));
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui
+                    .button(if presentation.paused {
+                        "Resume · P"
+                    } else {
+                        "Pause · P"
+                    })
+                    .clicked()
+                {
+                    presentation.paused = !presentation.paused;
+                }
+                if ui.button("Reset view").clicked() {
+                    commands.queue(reset_view);
+                }
+            });
+            if ui
+                .checkbox(&mut visitor.reduced_motion, "Reduce camera motion")
+                .changed()
+            {
+                if visitor.reduced_motion {
+                    presentation.cancel_camera_transition();
+                    presentation.orbit = false;
+                } else {
+                    commands.queue(reset_view);
+                }
+            }
+            if models.status.starts_with("Error:") {
+                ui.colored_label(egui::Color32::LIGHT_RED, "The animals could not load.");
+                if ui.button("Try scene again").clicked() {
+                    let (scene, tier) = (visitor.scene, visitor.tier);
+                    commands.queue(move |world: &mut World| apply(world, scene, tier));
+                }
+            } else if !appearance.environment_ready() || models.status.starts_with("Loading ") {
+                ui.small("Preparing animals and light…");
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.toggle_value(&mut visitor.help, "Help");
+                if ui.small_button("Hide · H").clicked() {
+                    presentation.ui_visible = false;
+                }
+                if ui.small_button("Lab").clicked() {
+                    visitor.lab = true;
+                }
+            });
+            if visitor.help {
+                ui.small("Right-drag to orbit · scroll to zoom · middle-drag to pan.");
+                ui.small(
+                    "Ride follows one animal. N chooses another. Reset view returns to the scene.",
+                );
+                ui.small("P pauses animals. H hides or restores the interface.");
+                ui.small(
+                    "Scene and size changes restart the flock. Reset view only moves the camera.",
+                );
+            }
+        });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -301,6 +527,56 @@ mod tests {
         let appearance = world.resource::<Appearance>();
         assert_eq!(appearance.active_environment(), Environment::Sunset);
         assert!(!appearance.environment_ready());
+    }
+
+    #[test]
+    fn leaving_lab_restores_public_scene_and_reduced_motion() {
+        let mut world = world();
+        apply(&mut world, VisitorScene::SharkHunt, PopulationTier::Low);
+        world.resource_mut::<Visitor>().reduced_motion = true;
+        set_lab(&mut world, true);
+        showcase::apply(&mut world, Showcase::Neon);
+        world.resource_mut::<GlobalState>().mode = SimulationMode::Naive;
+        set_lab(&mut world, false);
+        assert_scene(&world, VisitorScene::SharkHunt, PopulationTier::Low);
+        assert!(!world.resource::<Visitor>().lab);
+        assert!(!world.resource::<Presentation>().orbit);
+    }
+
+    #[test]
+    fn camera_choices_and_reset_leave_animal_settings_intact() {
+        let mut world = world();
+        apply(
+            &mut world,
+            VisitorScene::Murmuration,
+            PopulationTier::Medium,
+        );
+        let camera = world
+            .spawn((
+                Camera3d::default(),
+                Transform::default(),
+                PanOrbitCamera::default(),
+                Projection::default(),
+            ))
+            .id();
+        let before = world.resource::<GlobalState>().clone();
+        set_camera(&mut world, VisitorCamera::Ride);
+        assert!(world.resource::<Presentation>().follow.enabled());
+        assert!(!world.resource::<Presentation>().orbit);
+        set_camera(&mut world, VisitorCamera::Free);
+        assert!(!world.resource::<Presentation>().follow.enabled());
+        assert!(!world.resource::<Presentation>().orbit);
+        set_camera(&mut world, VisitorCamera::Scenic);
+        assert!(world.resource::<Presentation>().orbit);
+        let transform = *world.get::<Transform>(camera).unwrap();
+        assert!(transform.translation.is_finite());
+        assert!(transform.translation.length() > 1.0);
+        assert!(
+            (transform.rotation * Vec3::NEG_Z).dot(-transform.translation.normalize()) > 0.9999
+        );
+        reset_view(&mut world);
+        assert_eq!(*world.get::<Transform>(camera).unwrap(), transform);
+        assert_eq!(*world.resource::<GlobalState>(), before);
     }
 
     #[test]
