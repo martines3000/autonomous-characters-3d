@@ -11,7 +11,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - [x] (2026-11-06 09:55Z) Recorded authorization, scope, ownership and validation strategy. Existing cause confirmed: Reef drift has strong wander/weak schooling; Shark attack sets a fixed origin prey target.
 - [x] (2026-11-06 10:08Z) Recorded 25-second native before clips for Reef/Shark and two eight-second medium-tier timing windows per scene at 846×1390. Raw logs/captures are in the evidence directory; load averages are recorded.
 - [ ] Prepare first PR with scene-specific Reef shoals and meaningful regressions. Implementation and complete pointer-chord replay pass 233 release tests; the 20 existing GPU regressions pass. All three Reef tiers have approximately 99% same-shoal nearest neighbors in the seeded probe. Headed acceptance passed before the final release/repress edge correction; the integrated final browser gate and PR publication remain.
-- [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence.
+- [ ] Prepare second PR with a travelling Shark school and behavior/performance evidence. Shared soft-flow steering and camera ownership pass 237 release tests and 21 GPU regressions. Seeded all-tier windows show wider spacing and local panic; final camera captures/browser/performance/PR publication remain.
 - [ ] Prepare third PR with CPU/GPU shark riding, visitor controls and recovery tests.
 - [ ] Prepare fourth PR with truthful web download/preparation progress and an accessible reveal after the first ready scene.
 - [ ] Run integrated native/GPU, browser/container and independent review gates; publish evidence and exact PR order.
@@ -23,6 +23,7 @@ Reef drift should show several distinct loose shoals rather than isolated fish. 
 - GPU prey poses are sampled through an existing asynchronous 80-byte camera readback. Hunter poses live in the GPU arena in GPU mode and in `Hunters` in CPU modes. Shark riding must sample the actual simulated hunter rather than the CPU initial pose.
 - Lab species application preserves non-hunter groups. Public Reef groups therefore require explicit release at Lab/preset entry; merely stopping the route clock would leak group targets into the reference presets.
 - The first Shark moving-point trial improved median spacing and reduced panic, but sampled frames still showed a compact travelling ball and cropping. Centroid travel alone is insufficient: the fixed-target baseline already has substantial centroid motion under pursuit. Reject that trial as the final Shark behavior.
+- Headed acceptance exposed a fast pointer-entry race: PreUpdate reads Egui's prior UI-pass hover state, while a press and movement can cross the HUD boundary before the next UI pass. Current-frame press-event positions must determine initial gesture ownership; keep the existing owner for the rest of the chord. A dedicated regression/fix is being prepared before browser readiness is claimed.
 
 ## Decision Log
 

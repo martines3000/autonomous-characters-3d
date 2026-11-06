@@ -940,7 +940,13 @@ pub(crate) mod tests {
             .id();
         // Keep the guide away from the camera's focus so an unwanted translation is observable.
         assert!(
-            app.world().resource::<GlobalState>().groups.guide(0).unwrap().center.length()
+            app.world()
+                .resource::<GlobalState>()
+                .groups
+                .guide(0)
+                .unwrap()
+                .center
+                .length()
                 > 1.0
         );
         (app, camera)
@@ -953,7 +959,12 @@ pub(crate) mod tests {
         reference.add_systems(Update, (presentation_input, animate_camera).chain());
         tracked.add_systems(
             Update,
-            (presentation_input, animate_camera, crate::schooling::track_encounter).chain(),
+            (
+                presentation_input,
+                animate_camera,
+                crate::schooling::track_encounter,
+            )
+                .chain(),
         );
         let advance = |app: &mut App| {
             app.world_mut()
@@ -963,35 +974,76 @@ pub(crate) mod tests {
         };
         let original = *tracked.world().get::<Transform>(tracked_camera).unwrap();
         for app in [&mut reference, &mut tracked] {
-            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Right);
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(MouseButton::Right);
             advance(app);
             let presentation = app.world().resource::<Presentation>();
             assert!(presentation.manual_camera);
             assert!(presentation.preset.is_none());
             assert!(presentation.transition.is_none());
         }
-        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
-        assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+        assert_eq!(
+            *tracked.world().get::<Transform>(tracked_camera).unwrap(),
+            original
+        );
+        assert_eq!(
+            tracked.world().get::<Transform>(tracked_camera),
+            reference.world().get::<Transform>(reference_camera)
+        );
 
         // A requested preset waits while the same world drag remains held.
         for app in [&mut reference, &mut tracked] {
-            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Digit2);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::Digit2);
             advance(app);
-            assert_eq!(app.world().resource::<Presentation>().preset, Some(CameraPreset::Side));
-            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
-            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Right);
+            assert_eq!(
+                app.world().resource::<Presentation>().preset,
+                Some(CameraPreset::Side)
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .release(MouseButton::Right);
         }
-        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
+        assert_eq!(
+            *tracked.world().get::<Transform>(tracked_camera).unwrap(),
+            original
+        );
 
         // Once released, the explicit transition must match the camera without a tracker.
         for _ in 0..3 {
             advance(&mut reference);
             advance(&mut tracked);
-            assert!(tracked.world().resource::<Presentation>().transition.is_some());
-            assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
-            assert_eq!(tracked.world().get::<PanOrbitCamera>(tracked_camera).unwrap().last_anchor_depth(), reference.world().get::<PanOrbitCamera>(reference_camera).unwrap().last_anchor_depth());
+            assert!(tracked
+                .world()
+                .resource::<Presentation>()
+                .transition
+                .is_some());
+            assert_eq!(
+                tracked.world().get::<Transform>(tracked_camera),
+                reference.world().get::<Transform>(reference_camera)
+            );
+            assert_eq!(
+                tracked
+                    .world()
+                    .get::<PanOrbitCamera>(tracked_camera)
+                    .unwrap()
+                    .last_anchor_depth(),
+                reference
+                    .world()
+                    .get::<PanOrbitCamera>(reference_camera)
+                    .unwrap()
+                    .last_anchor_depth()
+            );
         }
-        assert_ne!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), original);
+        assert_ne!(
+            *tracked.world().get::<Transform>(tracked_camera).unwrap(),
+            original
+        );
 
         // Scenic intentionally resumes after the explicit transition has finished.
         for _ in 0..5 {
@@ -1001,11 +1053,20 @@ pub(crate) mod tests {
         let presentation = tracked.world().resource::<Presentation>();
         assert!(presentation.orbit);
         assert!(!presentation.camera_override_active());
-        assert_ne!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+        assert_ne!(
+            tracked.world().get::<Transform>(tracked_camera),
+            reference.world().get::<Transform>(reference_camera)
+        );
         let resumed = *tracked.world().get::<Transform>(tracked_camera).unwrap();
-        tracked.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Middle);
+        tracked
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Middle);
         advance(&mut tracked);
-        assert_eq!(*tracked.world().get::<Transform>(tracked_camera).unwrap(), resumed);
+        assert_eq!(
+            *tracked.world().get::<Transform>(tracked_camera).unwrap(),
+            resumed
+        );
     }
 
     #[test]
@@ -1018,17 +1079,27 @@ pub(crate) mod tests {
         reference.add_systems(Update, (animate_camera, request_after_animation).chain());
         tracked.add_systems(
             Update,
-            (animate_camera, request_after_animation, crate::schooling::track_encounter).chain(),
+            (
+                animate_camera,
+                request_after_animation,
+                crate::schooling::track_encounter,
+            )
+                .chain(),
         );
         for app in [&mut reference, &mut tracked] {
-            app.world_mut().resource_mut::<Time<Real>>().advance_by(Duration::from_millis(100));
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(100));
             app.update();
             let presentation = app.world().resource::<Presentation>();
             assert!(!presentation.manual_camera);
             assert!(presentation.transition.is_none());
             assert_eq!(presentation.preset, Some(CameraPreset::Side));
         }
-        assert_eq!(tracked.world().get::<Transform>(tracked_camera), reference.world().get::<Transform>(reference_camera));
+        assert_eq!(
+            tracked.world().get::<Transform>(tracked_camera),
+            reference.world().get::<Transform>(reference_camera)
+        );
     }
 
     #[test]
