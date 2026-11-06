@@ -161,7 +161,7 @@ The headed loading check uses a recorded network throttle to capture real partia
 normal and reduced-motion reveals, and injects a clearly labeled failure during the reveal. The
 general browser smoke still tests actual GPU-process loss and reload independently.
 
-## Publish after review, under owner control
+## Publish and update, under owner control
 
 The `Publish web image` workflow is **manual only** and rejects any ref other than `master`, following
 the household repositories. It builds clean source, verifies the recorded commit and clean flag,
@@ -171,18 +171,29 @@ then publishes Linux/amd64 as:
 ghcr.io/martines3000/autonomous-characters-3d-web:sha-<full-40-character-source-commit>
 ```
 
-It records the real `image@sha256:...` in its run summary. No image has been published by preparing
-this workflow. A source tag is convenient provenance; the cluster workload must pin the **returned
+It records the real `image@sha256:...` in its run summary. A source tag is convenient provenance;
+the cluster workload must pin the **returned
 immutable digest**, not an invented value or a mutable tag.
 
-After application PRs merge, the owner may dispatch the workflow from GitHub. Update the linked
-household-cluster draft with that actual digest, validate and merge it, then verify internal Traefik
-health. Only then prepare/approve the household-infra production plan for public routing.
-Publication, cluster rollout, infrastructure apply, public DNS and post-release verification are
-outside this review-preparation session. Roll back a future application update by restoring the
-previous verified image digest through GitOps; use the household infra runbook for public-route
-recovery.
+The first owner-authorized release is live at [flock.skippy-ai.com](https://flock.skippy-ai.com/).
+[Publication run 42259142094](https://github.com/martines3000/autonomous-characters-3d/actions/runs/42259142094)
+built clean merged source `57fa57abe53ce2a23717c4b4f0816f40fcc141c3`, content release
+`8ccdbb8b6a861d290b652024`. The household workload pins
+`ghcr.io/martines3000/autonomous-characters-3d-web@sha256:897efa64a1b384ddb8bb43085b4600e88098e29fff60ceaeed407dad5675991f`.
+See the [release evidence and limits](../plans/evidence/2026-11-06-public-release.md).
+
+For later authorized releases, dispatch from the actual merged application source. Update the
+household-cluster workload with the returned digest, validate and merge it, and verify serving and
+source provenance. The normal path includes private Traefik/rollout checks. The first installation
+used the documented GitHub/Flux alternative because private CRONA access was unavailable: exact-image
+local proof, retained readiness/liveness and Flux wait, then actual public checks. Do not claim direct
+node, pod or runtime image-ID inspection from a successful merge or public source metadata alone.
+
+Use the existing guarded household-infra main-branch plan/apply for routing changes. Roll back a
+future application update by restoring its previous verified digest through GitOps; use the household
+infra runbook for public-route recovery. Keep server protection and deny-ingress controls intact.
 
 The equivalent explicit owner command is `gh workflow run publish-web-image.yml --ref master`.
-Do not run it during review preparation. The pre-merge local image, artifact checksums and tested
-source are recorded in [browser feasibility](browser-feasibility.md); none is a published GHCR digest.
+Dispatch only for an authorized release. The earlier pre-merge local image, artifact checksums and
+tested source in [browser feasibility](browser-feasibility.md) remain historical; use the actual
+published provenance above rather than a local image ID.
