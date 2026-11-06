@@ -88,7 +88,8 @@ are recorded separately by the integration owner.
 The local Linux/amd64 container passed `nginx -t`, health, UID/GID **101:101**, read-only root,
 capability drop and only `/tmp` scratch. HTML/release metadata revalidate; versioned WASM, shader and
 font URLs return gzip, correct MIME and immutable cache headers; a missing WASM returns 404. Local
-image config: `sha256:739478e49f682963fb3a1e4981b2f88186040830e90409aa25f4aaad8e9cfb21`.
+Docker image ID: `sha256:41020c8ae352b8d3fbbdf0c761f56e93635b751ee538753fdeb191259ff436bd`,
+matching the running local review container and recorded container verification.
 This is not a GHCR publication digest. Image publication and deployment were not performed.
 
 Raw evidence is outside Git under `/home/martines/Projects/ac3d-evidence/2026-11-05/browser/`:

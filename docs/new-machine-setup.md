@@ -1,8 +1,10 @@
 # Set up a new native development machine
 
 Follow these steps in order. Keep logs outside the checkout. Preserve source, dependency files and
-`.cargo/config.toml`; report setup blockers instead of patching them. The project is native only; install no
-Trunk/WASM tooling.
+`.cargo/config.toml`; report setup blockers instead of patching them. This guide prepares native
+development, including the headless asset baker used by browser packaging. For optional WebGPU
+development, follow [web delivery](web-delivery.md) after this setup. Historical Trunk tooling is
+not required.
 
 ## 1. Discover and report before installing anything
 

@@ -1,6 +1,6 @@
 # Nature showcase baseline and art target
 
-This record accompanies A0 of the [approved showcase plan](../planned/2026-11-05-polished-flock-web-showcase.md). Captures are observations by the development agent, not independent owner or new-viewer feedback.
+This record accompanies A0 of the [approved showcase plan](../completed/2026-11-05-polished-flock-web-showcase.md). Captures are observations by the development agent, not independent owner or new-viewer feedback.
 
 ## Reproduction and reference machine
 

@@ -31,12 +31,12 @@ made the decisions; the agents wrote the code, plans and checks.
 | | Original (2023) | Now (2026) |
 | --- | --- | --- |
 | Stack | Rust 1.66, Bevy 0.9.1 | Rust 1.99.1, Bevy 0.20.1, bevy_egui 0.43.1 |
-| Builds today | No | Yes (verified on macOS; Linux/Windows setup documented) |
+| Builds today | No | Native Linux verified; earlier macOS baseline; Windows setup documented; measured Linux WebGPU preview |
 | Simulation | CPU naive / octree | **GPU compute shader (default)** plus CPU naive / octree |
-| Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 by default, slider up to 1,000,000 |
+| Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 starlings at startup; scene-specific tiers; Lab up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
-| Tests | None | 177 tests, including GPU parity tests and seeded benchmarks |
-| Known bugs | 14 audit findings | All fixed except CI, which isn't wanted |
+| Tests | None | 219 release tests and 20 GPU regressions passed; seeded benchmarks available |
+| Known bugs | 14 audit findings | Original correctness findings resolved; scaling limits tracked; CI not wanted |
 
 Bugs found and fixed include:
 - NaNs from normalizing zero vectors;
@@ -48,6 +48,8 @@ Bugs found and fixed include:
 
 The audit is [review-report.html](review-report.html). Each fix has an ExecPlan with evidence in
 [plans/completed/](plans/completed/), and [plans/STATUS.md](plans/STATUS.md) tracks the open work.
+The [6 November showcase review index](plans/evidence/2026-11-06-morning-review.md) links the prepared
+application/deployment PRs, tested evidence and later release prerequisites.
 
 ## Run it
 
@@ -235,7 +237,10 @@ count framing except in Calm. For clean captures, put `ui off` **after** `showca
 Neon swarm and Calm use Environment **Off**.
 Predator debug rings are hidden in Starling and Fish; enable **Swarm → Predators → Show** to inspect them.
 
-### Modes and settings
+### Lab modes and reference defaults
+
+The detailed controls below describe Lab and the Calm reference defaults. Public scenes apply the
+scene-specific settings and population tiers described above; startup opens Sunset murmuration.
 
 - **GPU** (default) keeps every vehicle in GPU buffers. The count slider goes up to 1,000,000.
   **Follow neighbor samples** (default 16, 0 = all) caps alignment/cohesion samples while following;
@@ -1221,7 +1226,9 @@ Optional tools:
 Agent and planning conventions are in [AGENTS.md](AGENTS.md), [PLANS.md](PLANS.md) and
 [plans/STATUS.md](plans/STATUS.md).
 
-The project is native only; the original WASM web build was removed. The `codex/native-baseline`
+Native development and the optional shared Rust/WebGPU browser target are supported; see
+[web delivery](docs/web-delivery.md) for the tested browser configuration and build workflow.
+The original Trunk-based web build was removed during modernization. The `codex/native-baseline`
 branch keeps the first native build that compiled again.
 
 ## Roadmap
@@ -1232,9 +1239,12 @@ predator fleeing are implemented. Trails remain future work; each milestone requ
 Open issues are listed in
 [plans/STATUS.md](plans/STATUS.md):
 
-- crowding in very large follow flocks;
-- rendering cost up close;
-- optional speed retuning by the owner, by eye, after the wall-drag fix.
+- crowding in follow flocks of 100,000 or more (parked by the owner);
+- rendering budgets for heavy custom models and other GPUs;
+- hunter overhead at one million prey in wander mode.
+
+The owner chose to retain the existing speeds after the wall-drag fix. The showcase review stack
+is complete; image publication, rollout and public verification require a separate release session.
 
 ## Sources
 

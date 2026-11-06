@@ -2,8 +2,8 @@
 
 ## Current work
 
-- Polished nature showcase execution is active. The AAA look track is merged.
-- [Polished nature showcase and web release](planned/2026-11-05-polished-flock-web-showcase.md) (active, 2026-11-05): autonomous development with useful subagents and small review PRs for visitor UI, visuals, animal behavior, browser delivery, and CRONA hosting preparation. Stop at the morning review handoff; do not merge or deploy. Baseline/audit PR [#12](https://github.com/martines3000/autonomous-characters-3d/pull/12) is ready. Native scene/HUD/restart checks pass; composition and browser release tooling are active. [Cluster draft](https://github.com/martines3000/household-cluster/pull/1) and [routing draft](https://github.com/martines3000/household-infra/pull/1) await publication/internal health. The active goal ends at the review handoff.
+- The polished nature showcase is prepared for owner review, with no merged PRs or production rollout. See the [morning review index](evidence/2026-11-06-morning-review.md) for application PRs 12–19, linked cluster/routing drafts, exact merge order, evidence and prerequisites.
+- The [approved review-preparation plan](completed/2026-11-05-polished-flock-web-showcase.md) is complete at its review handoff. Deployment publication/health and later public verification remain a separate, explicitly authorized release session.
 
 ## Prioritized future tasks
 
@@ -27,6 +27,9 @@ CI (finding F12) is not wanted by the owner.
 
 `review-report.html` audited commit `e7a53d7`. Status against `master` (the native modernization was merged in `3f8813a`), verified against source on 2026-10-30:
 
+The F12 test counts below reflect the unmerged showcase review stack verified on 2026-11-06;
+the historical resolution commits and performance measurements in the other rows are unchanged.
+
 | ID | Finding | Status |
 | --- | --- | --- |
 | F01 | Zero-vector normalization and division create NaNs | Resolved: numerical-safety plan |
@@ -40,12 +43,13 @@ CI (finding F12) is not wanted by the owner.
 | F09 | Benchmark disabled; visibility toggle affects only new vehicles | Resolved: benchmark plan (headless `flocking_benchmark`; checkbox removed) |
 | F10 | Naive default mode is quadratic up to the 50,000 slider | Resolved: GPU default at 20,000, slider up to one million, complete separation with follow cap 16; M3 Pro headless steps 0.67 ms wander / 1.4 ms follow at 20k, 7.4 / 13.2 ms at 300k. Naive/Octree remain CPU references (sliders up to 50k); extreme follow density and close-up rendering cost are future tasks 1–2 |
 | F11 | Historical dependencies do not build on current toolchains | Resolved in `21769fd` and `262dc33` (Bevy 0.20.1, Rust 1.99.1) |
-| F12 | No automated tests or CI | Partly resolved: 33 non-ignored regression tests, 3 ignored GPU regression tests, and separate ignored CPU/GPU benchmarks; GPU runs need a real device outside restricted sandboxes; CI not wanted by the owner |
+| F12 | No automated tests or CI | Partly resolved: 219 release tests and 20 separately run ignored GPU regressions pass in the showcase review stack; separate ignored benchmarks/probes remain available; GPU runs need a real device outside restricted sandboxes; CI not wanted by the owner |
 | F13 | Unused direct dependencies | Resolved in `262dc33` |
 | F14 | Advisory matches in the lockfile | Resolved in `262dc33`: `cargo deny check advisories` passes for the native target |
 
 ## Completed
 
+- [Polished nature showcase review preparation](completed/2026-11-05-polished-flock-web-showcase.md) (2026-11-06): three GPU scenes, visitor HUD/Lab, coherent tiers/restarts, composed animal motion and readable shark encounters; shared WebGPU runtime and reproducible web/Docker tooling. 219 release tests and 20 GPU regressions pass; all nine browser tiers measured twice on the recorded Linux configuration. Application PRs 12–19 are ready for review; cluster/routing drafts retain real-image, internal-health and later release prerequisites. See the [morning review index](evidence/2026-11-06-morning-review.md).
 - [GPU hunter cost measurement](completed/2026-11-03-hunter-scaling.md) (2026-11-02): `GPU_BENCH_HUNTERS` benchmark option; 20k–1M with 0 and 16 hunters. A bounded grid pursuit search was built, measured no better than the full scan, and dropped. Disabled path unchanged.
 - [Tuna raid](completed/2026-11-03-tuna-raid.md) (2026-11-02): 346-triangle animated tuna, twelve fast hunters against sardines, model controls and CPU/GPU encoding; 204 release and 19 GPU tests pass, seven baseline Clippy warnings; wide/chase captures inspected.
 - [Hunters and prey](completed/2026-11-03-hunters-and-prey.md) (2026-11-02): up to 16 visible shark/falcon hunters, shared CPU/GPU pursuit and panic, per-group role/size/speed and two examples; 196 release and 19 GPU tests pass, seven baseline Clippy warnings; idle-machine GPU benchmarks deferred.

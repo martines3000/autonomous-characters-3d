@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document maintained according to `PLANS.md`.
 
-Status: active execution started on 2026-11-05; review-only handoff. On 2026-11-05, the owner approved this plan and requested a fresh-session goal, useful subagents, autonomous execution, and small PRs for morning review. Do not merge or deploy. The approved planning text is preserved below; execution evidence and PR links are added as milestones finish. Production changes remain prohibited.
+Status: review-preparation goal complete on 2026-11-06. All independently preparable work is finished in unmerged review PRs. C1/I1 remain drafts pending real publication and internal health. No production rollout or public verification was performed.
 
 ## Purpose
 
@@ -43,18 +43,23 @@ Use the following prompt together with this ExecPlan:
 - [x] (2026-11-05 21:47Z) Inspected repository guidance, current source, completed plans, and remote household deployment conventions.
 - [x] (2026-11-05 21:50Z) Prepared the development prompt, staged PR sequence, proposed defaults, acceptance criteria, and release boundaries.
 - [x] (2026-11-05 22:40Z) A0: Captured startup and all fourteen original presets, recorded three motion clips including 24 seconds of Shark, repeated native rendered timings, and documented dispositions/art target in `plans/evidence/2026-11-05-showcase-baseline.md`.
-- [ ] A1 (partial, 2026-11-05 23:00Z): Warning-free WASM compilation and actual headed AMD WebGPU rendering pass with animated fish, three hunter draws, caustic sand, sky/IBL/shadows and egui. Linux Chromium requires recorded feature flags; flagless has a clear unsupported state. Final committed-source input/capability matrix remains with A6.
+- [x] A1 (completed; early proof and final matrix, 2026-11-05 23:00Z): Warning-free WASM compilation and actual headed AMD WebGPU rendering pass with animated fish, three hunter draws, caustic sand, sky/IBL/shadows and egui. Linux Chromium requires recorded feature flags; flagless has a clear unsupported state. Final committed-source input/capability matrix passes with A6 on runtime 9bbe138.
 - [x] (2026-11-05 23:00Z) A2: Complete three-scene contract, scene-specific tiers, stale-model cancellation and explicit public restarts. Integrated A2/A3: 214 release tests pass, warning-free build and focused paused GPU restart regression pass.
 - [x] (2026-11-05 23:00Z) A3: Compact visitor HUD, Help/H/P, Scenic/Ride/Free, reduced camera motion and Lab gates implemented; native captures inspected. Existing experimental controls and CPU references remain in Lab.
-- [ ] A4: Replace world-fit views with animal-volume framing and warm sunset composition; native before/after iteration underway.
-- [ ] A5: Complete motion/readability acceptance and any justified public hunt tuning. The fourteen-choice audit is complete; a closer 25-second hunt recording now exposes scatter and recovery, with final role readability still under review.
-- [ ] A6–A7: Finish the browser experience and reproducible web/image release tooling.
+- [x] (2026-11-06 00:51Z) A4: Animal-volume/warm-sunset composition passes matched capture review and repeated native/browser budgets; no extra effect or asset replacement needed.
+- [x] (2026-11-06 00:51Z) A5: Fourteen-choice audit complete; public sharks use 8× scale/1× cruise while legacy Lab stays 5×/1.3×. Matched 25-second clips and original-size frame review show clear silhouettes, local splits and regrouping. Continuous acceleration is not inferred from sparse frames; CPU/GPU mechanics regressions pass.
+- [x] (2026-11-06 00:51Z) A6: Final real browser matrix passes controls, chords, keyboard focus, all scenes/tiers, resize/DPI, reduced motion, asset failures, actual visibility and actual GPU crash/reload. All nine tiers measured twice.
+- [x] (2026-11-06 00:51Z) A7: Two clean builds produce 32 identical files; local UID 101/read-only static image and HTTP/browser checks pass. Pinned manual master-only publication is prepared, not dispatched. Real registry publication remains C1’s explicit prerequisite.
 - [x] (2026-11-05 23:00Z) C1/I1: Prepared and pushed linked draft PRs: household-cluster#1 and household-infra#1. Offline render/policy checks pass; authoritative DNS returned NXDOMAIN for the proposed hostname. Real published image and internal workload health remain explicit post-merge prerequisites, not fabricated readiness.
-- [ ] Complete the application verification gate and assemble the morning review index.
+- [x] (2026-11-06 00:51Z) Completed integrated fmt, 219 release tests, 20 GPU regressions, warning-free build, native smoke, baseline-only Clippy, repeat timings and [morning review index](../evidence/2026-11-06-morning-review.md).
 
 Post-merge public verification and recording the deployed digest are deferred to a separately authorized release follow-up. They are not completion requirements for this review-preparation goal.
 
 ## Surprises & Discoveries
+
+- Final QA: Actual HUD dragging exposed pointer fallthrough during held buttons. Current egui area coverage plus gesture-origin ownership fixes it; independent review found and fixed a mixed-button relatch. Red/green regressions and real browser input checks pass.
+- Final native gate: The new environment-codec fixture used default RGBA8 images rather than valid half-float cubemaps. The fixture now includes real cube faces/mips and a valid negative-test control; the repeated full gate passes. Runtime payload is unchanged.
+- Final delivery: Roughly 30 MiB cold sunset transfer is measured over localhost, not an internet promise. Raw CDP video has padding; full-resolution screenshots and native motion clips are the composition/behavior evidence.
 
 - A1: Headless Chromium reports a ready WebGPU app while CDP captures black; headed capture proves the real rendered scene. The Arch `/usr/bin/chromium` wrapper overrides feature flags, so tested Linux runs use `/usr/lib/chromium/chromium` with recorded flags. Other browser/device combinations remain untested.
 - A2: Continuity after Neon 200k → Reef Low retains positions in a domain about 7.4 times larger. Public scene/tier selection now explicitly restarts resident GPU animals. A prepared revision travels with matching GPU uniforms so late HUD changes cannot restart into the previous domain. The paused restart regression verifies fresh bounded positions, cleared panic/hunters, matching motion history, and reused buffers.
@@ -109,26 +114,30 @@ Post-merge public verification and recording the deployed digest are deferred to
 
 ## Assumptions and Open Questions
 
-- **Art direction:** Stylized natural scenes are the proposed starting point. Compare an underwater hunt with a sunset murmuration in A0. Choose the strongest opener from actual captures. Keep Neon or geometric formations in Lab unless they meet the same quality bar.
-- **Public scene count:** Start with roughly three excellent scenes, such as Murmuration, Reef Drift, and Shark Hunt. Names, count, and opener are provisional. Audit all existing choices before deciding what remains public.
-- **Browser support:** Prefer WASM/WebGPU, subject to A1. Bevy publishes browser WebGPU examples, but that does not prove this custom application works. Test actual browser/device capabilities; if blocked, compare a reduced compatible path and a focused alternative before committing to a rewrite.
-- **Performance:** Establish supported hardware and measurable budgets in A0/A1. The initial target is smooth 60 FPS at 1920×1080 on the recorded development reference machine at the default tier. Define a lower tier for weaker tested hardware. Report inaccessible devices as untested.
-- **Population:** Low/Medium/High are visitor labels, not fixed global counts. Reef drift and murmuration need different densities. Add an optional Spectacle tier only when its cost and behavior are validated. Do not expose the known million-vehicle hunter case as a default.
-- **Hostname:** `flock.skippy-ai.com` is proposed, not reserved. The repositories contain no discovered conflicting route. Check the actual Cloudflare zone before preparing final DNS changes. The historical `ac3d.skippy-ai.com` name appears in README; inspect ownership before proposing a redirect.
-- **Image publication:** Household precedent manually publishes GHCR images from pushed default-branch source. If a review image cannot be published under existing rules, keep C1 as a draft until the application changes merge and the immutable image exists. Do not invent a digest or silently change release policy.
-- **Production access:** Read-only repository inspection does not establish permission or ability to run production workflows. Prepare the concrete PRs, plans, validation, and runbook first. Identify unavailable credentials or required owner actions precisely.
+- **Art direction:** Matched captures selected stylized natural scenes with closer animal-volume framing and existing assets. No observed asset defect warranted Blender work. Owner and independent human taste feedback remain part of morning review.
+- **Public scene count:** Sunset murmuration opens the app; Reef drift and Shark hunt complete the three public scenes. The fourteen-preset audit records the remaining choices as Lab experiments or replacements.
+- **Browser support:** A1/A6 prove the real shared Rust/WASM/WebGPU application on the recorded Linux/Wayland Chromium 155 configuration with RX 7900 XT/RADV and explicit Vulkan flags. Other browsers, GPUs and mobile devices remain untested; see [browser feasibility](../../docs/browser-feasibility.md).
+- **Performance:** All nine scene/tier combinations were measured twice at 1920×1080 near the 60 Hz browser cap. Native and cold/warm localhost measurements are recorded in the [morning index](../evidence/2026-11-06-morning-review.md). These measurements do not establish GPU headroom, weaker-device performance or Internet loading times.
+- **Population:** Low/Medium/High use 8,000/20,000/40,000 starlings, 500/1,500/3,000 reef fish, and 5,000/12,000/20,000 prey plus three hunters in Shark hunt. There is no public Spectacle tier or numeric slider. Million-vehicle hunter scaling remains separate work.
+- **Hostname:** `flock.skippy-ai.com` remains proposed. Read-only repository and point-in-time DNS inspection found no conflict; the later release must refresh actual zone and Tunnel state. The historical `ac3d.skippy-ai.com` hostname is unchanged; no redirect was prepared.
+- **Image publication:** The master-only manual GHCR workflow is prepared and untriggered. C1 remains a draft until the application merges, the owner authorizes publication, and a real immutable registry digest and public pull proof exist. The local review image ID is not a registry publication digest.
+- **Production access:** This completed goal authorizes review preparation only. Deployment PRs, validation and runbooks are prepared. Publication, internal health checks, guarded infrastructure plan/apply and public verification require the later release session; no production action occurred.
 
 ## Outcomes & Retrospective
 
-A1–A3 interim outcome: real headed browser rendering is feasible; native visitor state/HUD and public restarts are implemented and tested. Browser visitor-flow validation and art/performance acceptance remain open. C1/I1 draft preparation is complete with truthful publication/health blockers.
+Execution complete at review handoff. The application stack delivers three coherent GPU scenes, a compact visitor HUD/Lab, explicit safe restarts, composed first views, readable public shark tuning, shared native/WebGPU runtime and reproducible static release tooling. Native 219 tests and 20 GPU regressions pass; both Clippy targets retain seven baseline warnings. All nine browser tiers pass repeated 1080p measurements near 60 Hz. Two builds reproduce 32 identical files. Cluster/routing PRs are validated drafts. See the morning index for PR links, merge order, immutable evidence, device/payload/capture limitations and exact release prerequisites. No production action or human taste approval is claimed.
 
-A0 delivered: complete fourteen-preset disposition audit, native startup/scene captures, fixed-step motion clips, repeat timings, and a three-scene art target. Native baseline checks pass; browser implementation is in progress.
+Earlier A1–A3 interim outcome: real headed browser rendering was feasible and native visitor state/HUD and public restarts were tested. Browser flow and art/performance acceptance were still open at that milestone; they are complete in the final outcome above. C1/I1 retain their explicit release prerequisites.
 
-Planning delivered: a reusable development prompt, repository-backed gap analysis, staged PR plan, observable acceptance criteria, and household release ordering. No runtime quality or browser-performance claims have been verified in this planning pass.
+A0 delivered: complete fourteen-preset disposition audit, native startup/scene captures, fixed-step motion clips, repeat timings, and a three-scene art target. Native baseline checks passed. Browser implementation was pending at that milestone; final browser proof is recorded above.
+
+The initial planning pass delivered a reusable development prompt, repository-backed gap analysis, staged PR plan, observable acceptance criteria, and household release ordering. Runtime and browser measurements were not performed during that initial pass; execution results are recorded above.
 
 The execution goal is complete when the review package and all independently preparable work are finished, with remaining release prerequisites explicitly identified. Final production acceptance belongs to a later release follow-up after the owner’s merges and approved routing apply.
 
 ## Context and Orientation
+
+This starting-point inventory informed execution. Final implemented boundaries are recorded under Interfaces and Dependencies.
 
 - `src/main.rs` owns application setup, simulation defaults, the current large egui menu, backend selection, and camera input.
 - `src/showcase.rs` owns complete scene bundles; `src/species.rs` owns species tuning and explicit hunt examples. These are the starting points for a single visitor scene-selection contract.
@@ -201,7 +210,7 @@ Use `codex/` branch names and the repository’s commit-header types. Every futu
 
 ## Concrete Steps
 
-These commands describe future execution. This planning pass runs only document/diff checks.
+The execution recipe below is retained for reproducibility. Completed results and evidence are recorded above and in the morning review index. Production publication and rollout remain future work outside this goal.
 
 1. Inspect `git status --short --branch` and repository guidance before editing. Use isolated worktrees for separate PRs where needed.
 2. Before any Cargo command, inspect `pgrep -af 'cargo|rustc'` and resolve active work with its owner. Check for an existing native app. Use the established shared verification lock if one exists.
@@ -275,17 +284,19 @@ Roll back a deployed update by restoring the previously verified image digest th
 
 ## Artifacts and Notes
 
-Planning baseline: `master` at `3088a34`, initially clean. The source/repository audit was read-only. No app session, Cargo build/test, benchmark, Blender change, image publication, or deployment was performed.
+Initial planning checkpoint: `master` at `3088a34`, initially clean. The source/repository audit was read-only; no app session, Cargo build/test, benchmark, Blender change, image publication, or deployment had occurred at that checkpoint.
 
-Execution should keep a concise evidence index with the baseline and improved captures, preset disposition table, tested-browser matrix, performance/load report, source/image provenance, linked PR order, and production runbook. Store large logs and recordings outside Git and link or attach selected evidence.
+The completed [morning review index](../evidence/2026-11-06-morning-review.md) links baseline and improved captures, the preset disposition table, tested-browser matrix, performance/load report, source/image provenance, PR order and release prerequisites. Large raw logs and recordings remain outside the working repository; selected immutable evidence is linked for review. No image publication or deployment occurred during execution.
 
 ## Interfaces and Dependencies
 
-Expected ownership changes are a coherent public scene-application boundary, visitor/developer UI visibility, scene-specific population tiers, and browser-compatible asset/runtime interfaces. Choose exact types after tracing existing code; avoid a generic configuration framework.
+Implemented ownership changes are `visitor::apply`/`VisitorScene`/`PopulationTier`, `FlockRestart` requested/prepared revisions, shared pointer gesture ownership, `BrowserPlugin`/`BrowserAssetsPlugin`, bounded bundled model import, native lighting export and versioned static release packaging.
+
+The original expected ownership changes were a coherent public scene-application boundary, visitor/developer UI visibility, scene-specific population tiers, and browser-compatible asset/runtime interfaces. The implemented boundaries above reuse the existing simulation and rendering paths without adding a generic configuration framework.
 
 Dependency/toolchain edits belong only to A1/A6/A7 when browser support or build tooling requires them. Do not opportunistically upgrade Bevy or replace the simulation/rendering engine. Keep native-only capture/import tooling available where useful.
 
-This initiative explicitly includes researching and restoring a web target, as requested by the owner. That is the task-specific exception to AGENTS.md’s native-only default. There is no requirement to resurrect the historical Trunk/nginx setup unchanged.
+This approved initiative restored the optional shared WebGPU target requested by the owner. AGENTS.md now documents both native development and browser delivery. The historical Trunk setup remains retired; the tested static image workflow is documented in [web delivery](../../docs/web-delivery.md).
 
 ---
 
@@ -295,3 +306,6 @@ Revision notes:
 - 2026-11-05: Recorded approval for a fresh-session execution goal, autonomous work and useful subagents, small review PRs, and an explicit stop before merges or production changes. Moved post-release verification outside this goal so review preparation has a reachable completion condition.
 
 - 2026-11-05: Split execution progress into A2/A3/A4/A5, recorded the observed continuity/domain problem and explicit public restart decision, and linked completed deployment draft preparation.
+
+- 2026-11-06: Closed the approved review-only goal after full native/browser/container validation and linked PR preparation. Publication, production plan/apply, rollout, broad-device validation and public verification remain explicitly outside this handoff.
+- 2026-11-06: Reconciled completed assumptions, historical planning checkpoints, README coverage counts and setup guidance during the final documentation audit. Runtime code and recorded test results are unchanged.
