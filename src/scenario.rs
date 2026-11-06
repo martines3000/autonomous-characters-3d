@@ -62,6 +62,7 @@ enum Command {
     Director(bool),
     Record(PathBuf, u32, u32),
     BoidFollow(crate::follow::FollowMode),
+    FollowSubject(crate::follow::FollowSubject),
     FollowNext,
     FollowId(u32),
     Pause(bool),
@@ -559,6 +560,10 @@ fn parse(script: &str) -> Result<Vec<TimedCommand>, String> {
                 ["boidcam", "first"] => Command::BoidFollow(crate::follow::FollowMode::FirstPerson),
                 ["boidcam", "off"] => Command::BoidFollow(crate::follow::FollowMode::Off),
                 ["boidcam", "next"] => Command::FollowNext,
+                ["boidcam", "fish"] => Command::FollowSubject(crate::follow::FollowSubject::Prey),
+                ["boidcam", "shark"] => {
+                    Command::FollowSubject(crate::follow::FollowSubject::Hunter)
+                }
                 ["boidcam", "id", id] => {
                     Command::FollowId(integer(id, 0, u32::MAX as usize)? as u32)
                 }
@@ -711,6 +716,18 @@ pub(crate) fn run_scenario(world: &mut World) {
                     let mut presentation = world.resource_mut::<Presentation>();
                     presentation.cancel_camera_transition();
                     presentation.follow.mode = mode;
+                }
+                Command::FollowSubject(subject) => {
+                    let mut presentation = world.resource_mut::<Presentation>();
+                    let mode = presentation.follow.mode;
+                    presentation.cancel_camera_transition();
+                    presentation.orbit = false;
+                    presentation.follow.set_subject(subject);
+                    presentation.follow.mode = if mode == crate::follow::FollowMode::Off {
+                        crate::follow::FollowMode::Chase
+                    } else {
+                        mode
+                    };
                 }
                 Command::FollowNext => world.resource_mut::<Presentation>().follow.next(),
                 Command::FollowId(id) => world.resource_mut::<Presentation>().follow.select(id),
@@ -1633,6 +1650,56 @@ mod tests {
         ] {
             assert!(parse(&format!("0 {line}")).is_err(), "{line}");
         }
+    }
+
+    #[test]
+    fn camera_subject_commands_start_chase_and_preserve_first_person_and_pause() {
+        use crate::follow::{FollowMode, FollowSubject};
+        let commands = parse("0 boidcam shark\n0 boidcam first\n0 boidcam fish").unwrap();
+        assert_eq!(
+            commands[0].command,
+            Command::FollowSubject(FollowSubject::Hunter)
+        );
+        assert_eq!(
+            commands[2].command,
+            Command::FollowSubject(FollowSubject::Prey)
+        );
+        let mut world = World::new();
+        world.init_resource::<Time<Real>>();
+        world.init_resource::<Presentation>();
+        world.init_resource::<crate::capture::Capture>();
+        world.init_resource::<Appearance>();
+        world.resource_mut::<Presentation>().paused = true;
+        world.insert_resource(Scenario {
+            commands: parse("0 boidcam shark").unwrap().into(),
+            measurement: None,
+        });
+        run_scenario(&mut world);
+        assert_eq!(
+            world.resource::<Presentation>().follow.mode,
+            FollowMode::Chase
+        );
+        assert_eq!(
+            world.resource::<Presentation>().follow.subject(),
+            FollowSubject::Hunter
+        );
+        assert!(world.resource::<Presentation>().paused);
+        world.resource_mut::<Presentation>().follow.mode = FollowMode::FirstPerson;
+        world.insert_resource(Scenario {
+            commands: parse("0 boidcam fish").unwrap().into(),
+            measurement: None,
+        });
+        run_scenario(&mut world);
+        assert_eq!(
+            world.resource::<Presentation>().follow.mode,
+            FollowMode::FirstPerson
+        );
+        assert_eq!(
+            world.resource::<Presentation>().follow.subject(),
+            FollowSubject::Prey
+        );
+        assert!(world.resource::<Presentation>().paused);
+        assert!(parse("0 boidcam dolphin").is_err());
     }
 
     #[test]

@@ -26,11 +26,11 @@ window.flockStatus = (state, text) => {
     }
   }
 };
-window.flockFrame = (milliseconds, count, paused, animated, hunters, uiVisible, lab, reducedMotion, help, name, simulationSeconds, camera) => {
+window.flockFrame = (milliseconds, count, paused, animated, hunters, uiVisible, lab, reducedMotion, help, name, simulationSeconds, camera, hunterCamera = false, firstPerson = false, cameraAnimalId = 0xffffffff) => {
   const frames = window.flockReport.frames;
   if (milliseconds > 0) frames.push(milliseconds);
   if (frames.length > 7200) frames.shift();
-  window.flockReport.scene = { count, paused, animated, hunters, uiVisible, lab, reducedMotion, help, name, simulationSeconds, camera };
+  window.flockReport.scene = { count, paused, animated, hunters, uiVisible, lab, reducedMotion, help, name, simulationSeconds, camera, cameraSubject: hunterCamera ? 'hunter' : 'prey', firstPerson, cameraAnimalId: cameraAnimalId === 0xffffffff ? null : cameraAnimalId };
 };
 window.flockReducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const assets = new Set();

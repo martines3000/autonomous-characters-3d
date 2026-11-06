@@ -846,6 +846,25 @@ fn initialize_history(@builtin(global_invocation_id) invocation: vec3<u32>) {
 @compute @workgroup_size(256)
 fn track(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let i = invocation.x;
+    // Hunter poses share their two existing flee records; no extra binding or readback.
+    if params.track.x == 3u {
+        if i != 0u || params.track.y >= u32(params.attractor_strength.y) { return; }
+        let record = u32(params.attractor_strength.z) + params.track.y * 2u;
+        let position = bitcast<vec4<f32>>(arena[record]).xyz;
+        let velocity = bitcast<vec3<f32>>(arena[record + 1u].yzw);
+        var rotation = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        if length(velocity) > EPSILON {
+            let direction = normalize(velocity);
+            rotation = upright_target(heading_rotation(direction), direction, vec3<f32>(0.0));
+        }
+        let output = params.track.w;
+        arena[output] = bitcast<vec4<u32>>(vec4<f32>(position, 0.0));
+        arena[output + 1u] = bitcast<vec4<u32>>(vec4<f32>(velocity, 0.0));
+        arena[output + 2u] = bitcast<vec4<u32>>(rotation);
+        arena[output + 3u] = vec4<u32>(0u);
+        arena[output + 4u] = vec4<u32>(params.track.y, params.track.z, 1u, 1u);
+        return;
+    }
     if i >= params.count { return; }
     var base = params.groups.z;
     if params.dt > 0.0 { base = stepped_order_base(); }

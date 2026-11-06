@@ -132,7 +132,7 @@ pub(crate) struct GpuParams {
     // The optional hunter pass uses w as its input snapshot offset.
     pub predators: UVec4,
     pub predator_settings: Vec4,
-    // mode (0 off, 1 spawn ID, 2 index), selector, simulated-time bits, arena tail offset.
+    // mode (0 off, 1 prey spawn ID, 2 prey index, 3 hunter index), selector, time bits, tail offset.
     pub track: UVec4,
     // bank strength, exact legacy flag, response rate, history substep (-1 disables history).
     pub motion: Vec4,
@@ -1215,7 +1215,7 @@ impl GpuFlock {
             }
             if params.track.x != 0 {
                 pass.set_pipeline(&self.track);
-                pass.dispatch_workgroups(groups(count), 1, 1);
+                pass.dispatch_workgroups(groups(count.max(u32::from(params.track.x == 3))), 1, 1);
             }
             drop(pass);
             self.count = count;
@@ -1257,7 +1257,7 @@ impl GpuFlock {
         }
         if params.track.x != 0 {
             pass.set_pipeline(&self.track);
-            pass.dispatch_workgroups(groups(count), 1, 1);
+            pass.dispatch_workgroups(groups(count.max(u32::from(params.track.x == 3))), 1, 1);
         }
         drop(pass);
         if params.max_neighbors == 0 {
@@ -1268,7 +1268,7 @@ impl GpuFlock {
     }
 
     pub(crate) fn copy_track(&self, encoder: &mut CommandEncoder, destination: &Buffer) {
-        if self.count > 0 {
+        if self.count > 0 || self.hunters.is_some() {
             if let Some(buffers) = &self.buffers {
                 encoder.copy_buffer_to_buffer(
                     &buffers.arena,
