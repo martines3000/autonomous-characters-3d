@@ -10,7 +10,7 @@ Serve the merged Flock application at `https://flock.skippy-ai.com` through CRON
 
 - [x] (2026-11-06 17:08Z) Confirmed merged source `57fa57abe53ce2a23717c4b4f0816f40fcc141c3` is byte-identical to the tested final review tree. Household PRs #1 remain drafts with an unpublished-image prerequisite.
 - [x] (2026-11-06 17:08Z) Read application delivery guidance and both household repositories' agent, contribution, architecture, security and rollout instructions. Confirmed hostname and protected CRONA identity.
-- [ ] Publish the actual default-branch source; record its immutable GHCR digest and pull access.
+- [ ] Publish the actual default-branch source; record its immutable GHCR digest and pull access. Run `42259142094` is building clean `57fa57a`.
 - [ ] Verify that exact image locally; update, validate and merge household-cluster PR #1.
 - [ ] Verify CRONA architecture, Flux rollout, deployed digest and internal HTTP/assets.
 - [ ] Recheck authoritative hostname and existing Tunnel/zone configuration; validate and merge household-infra PR #1.
@@ -22,6 +22,8 @@ Serve the merged Flock application at `https://flock.skippy-ai.com` through CRON
 
 - Unrelated `lutralabs/household` repositories also exist here. Release checkouts are `ac3d-deploy-cluster` and `ac3d-deploy-infra`, with `martines3000` remotes. Do not use the unrelated cluster or kubeconfig.
 - Initial noninteractive SSH to `root@crona` stopped at host-key verification. Establish the correct Tailscale identity and trusted key before using private access.
+- Authenticated Tailscale inventory resolves online `crona` to `100.103.65.58`. A task-scoped known-hosts file established first-use SSH trust on that private transport, but the available workstation key is rejected. No CRONA kubeconfig is configured; only the unrelated `household` context exists. The owner asked why access was needed; it is for internal live verification, while publication and rollout use GitHub/Flux.
+- Baseline main-branch production plan `42259520714` succeeded with no changes and passed the existing safety policy. Both authoritative nameservers returned authoritative NXDOMAIN for Flock and historical AC3D A/AAAA/CNAME queries. Render comparison confirms exactly four cluster additions, no removals and no changed existing specifications.
 
 ## Decision Log
 
