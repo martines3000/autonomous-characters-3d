@@ -86,6 +86,8 @@ npm ci --ignore-scripts --prefix web
 CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
   node scripts/smoke-web.mjs http://127.0.0.1:8080 /tmp/flock-browser-review
 CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  node scripts/smoke-ride.mjs http://127.0.0.1:8080 /tmp/flock-ride-review
+CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
   node scripts/measure-web.mjs http://127.0.0.1:8080 /tmp/flock-web-measurements
 ```
 
@@ -99,6 +101,12 @@ The separate measurement runner repeats all nine public scene/tier combinations:
 warmup and six seconds of frame intervals, twice each, at 1920×1080. It restarts the interactive GPU
 scatter for each window; this is not a seeded replay or a GPU timestamp benchmark. Keep other builds,
 simulation apps, benchmarks and video encoders idle during measurements.
+
+The separate Ride check tests moving subjects in all three scenes. It observes the existing GPU
+readbacks, requires one stable
+animal ID and rejects position jumps inconsistent with the animal's velocity. Use the same
+`CHROMIUM_EXECUTABLE` and `AC3D_BROWSER_ARGS` as the smoke runner; on macOS, select the installed
+Chrome binary. Keep other simulation apps and builds idle during this headed check.
 
 The smoke runner also launches one disposable browser profile without Playwright's default focus
 emulation. That unrouted persistent context proves real background-tab pause/return and cold/warm
