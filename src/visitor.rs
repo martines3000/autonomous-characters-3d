@@ -213,7 +213,7 @@ pub(crate) fn reset_view(world: &mut World) {
         // The sunset sun is near world azimuth 50 degrees. Look toward it for warm silhouettes.
         VisitorScene::Murmuration => (225.0, -3.0, 0.65),
         VisitorScene::ReefDrift => (20.0, 3.0, 1.10),
-        VisitorScene::SharkHunt => (15.0, 3.0, if reduced_motion { 1.15 } else { 0.90 }),
+        VisitorScene::SharkHunt => (15.0, 3.0, 1.15),
     };
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), -pitch.to_radians(), 0.0);
     for (mut transform, mut orbit, projection) in world

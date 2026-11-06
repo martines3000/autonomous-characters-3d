@@ -107,7 +107,8 @@ pub(crate) fn configure(world: &mut World, scene: VisitorScene) {
         state.vehicle_alignment_factor = 0.0;
         state.vehicle_cohesion_distance = 32.0;
         state.vehicle_cohesion_factor = 0.0;
-        state.vehicle_seek_factor = 0.5;
+        // Recover after local hunter dodges before stragglers drift out of the encounter.
+        state.vehicle_seek_factor = 2.0;
     }
     motion.advance(&mut state, Duration::ZERO);
     world.insert_resource(motion);
