@@ -124,14 +124,15 @@ Pause freezes the guides with the fish; scene or size changes start a new school
 Ride and Another animal preserve that phase. Lab releases the automatic guides and owned Reef
 groups; the Lab **Reef drift** species retains its original slow, scattered reference behavior.
 
-Public **Shark hunt** uses a loose travelling school with more local spacing and weaker cohesion
-than the Lab bait ball. A soft moving corridor lets fish spread and rejoin without pulling every
-fish toward one point. Three sharks retain pursuit, lunge and prey panic/recovery. Scenic follows
+Public **Shark hunt** starts as a loose elongated school with coherent swimming velocities.
+A soft translating and turning corridor lets fish spread and rejoin without pulling every
+fish toward one point or assigning fixed slots. Three sharks retain pursuit, lunge and prey panic/recovery. Scenic follows
 the encounter; Reduced camera motion uses a wider fixed view, and Free leaves framing to you.
 Lab's **Shark attack** retains its fixed origin target and original tuning.
 The public hunt uses three sharks with 8× visual scale and 1× cruise-speed scale so their silhouettes
 and committed passes remain readable. Lab’s legacy Shark attack retains its original 5× / 1.3× tuning.
-Selecting a scene or flock size starts a freshly scattered flock, including while paused. This avoids
+Selecting a scene or flock size starts a fresh flock, including while paused. Shark hunt starts within
+its school envelope; the other scenes retain their scatter. This avoids
 carrying animals from a larger scene outside a smaller scene's view. It does not promise a seeded replay.
 Pause, UI visibility and reduced camera motion survive scene selection. **Reset view** changes the
 camera only. Detailed simulation defaults and the CPU Naive/Octree reference modes remain available
