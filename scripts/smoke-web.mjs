@@ -193,6 +193,14 @@ try {
   await page.mouse.click(149, 228);
   await page.waitForFunction(() => window.flockReport.scene.lab);
   await page.screenshot({ path: path.join(output, 'lab.png') });
+  // A numeric Lab editor must consume shortcut letters while it owns keyboard focus.
+  await page.mouse.dblclick(510, 276);
+  await page.keyboard.press('p');
+  await page.keyboard.press('h');
+  await page.waitForTimeout(200);
+  assert(await page.evaluate(() => window.flockReport.scene.paused && window.flockReport.scene.uiVisible && window.flockReport.scene.lab), 'Lab keyboard focus leaked visitor shortcuts');
+  await page.screenshot({ path: path.join(output, 'lab-keyboard-focus.png') });
+  await page.keyboard.press('Escape');
   await page.mouse.click(135, 92);
   await page.waitForFunction(() => !window.flockReport.scene.lab);
   await waitScene(page, 'Sunset murmuration');
