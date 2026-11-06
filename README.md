@@ -75,6 +75,8 @@ hunters, population and camera. Public scenes use GPU simulation and have no inv
 | Shark hunt | 5,000 | 12,000 | 20,000 |
 
 Counts are scene-specific flock sizes, not rendering-quality levels. Shark hunters are additional.
+The public hunt uses three sharks with 8× visual scale and 1× cruise-speed scale so their silhouettes
+and committed passes remain readable. Lab’s legacy Shark attack retains its original 5× / 1.3× tuning.
 Selecting a scene or flock size starts a freshly scattered flock, including while paused. This avoids
 carrying animals from a larger scene outside a smaller scene's view. It does not promise a seeded replay.
 Pause, UI visibility and reduced camera motion survive scene selection. **Reset view** changes the
