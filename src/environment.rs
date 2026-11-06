@@ -980,6 +980,7 @@ mod tests {
     #[test]
     fn malformed_web_environment_is_rejected_before_allocating_images() {
         let valid = encode_web_environment(&small_bake());
+        assert!(decode_web_environment(&valid).is_ok());
         for length in [0, 7, 8, 43, valid.len() - 1] {
             assert!(decode_web_environment(&valid[..length]).is_err());
         }
@@ -1070,9 +1071,11 @@ mod tests {
 
     fn small_bake() -> BakedEnvironment {
         BakedEnvironment {
-            sky: Image::default(),
-            diffuse: Image::default(),
-            specular: Image::default(),
+            sky: cubemap(4, 1, |direction, _| direction.abs()),
+            diffuse: cubemap(2, 1, |direction, _| direction.abs() * 0.5),
+            specular: cubemap(4, 3, |direction, roughness| {
+                direction.abs() * (1.0 - roughness) + Vec3::splat(0.125)
+            }),
             sun: Vec3::Y,
             sun_color: Color::srgb(1.0, 0.8, 0.6),
             horizon: Color::WHITE,
