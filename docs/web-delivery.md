@@ -113,6 +113,32 @@ visitor control. Background tabs pause simulation and restore the prior pause st
 The first release offers no fullscreen control; browser fullscreen remains available through the
 browser's own controls.
 
+## Loading progress and scene reveal
+
+The FLOCK shell shows progress for the current resource, followed by named graphics and scene
+preparation stages. `asset-list.json` contains the existing asset paths in `assets` and deterministic
+raw byte sizes in `decodedBytes`. Those sizes describe the decoded response stream; gzip's smaller
+`Content-Length` is not used as its denominator. Unknown or inconsistent totals remain indeterminate
+with a received-byte count. There is no guessed overall startup percentage.
+
+The shell reveals the canvas only after Rust reports readiness, an application frame arrives, and
+two browser paint opportunities pass. The normal reveal uses a short fade and slight canvas scale;
+reduced motion uses opacity only. The main canvas stays inert until the reveal completes. Errors,
+unsupported devices and device loss retain the recovery screen and invalidate an unfinished reveal.
+`flockReport.rustReadyMs` records Rust readiness; `readyMs` includes the reveal and means the interface
+is usable. Preserve this distinction when comparing loading measurements with earlier versions.
+
+```sh
+node --test web/loader.test.mjs
+python3 -m unittest discover -s scripts -p test_package_web.py
+CHROMIUM_EXECUTABLE=/usr/lib/chromium/chromium \
+  node scripts/smoke-loading.mjs http://127.0.0.1:8080 /tmp/flock-loading-review
+```
+
+The headed loading check uses a recorded network throttle to capture real partial progress, checks
+normal and reduced-motion reveals, and injects a clearly labeled failure during the reveal. The
+general browser smoke still tests actual GPU-process loss and reload independently.
+
 ## Publish after review, under owner control
 
 The `Publish web image` workflow is **manual only** and rejects any ref other than `master`, following

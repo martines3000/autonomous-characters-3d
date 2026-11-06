@@ -79,6 +79,9 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory dist
 Use desktop WebGPU over HTTPS or localhost. Unsupported devices get a clear explanation. Browser
 Lab uses bundled animals; arbitrary local model imports remain native-only. The browser fetches
 packaged lighting from the native headless baker instead of blocking input with a CPU bake.
+The FLOCK loading screen shows real resource progress and preparation stages, then reveals the
+ready scene with a short fade. Reduced motion keeps the reveal spatially still. Loading failures
+retain a visible explanation and Retry; no invented overall startup percentage is displayed.
 `?scene=shark&population=low` selects the same scene/tier contract as the HUD.
 See [browser feasibility](docs/browser-feasibility.md) for the exact tested configuration and limits.
 For the static Docker image, cache/MIME headers, pinned browser smoke runner and owner-controlled
