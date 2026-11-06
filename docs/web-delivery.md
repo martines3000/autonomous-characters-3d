@@ -6,8 +6,8 @@ graphics device, database or persistent volume.
 
 The first release targets desktop WebGPU. Native development and the CPU reference modes remain
 available. WebGL cannot run this compute simulation. Mobile interaction, Safari, Firefox and other
-GPUs must not be described as supported until tested. See the measured matrix in
-[browser feasibility](browser-feasibility.md).
+GPUs require device-specific verification. The recorded browser checks use desktop Chromium on
+Linux with an AMD RDNA 3 adapter; they do not establish support for other configurations.
 
 ## Build on Linux x86_64
 
@@ -52,7 +52,7 @@ opened HTML can still find its immutable assets. A fresh checkout produces only 
 An uncommitted review build is marked dirty; it is not a published release.
 
 The Python preview server provides a simple local proof. The Docker image below provides the actual
-compression, MIME, cache and security headers used by CRONA.
+compression, MIME, cache and security headers for static hosting.
 
 ## Run the exact static container locally
 
@@ -161,39 +161,39 @@ The headed loading check uses a recorded network throttle to capture real partia
 normal and reduced-motion reveals, and injects a clearly labeled failure during the reveal. The
 general browser smoke still tests actual GPU-process loss and reload independently.
 
-## Publish and update, under owner control
+## Manual image publication
 
-The `Publish web image` workflow is **manual only** and rejects any ref other than `master`, following
-the household repositories. It builds clean source, verifies the recorded commit and clean flag,
-then publishes Linux/amd64 as:
+Only a maintainer with repository write access can dispatch `Publish web image` from `master`:
+
+```sh
+gh workflow run publish-web-image.yml --ref master
+```
+
+The workflow accepts only `workflow_dispatch`, with a job-level check for this repository and
+`refs/heads/master`. It checks out the exact dispatch commit with persisted credentials disabled.
+The build job has read-only repository access. A separate job downloads only that run's static
+artifact and receives `packages: write` to publish the Linux/amd64 image:
 
 ```text
 ghcr.io/martines3000/autonomous-characters-3d-web:sha-<full-40-character-source-commit>
 ```
 
-It records the real `image@sha256:...` in its run summary. A source tag is convenient provenance;
-the cluster workload must pin the **returned
-immutable digest**, not an invented value or a mutable tag.
+Use the returned `image@sha256:...` from the run summary when consuming the image. Publishing an
+image does not deploy it; this repository has no deployment workflow or infrastructure credentials.
 
-The first owner-authorized release is live at [flock.skippy-ai.com](https://flock.skippy-ai.com/).
-[Publication run 42259142094](https://github.com/martines3000/autonomous-characters-3d/actions/runs/42259142094)
-built clean merged source `57fa57abe53ce2a23717c4b4f0816f40fcc141c3`, content release
-`8ccdbb8b6a861d290b652024`. The household workload pins
-`ghcr.io/martines3000/autonomous-characters-3d-web@sha256:897efa64a1b384ddb8bb43085b4600e88098e29fff60ceaeed407dad5675991f`.
-See the [release evidence and limits](../plans/evidence/2026-11-06-public-release.md).
+## Workflow security
 
-For later authorized releases, dispatch from the actual merged application source. Update the
-household-cluster workload with the returned digest, validate and merge it, and verify serving and
-source provenance. The normal path includes private Traefik/rollout checks. The first installation
-used the documented GitHub/Flux alternative because private CRONA access was unavailable: exact-image
-local proof, retained readiness/liveness and Flux wait, then actual public checks. Do not claim direct
-node, pod or runtime image-ID inspection from a successful merge or public source metadata alone.
+Pull requests, pushes and PR comments do not trigger the publication workflow. It uses GitHub-hosted
+runners and actions pinned to full commit SHAs. Build scripts run without a package-write token;
+the publishing job executes no repository build scripts. Keep publication manual and keep private
+infrastructure configuration, access details and credentials outside this public repository.
 
-Use the existing guarded household-infra main-branch plan/apply for routing changes. Roll back a
-future application update by restoring its previous verified digest through GitOps; use the household
-infra runbook for public-route recovery. Keep server protection and deny-ingress controls intact.
+Repository settings should enforce read-only default workflow tokens, disable Actions PR approval,
+require approval for all outside collaborators, and require action SHA pins. Protect `master` against
+direct pushes, force pushes and deletion, and require PR conversations to be resolved before merging.
+These server-side settings are separate from the workflow file and must be preserved when changing
+repository configuration. Maintainers must review workflow and script changes before merging: a
+merged contribution becomes trusted source for a later manual release.
 
-The equivalent explicit owner command is `gh workflow run publish-web-image.yml --ref master`.
-Dispatch only for an authorized release. The earlier pre-merge local image, artifact checksums and
-tested source in [browser feasibility](browser-feasibility.md) remain historical; use the actual
-published provenance above rather than a local image ID.
+See [GitHub's secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
+for token permissions, action pinning and handling untrusted contributions.

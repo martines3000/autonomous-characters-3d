@@ -30,5 +30,6 @@ Open **Lab** for simulation settings, CPU reference modes, custom models and up 
 
 - [Full guide](docs/reference.md): scenes, controls, models and advanced settings.
 - [Browser and Docker setup](docs/web-delivery.md): WebGPU over HTTPS or localhost.
+- [Workflow security](docs/web-delivery.md#workflow-security): manual image publication and contribution boundaries.
 - [Development and tests](docs/reference.md#development) · [Performance](docs/reference.md#performance).
 - [Project history](docs/reference.md#project-history) · [Plans and known limits](plans/STATUS.md).

@@ -38,7 +38,7 @@ made the decisions; the agents wrote the code, plans and checks.
 | Vehicles | Slider up to 50,000, naive O(n²) by default | 20,000 starlings at startup; scene-specific tiers; Lab up to 1,000,000 |
 | Rendering | One entity per vehicle | One instanced draw, heading colors, lighting, fog |
 | Tests | None | 255 release tests and 24 real-device GPU checks passed; seeded benchmarks and school metrics available |
-| Known bugs | 14 audit findings | Original correctness findings resolved; scaling limits tracked; CI not wanted |
+| Known bugs | Numerical and neighbor-query errors | Correctness fixes and regression tests; scaling limits tracked |
 
 Bugs found and fixed include:
 - NaNs from normalizing zero vectors;
@@ -48,10 +48,7 @@ Bugs found and fixed include:
 - a mass slider that ignored existing vehicles;
 - followers collapsing into a single point.
 
-The audit is [review-report.html](../review-report.html). Each fix has an ExecPlan with evidence in
-[plans/completed/](../plans/completed/), and [plans/STATUS.md](../plans/STATUS.md) tracks the open work.
-The [6 November showcase review index](../plans/evidence/2026-11-06-morning-review.md) links the prepared
-application/deployment PRs, tested evidence and later release prerequisites.
+Current limits and future work are tracked in [plans/STATUS.md](../plans/STATUS.md).
 
 ## Run it
 
@@ -85,7 +82,7 @@ The FLOCK loading screen shows real resource progress and preparation stages, th
 ready scene with a short fade. Reduced motion keeps the reveal spatially still. Loading failures
 retain a visible explanation and Retry; no invented overall startup percentage is displayed.
 `?scene=shark&population=low` selects the same scene/tier contract as the HUD.
-See [browser feasibility](browser-feasibility.md) for the exact tested configuration and limits.
+See [web delivery](web-delivery.md) for browser requirements and verification instructions.
 For the static Docker image, cache/MIME headers, pinned browser smoke runner and owner-controlled
 manual image publication, follow [web delivery](web-delivery.md). The publication workflow runs
 only when manually dispatched from `master`; preparing it does not publish or deploy anything.
@@ -312,8 +309,7 @@ max speed; an in-bounds axis retains its current velocity component. The differe
 max speed × wall-avoid factor. Fully in-bounds vehicles receive no wall force, so walls no longer
 brake wandering vehicles. Global/group seek and formation wall gating remain unchanged. Walls
 steer softly rather than clamp positions, so a vehicle may briefly overshoot. Default speeds and
-force weights are unchanged; visual speed tuning remains an owner decision. See
-[containment measurements](../plans/completed/2026-11-01-wall-containment.md).
+force weights are unchanged.
 
 | Scene style | Lighting/environment | Vehicle effects | Camera effects |
 | --- | --- | --- | --- |
@@ -361,9 +357,6 @@ Density scales with world size. Cached 32³ textures form high-contrast, feather
 with each environment's sun in Sunset and Underwater; flock shadows cut through those columns.
 Stronger scattering and light gain reveal beams without raising the sun's surface illuminance.
 No temporal jitter is used without TAA; 16 steps can show bands on thin or moving shadows.
-Quick release measurements at 3816×2110/20k on RX 7900 XT add **2.59 ms Sunset / 1.75 ms
-Underwater**, down from 6.72 / 8.20 ms with 64 steps. These are short frame-interval samples;
-see the [measurement plan](../plans/completed/2026-11-03-volumetric-shafts.md) for conditions.
 Any active environment also adds subtle high-threshold sun/bright-sky Bloom;
 Glow retains its original Bloom settings. Showcase presets keep volumetrics Off; enable them
 **after** `showcase fish`, `showcase starling` or another preset. Fish occlude the rays.
@@ -386,7 +379,6 @@ The cap counts vehicles, not triangles; heavy imported models can need a much lo
 **Ambient occlusion** (default Off; `set ambient_occlusion on|off`) enables SSAO and the flock's
 opaque depth/normal prepass. SSAO forces `Msaa::Off`; disabling it restores the prior MSAA setting.
 Shadows alone retain 4× MSAA. Motion blur adds flock motion vectors to the prepass.
-See [shadow validation](../plans/completed/2026-11-01-flock-shadows.md) for captures and quick frame intervals.
 **Underwater** is fully procedural: a cached 128px turquoise-to-deep-blue cubemap, diffuse/GGX
 water IBL, green-tinted overhead sun and exponential distance fog. The existing floor becomes sand
 below the flock, with subtle ripples. Shared XZ-projected caustics move across vehicles and sand,
@@ -432,9 +424,7 @@ GPU Boids stay **64 bytes**. Sorting carries a 32-bit table index; groups Off ne
 in steering. Two metadata tables (one maintenance scratch) and two order maps add 5 MiB at 100k
 capacity and 40 MiB at 1M capacity. They share the eighth storage binding with future scene data.
 Instance stride stays 48 bytes and hunter-free scenes retain one draw. Animation phase keeps its original bits
-and seed formula. Other color modes remain unchanged. Repeated RX 7900 XT headless Off step medians
-are within 5% of the original baseline in 100k/1M wander/follow. See the
-[swarm plan](../plans/completed/2026-10-31-swarm-mechanics.md) for all candidates, timings and limits.
+and seed formula. Other color modes remain unchanged.
 
 New vehicles use spawn ID modulo the enabled count; Off spawns use dormant ID-modulo-eight
 membership. Enabling or changing the group count reassigns every existing member by spawn ID
@@ -599,9 +589,6 @@ lower values give stronger blur, default 2.8. The virtual sensor scales with bod
 is visible in this large-unit world; blur diameter is capped at 12 pixels. DoF works in all styles
 with 4× MSAA and is removed when disabled or when the boid camera exits. A small gold ring marks
 the predicted followed position in Chase; first person omits it.
-
-See the [Glow/DoF measurements](../plans/completed/2026-11-01-glow-style-and-dof.md) for timing,
-verification and screenshot evidence.
 
 ### Motion blur
 
@@ -958,8 +945,6 @@ A matching 100k static Dart control measures 1.005/0.998 ms before versus 1.010/
 (+0.3%, smaller than run variation). These frame intervals include CPU/GPU/presentation overlap;
 they do not isolate animation GPU time or guarantee similar cost for heavy models. Existing PCG
 spawn starts at frame zero; real frame deltas and GPU scatter vary. No ignored benchmark was run.
-See the [model plan](../plans/completed/2026-10-31-custom-vehicle-models.md) for complete evidence, limits
-and four explicitly rejected runs that accidentally selected the built-in Bird.
 
 ### RX 7900 XT, Stage 4 (2026-10-31)
 
@@ -974,9 +959,7 @@ Camera yaw/pitch is **0° / 17.28°**. Default framing uses Frame world: distanc
 20k and **4876.075** at 100k. Close-up distance is **100** at both counts, inside the flock.
 Dart has **14 triangles**; heavy is a deterministic **3,456-triangle** subdivision of the example
 glider, preserving its surface/normals/colors. Table means average the two per-run means;
-FPS below is 1000 / that mean. Full per-run mean/p50/p95, FPS, settings, loads, rejected attempts,
-Bird (24 triangles), small glider (24), MSAA-off, Classic and no-draw controls are in the
-[Stage 4 plan](../plans/completed/2026-10-31-rendering-optimization.md).
+FPS below is 1000 / that mean.
 
 | Vehicles | View | Model | Before mean ms / FPS | After mean ms / FPS |
 | ---: | --- | --- | ---: | ---: |
@@ -1021,8 +1004,7 @@ In the app (vsync, 120 Hz), FPS depends on camera distance:
 - 300,000 seen from afar: about 92 FPS;
 - 100,000 seen up close: about 59 FPS.
 
-Details and caveats are in [the GPU plan](../plans/completed/2026-10-30-gpu-flocking.md) and
-[the CPU benchmark plan](../plans/completed/2026-10-30-seeded-headless-benchmarks.md).
+These historical measurements are hardware-specific; use the benchmark commands below for current results.
 
 ## Development
 
@@ -1239,7 +1221,7 @@ machine: check `uptime` and repeat runs.
 
 With 16 hunters, 1M wander costs about 31–35 ms per step instead of about 5.4 ms with two groups and
 no hunters; follow mode and the 30–40k presets are barely affected. The nearest-prey search is not the
-cause. See the [hunter scaling plan](../plans/completed/2026-11-03-hunter-scaling.md).
+cause. See [known limits](../plans/STATUS.md).
 
 Optional tools:
 - `cargo-deny` (`cargo install --locked --version 0.20.2 cargo-deny`):
@@ -1256,20 +1238,10 @@ Native development and the optional shared Rust/WebGPU browser target are suppor
 The original Trunk-based web build was removed during modernization. The `codex/native-baseline`
 branch keeps the first native build that compiled again.
 
-## Roadmap
+## Known limits
 
-Section 12 of [review-report.html](../review-report.html#feature-expansion) proposed the feature roadmap.
-Showcase controls, the cursor field, swarm groups, static sphere avoidance, analytic formations and
-predator fleeing are implemented. Trails remain future work; each milestone requires owner authorization.
-Open issues are listed in
-[plans/STATUS.md](../plans/STATUS.md):
-
-- crowding in follow flocks of 100,000 or more (parked by the owner);
-- rendering budgets for heavy custom models and other GPUs;
-- hunter overhead at one million prey in wander mode.
-
-The owner chose to retain the existing speeds after the wall-drag fix. The showcase review stack
-is complete; image publication, rollout and public verification require a separate release session.
+See [plans/STATUS.md](../plans/STATUS.md) for follow-flock crowding at high populations,
+heavy imported-model rendering costs, cross-device testing and hunter overhead at one million prey.
 
 ## Sources
 

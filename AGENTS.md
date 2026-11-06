@@ -38,7 +38,7 @@ This machine is shared by several agents and worktrees.
 ## Scope boundaries
 
 - Native and WASM/WebGPU delivery share the Rust simulation. Follow `docs/web-delivery.md` for the supported browser build, static container and verification path; do not introduce an alternative web implementation as a side effect.
-- `review-report.html` and `review-tools-research.md` describe the original pre-modernization code (commit `e7a53d7`). Keep them as historical records; do not edit them. `review-progress.md` is the historical log up to the native modernization; record new work in `plans/`.
+- Preserve the university-project artifacts (`analysis_slovene.md` and `meritve.png`). Keep current documentation focused on usage, maintenance and known limits; keep private infrastructure details and temporary agent logs outside this public repository.
 - Change `Cargo.toml`/`Cargo.lock` only in tasks that are about dependencies.
 - Do not change simulation semantics (frame-rate dependence, octree query behavior, default settings) as a side effect; each has its own entry in `plans/STATUS.md`.
 - Keep `README.md` in sync when commands, controls or behavior change.
@@ -46,6 +46,6 @@ This machine is shared by several agents and worktrees.
 
 ## Planning
 
-Read `PLANS.md` before multi-step work. `plans/STATUS.md` lists current work, prioritized future tasks and the status of the original review findings. Open ExecPlans live in `plans/planned/`, closed ones in `plans/completed/`; start new ones from `plans/TEMPLATE.md`. Small, low-risk fixes need no ExecPlan.
+Read `PLANS.md` before multi-step work. `plans/STATUS.md` lists current work, prioritized future tasks and known limits. Open ExecPlans live in `plans/planned/`, closed ones in `plans/completed/`; start new ones from `plans/TEMPLATE.md`. Small, low-risk fixes need no ExecPlan.
 
-Reference material: `docs/native-migration-notes.md` (Bevy 0.20 API research), `review-report.html` (original findings F01–F14 and tooling recommendations).
+Workflow security and publication boundaries are documented in `docs/web-delivery.md`.
